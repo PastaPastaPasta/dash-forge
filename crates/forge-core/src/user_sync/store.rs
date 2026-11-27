@@ -149,6 +149,7 @@ struct Memory {
     writes: u64,
     fail_share_write: bool,
     fail_after: Option<u64>,
+    fail_key_reads: bool,
     disabled: BTreeMap<String, Vec<EncKeyInfo>>,
 }
 
@@ -223,6 +224,11 @@ impl MemoryStore {
             .collect();
         all.sort_by_key(|(k, _)| k.id);
         all
+    }
+
+    /// Make every read of an identity's keys fail (a node that does not answer).
+    pub fn fail_key_reads(&self, fail: bool) {
+        self.inner.lock().expect("store lock").fail_key_reads = fail;
     }
 
     /// Make every document write fail once `n` writes have been made in all (an interrupted
@@ -442,6 +448,9 @@ impl UserStore for MemoryStore {
 
     async fn encryption_keys(&self, identity: &str) -> Result<Vec<EncKeyInfo>> {
         let m = self.inner.lock().expect("store lock");
+        if m.fail_key_reads {
+            return Err(Error::Platform("the node went away".into()));
+        }
         let mut keys = m.keys.get(identity).cloned().unwrap_or_default();
         keys.sort_by_key(|k| k.id);
         Ok(keys)

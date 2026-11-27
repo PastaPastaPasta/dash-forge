@@ -376,6 +376,10 @@ pub async fn after_membership_change(
 /// The note a device that holds a key sync moved away from sees.
 pub const ADD_KEY_NOTE: &str = user_sync::rotate::ADD_KEY_NOTE;
 
+/// The line a wallet sign-in shows when the identity syncs under a key this computer doesn't
+/// hold and the wallet didn't hand out (nothing says it moved).
+pub const NOT_HELD_NOTE: &str = "your identity syncs its settings with a key this computer doesn't hold; add it with `dg storage sync add-key`";
+
 /// Whether `key` is no longer the identity's current sync key (sync moved to a new key on
 /// another device). One identity read; `false` when it can't tell.
 pub async fn moved_away(client: &PlatformClient, contract: &str, key: &SyncKey) -> bool {
@@ -495,9 +499,18 @@ async fn move_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
     let me = run.identity.id();
     let held = held_key_id(&run.network, &me);
     let master_wif =
-        forge_core::platform::identity::NewIdentityKeys::from_mnemonic(&run.words, ctx.network())?
-            .master_key()
-            .private_key_wif;
+        forge_core::platform::identity::master_wif_of(&run.words, ctx.network(), &run.identity)?
+            .ok_or_else(|| {
+                UserError::new(
+                    codes::KEY_CANNOT_SIGN,
+                    "this recovery phrase doesn't make this identity's master key",
+                )
+                .cause(
+                    "moving sync needs the identity's master key, and this phrase doesn't make it",
+                )
+                .fix("check the phrase: it is the one of the wallet that holds this identity")
+                .note("nothing was changed")
+            })?;
     let ledger =
         user_sync::platform::PlatformKeyLedger::new(&run.client, &run.contract, Some(master_wif));
     let (key, moved) = Writer::new(&run.client, &run.bridge, &run.identity)
@@ -506,10 +519,46 @@ async fn move_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
         })
         .await
         .map_err(|e| {
-            UserError::new(codes::PARTIAL, "your synced settings did not finish moving")
-                .cause(format!("{e:#}"))
-                .fix("run `dg storage sync move-key` again: it picks up where this one stopped")
+            let started = e
+                .downcast_ref::<user_sync::rotate::MoveError>()
+                .is_none_or(|m| m.started);
+            if started {
+                UserError::new(codes::PARTIAL, "your synced settings did not finish moving")
+                    .cause(format!("{e:#}"))
+                    .fix("run `dg storage sync move-key` again: it picks up where this one stopped")
+            } else {
+                UserError::new(codes::UNEXPECTED, "your synced settings were not moved")
+                    .cause(format!("{e:#}"))
+                    .note("nothing was changed")
+            }
         })?;
+    if moved.nothing_done() {
+        let stale = held.is_some_and(|h| h != key.key_id);
+        ctx.emit(
+            json!({
+                "status": "current",
+                "identityId": me,
+                "keyId": key.key_id,
+                "disabledKeyIds": moved.disabled,
+                "resealed": moved.states,
+                "created": moved.created,
+                "shares": moved.shares,
+                "grantsRewritten": 0,
+                "grantsDropped": 0,
+                "storedAt": null,
+            }),
+            || {
+                println!(
+                    "Your synced settings are already under your newest key (key #{}).",
+                    key.key_id
+                );
+                if stale {
+                    println!("  This computer holds an older key: add the newest one with `dg storage sync add-key`.");
+                }
+            },
+        );
+        return Ok(());
+    }
     let stored = keep(&key).map_err(|e| {
         UserError::new(
             codes::PARTIAL,
@@ -526,7 +575,7 @@ async fn move_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
             "status": "moved",
             "identityId": me,
             "keyId": key.key_id,
-            "disabledKeyId": moved.disabled,
+            "disabledKeyIds": moved.disabled,
             "resealed": moved.states,
             "created": moved.created,
             "shares": moved.shares,

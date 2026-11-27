@@ -64,10 +64,13 @@ export function topUpKeyPath(network: Network, index: number, identityIndex = 0)
  * (`ApplicationKeyDerivation.encryption`): `m/9'/<coin>'/5'/7'/0'/<identityId>'/<contractId>'/<purpose>'/<rotation>'`,
  * the two ids as 256-bit hardened children (DIP-14). Purpose 1: ENCRYPTION.
  */
-export function appEncryptionKeyPath(network: Network, identityId: Uint8Array, contractId: Uint8Array, rotation: number, purpose = 1): string {
+export function appEncryptionKeyPath(network: Network, identityId: Uint8Array, contractId: Uint8Array, rotation: number | 'legacy', purpose = 1): string {
   if (identityId.length !== 32 || contractId.length !== 32) throw new Error('an id is 32 bytes')
+  const base = `m/9'/${coin(network)}'/5'/7'/0'/0x${bytesToHex(identityId)}'/0x${bytesToHex(contractId)}'/${purpose}'`
+  // The wallets' legacy path (`application_encryption_legacy_derivation_path`): no rotation level.
+  if (rotation === 'legacy') return base
   if (!Number.isInteger(rotation) || rotation < 0 || rotation >= 0x80000000) throw new Error(`not a rotation: ${rotation}`)
-  return `m/9'/${coin(network)}'/5'/7'/0'/0x${bytesToHex(identityId)}'/0x${bytesToHex(contractId)}'/${purpose}'/${rotation}'`
+  return `${base}/${rotation}'`
 }
 
 export function assetLockKeyPath(network: Network): string {
@@ -108,7 +111,7 @@ export async function deriveAppEncryptionKey(
   network: Network,
   identityId: Uint8Array,
   contractId: Uint8Array,
-  rotation: number,
+  rotation: number | 'legacy',
 ): Promise<{ readonly secret: Uint8Array; readonly pub: Uint8Array }> {
   const path = appEncryptionKeyPath(network, identityId, contractId, rotation)
   const info = await (await wallet()).deriveKeyFromSeedWithExtendedPath({ mnemonic: normalizeMnemonic(mnemonic), path, network: wasmNetwork(network) })

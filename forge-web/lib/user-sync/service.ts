@@ -78,12 +78,21 @@ export class SyncKeyMovedError extends SyncKeyChangedError {
 }
 
 /**
- * Refuse ({@link SyncKeyMovedError}) unless `keyId` is `identityId`'s current forge-user key (its
- * newest live one): a key the owner moved away from never seals settings or shares again.
+ * Refuse ({@link SyncKeyMovedError}) when a read of the identity shows that `keyId` is not its
+ * current forge-user key (its newest live one): a key the owner moved away from never seals
+ * settings or shares again. A read that fails, or finds no identity, can't tell: the write goes
+ * ahead as it did before moves existed, so nobody who never moves is held up by it.
  */
 export async function assertCurrentSyncKey(port: UserSyncPort, identityId: string, keyId: number): Promise<void> {
-  const current = await port.syncKey(identityId)
-  if (current?.keyId !== keyId) throw new SyncKeyMovedError(current?.keyId ?? null, keyId)
+  let read: Awaited<ReturnType<UserSyncPort['identitySyncKeys']>>
+  try {
+    read = await port.identitySyncKeys(identityId)
+  } catch {
+    return
+  }
+  if (read === null) return
+  const current = read.keys.filter((k) => !k.disabled).reduce<number | null>((a, k) => (a === null || k.keyId > a ? k.keyId : a), null)
+  if (current !== keyId) throw new SyncKeyMovedError(current, keyId)
 }
 
 /** The synced copy did not read back as written: nothing was recorded, the next run tries again. */

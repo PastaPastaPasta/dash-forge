@@ -25,6 +25,8 @@ export type SyncKeyMode = 'move' | 'add'
 
 export const MOVE_ACTION = 'Move sync to a new key'
 export const ADD_ACTION = 'Add the new key'
+/** The same action where nothing moved: this browser lacks the identity's sync key. */
+export const ADD_SYNC_KEY = 'Add the sync key'
 export const MOVED_LINE = 'Your synced settings moved to a new key.'
 export const MOVE_WHY = 'A site you approved in your wallet may have kept your sync key. A new key, made from your recovery phrase, shuts the old one out of your synced settings and shared storage.'
 export const ADD_WHY = 'Your settings sync with a key made from your recovery phrase. Enter it once to add that key to this browser.'
@@ -33,23 +35,23 @@ export const MOVED_DONE = 'Done. Your settings sync with a new key.'
 export const ROTATE_NOW = 'Rotate your storage credentials now: the old key saw them. Update each profile here and the change syncs under the new key.'
 export const OTHER_DEVICES = 'Your other devices need the new key once: Settings → Storage → Add the new key, with your recovery phrase.'
 export const WALLET_NOTE = 'Wallet sign-ins no longer carry the sync key.'
+export const ALREADY_NEWEST = 'Your synced settings already use your newest key.'
 
-const TITLE: Record<SyncKeyMode, string> = { move: MOVE_ACTION, add: ADD_ACTION }
 const BUTTON: Record<SyncKeyMode, string> = { move: 'Move to a new key', add: 'Add the key' }
 
-export function SyncKeySheet({ mode, open, onClose }: { readonly mode: SyncKeyMode; readonly open: boolean; readonly onClose: () => void }): JSX.Element | null {
+export function SyncKeySheet({ mode, open, onClose, title }: { readonly mode: SyncKeyMode; readonly open: boolean; readonly onClose: () => void; readonly title?: string }): JSX.Element | null {
   const { identity, signer, controller } = useAuth()
   const { sdk, ready } = useSdk()
   const contractId = ACTIVE_NETWORK.v2?.user
   const phrase = useRef<HTMLTextAreaElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
+  const [done, setDone] = useState<'added' | 'moved' | 'unchanged' | null>(null)
 
   const close = (): void => {
     if (busy) return
     setError(null)
-    setDone(false)
+    setDone(null)
     onClose()
   }
 
@@ -64,10 +66,12 @@ export function SyncKeySheet({ mode, open, onClose }: { readonly mode: SyncKeyMo
     setError(null)
     try {
       const input = { sdk, network: DEFAULT_NETWORK, networkKey: ACTIVE_NETWORK.key, identityId: identity, contractId, mnemonic }
-      if (mode === 'add') await addSyncKeyWithPhrase(input)
-      else {
+      if (mode === 'add') {
+        await addSyncKeyWithPhrase(input)
+        setDone('added')
+      } else {
         if (signer === null) throw new Error('Sign in again to change your sync key.')
-        await spendAction(namedAction('Sync moved to a new key'), (tag) =>
+        const out = await spendAction(namedAction('Sync moved to a new key'), (tag) =>
           moveSyncKeyWithPhrase({
             ...input,
             auth: tag(signer),
@@ -79,8 +83,8 @@ export function SyncKeySheet({ mode, open, onClose }: { readonly mode: SyncKeyMo
             },
           }),
         )
+        setDone(!out.created && out.written === 0 ? 'unchanged' : 'moved')
       }
-      setDone(true)
     } catch (e) {
       setError(errorMessage(e))
     } finally {
@@ -92,7 +96,7 @@ export function SyncKeySheet({ mode, open, onClose }: { readonly mode: SyncKeyMo
     <Dialog
       open={open}
       onClose={close}
-      title={TITLE[mode]}
+      title={title ?? (mode === 'move' ? MOVE_ACTION : ADD_ACTION)}
       footer={
         done ? (
           <Button variant="primary" onClick={close}>
@@ -107,8 +111,10 @@ export function SyncKeySheet({ mode, open, onClose }: { readonly mode: SyncKeyMo
     >
       {done ? (
         <div className="space-y-2 text-dense" data-testid="sync-key-done">
-          {mode === 'add' ? (
+          {done === 'added' ? (
             <p>{ADDED}</p>
+          ) : done === 'unchanged' ? (
+            <p>{ALREADY_NEWEST}</p>
           ) : (
             <>
               <p>{MOVED_DONE}</p>

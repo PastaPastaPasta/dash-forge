@@ -35,11 +35,16 @@ const FIXTURE = JSON.parse(readFileSync(resolve(__dirname, '../../../forge-contr
   readonly contractId: string
   readonly vectors: readonly Vector[]
   readonly walletVectors?: readonly WalletVector[]
+  readonly legacyVectors?: readonly Omit<Vector, 'rotation'>[]
+  readonly walletLegacyVectors?: readonly Omit<WalletVector, 'rotation'>[]
 }
 
 describe('the forge-user key at rotation r', () => {
-  it('covers both networks and rotations 0 to 2', () => {
-    for (const network of ['testnet', 'mainnet']) expect(FIXTURE.vectors.filter((v) => v.network === network).map((v) => v.rotation)).toEqual([0, 1, 2])
+  it('covers both networks and rotations 0 to 2, and the legacy path', () => {
+    for (const network of ['testnet', 'mainnet']) {
+      expect(FIXTURE.vectors.filter((v) => v.network === network).map((v) => v.rotation)).toEqual([0, 1, 2])
+      expect(FIXTURE.legacyVectors?.filter((v) => v.network === network)).toHaveLength(1)
+    }
   })
 
   for (const v of FIXTURE.vectors) {
@@ -58,6 +63,24 @@ describe('the forge-user key at rotation r', () => {
   for (const v of FIXTURE.walletVectors ?? []) {
     it(`the wallet's own vector: ${v.network} ${v.identityIdHex.slice(0, 8)}… rotation ${v.rotation}`, async () => {
       const k = await deriveAppEncryptionKey(FIXTURE.mnemonic, v.network, hexToBytes(v.identityIdHex), hexToBytes(v.contractIdHex), v.rotation)
+      expect(bytesToHex(k.pub)).toBe(v.publicKeyHex)
+    }, 60_000)
+  }
+
+  for (const v of FIXTURE.legacyVectors ?? []) {
+    it(`${v.network} legacy (no rotation level)`, async () => {
+      const id = decodeIdentifier(FIXTURE.identityId)
+      const contract = decodeIdentifier(FIXTURE.contractId)
+      expect(appEncryptionKeyPath(v.network, id, contract, 'legacy')).toBe(v.path)
+      const k = await deriveAppEncryptionKey(FIXTURE.mnemonic, v.network, id, contract, 'legacy')
+      expect(bytesToHex(k.secret)).toBe(v.privateKeyHex)
+      expect(bytesToHex(k.pub)).toBe(v.publicKeyHex)
+    }, 60_000)
+  }
+
+  for (const v of FIXTURE.walletLegacyVectors ?? []) {
+    it(`the wallet's own legacy vector: ${v.network} ${v.identityIdHex.slice(0, 8)}…`, async () => {
+      const k = await deriveAppEncryptionKey(FIXTURE.mnemonic, v.network, hexToBytes(v.identityIdHex), hexToBytes(v.contractIdHex), 'legacy')
       expect(bytesToHex(k.pub)).toBe(v.publicKeyHex)
     }, 60_000)
   }

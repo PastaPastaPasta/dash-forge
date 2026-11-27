@@ -426,7 +426,7 @@ impl super::rotate::KeyLedger for PlatformKeyLedger<'_> {
         &self,
         identity: &str,
         secret: &crate::app_connect::SecretBytes,
-        disable: u32,
+        disable: &[u32],
     ) -> Result<u32> {
         use crate::platform::identity::{FreshKey, KeySpec};
         let master = self.master_wif.as_ref().ok_or_else(|| {
@@ -448,7 +448,7 @@ impl super::rotate::KeyLedger for PlatformKeyLedger<'_> {
                         contract: self.contract_id.clone(),
                     },
                 )],
-                &[disable],
+                disable,
             )
             .await;
         // Whatever the broadcast said, a read of the identity decides (it may have landed).

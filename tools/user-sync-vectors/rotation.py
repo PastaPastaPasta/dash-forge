@@ -61,7 +61,8 @@ def derive(s, path):
     return k
 
 def path(mainnet, identity, contract, purpose, rotation):
-    return [9, 5 if mainnet else 1, 5, 7, 0, identity, contract, purpose, rotation]
+    base = [9, 5 if mainnet else 1, 5, 7, 0, identity, contract, purpose]
+    return base if rotation is None else base + [rotation]
 
 def shown(p):
     return 'm/' + '/'.join(('0x' + l.hex() if isinstance(l, bytes) else str(l)) + "'" for l in p)
@@ -69,7 +70,8 @@ def shown(p):
 def vector(network, rotation):
     p = path(network == 'mainnet', unb58(IDENTITY), unb58(CONTRACT), PURPOSE, rotation)
     k = derive(seed(MNEMONIC), p)
-    return {'network': network, 'rotation': rotation, 'path': shown(p),
+    head = {'network': network} if rotation is None else {'network': network, 'rotation': rotation}
+    return {**head, 'path': shown(p),
             'privateKeyHex': k.to_bytes(32, 'big').hex(), 'publicKeyHex': compressed(k).hex()}
 
 # dashpay/kotlin-platform platform-mobile/src/key_wallet.rs `rotation_level_vectors_on_mainnet`.
@@ -81,6 +83,16 @@ WALLET = [
     (bytes(range(32)), bytes(0xff - i for i in range(32)), 1, 0,
      '02dfed57ddaaea8c0758e8da44513520038eb8d6b0b92109953c14d6ab1087259b'),
 ]
+# The same file's `legacy_no_rotation_vectors_on_mainnet`: the pre-rotation path (no last level).
+WALLET_LEGACY = [
+    (bytes([0x35] * 32), bytes([0x6b] * 32), 1,
+     '03e989de1b62f137231cc06659c810c17100becd1f5e23d5710faa7602769fe434'),
+    (bytes(range(32)), bytes(0xff - i for i in range(32)), 1,
+     '03c4e462229f176595ec17e28e9096d3cfbc42496fb8ed4d48f8f58355d6105aa9'),
+]
+for identity, contract, purpose, want in WALLET_LEGACY:
+    got = compressed(derive(seed(MNEMONIC), path(True, identity, contract, purpose, None))).hex()
+    assert got == want, (got, want)
 for identity, contract, purpose, rotation, want in WALLET:
     got = compressed(derive(seed(MNEMONIC), path(True, identity, contract, purpose, rotation))).hex()
     assert got == want, (got, want)
@@ -94,9 +106,15 @@ print(json.dumps({
     'contractId': CONTRACT,
     'purpose': PURPOSE,
     'vectors': [vector(n, r) for n in ('testnet', 'mainnet') for r in (0, 1, 2)],
+    'legacyVectors': [vector(n, None) for n in ('testnet', 'mainnet')],
     'walletVectors': [
         {'network': 'mainnet', 'identityIdHex': i.hex(), 'contractIdHex': c.hex(),
          'purpose': pu, 'rotation': r, 'publicKeyHex': w}
         for i, c, pu, r, w in WALLET
+    ],
+    'walletLegacyVectors': [
+        {'network': 'mainnet', 'identityIdHex': i.hex(), 'contractIdHex': c.hex(), 'purpose': pu,
+         'publicKeyHex': w}
+        for i, c, pu, w in WALLET_LEGACY
     ],
 }, indent=1))

@@ -45,7 +45,7 @@ function phrase(seed: string): DeriveSyncKey {
   }
 }
 
-async function E(seed: string, r: number): Promise<Uint8Array> {
+async function E(seed: string, r: number | 'legacy'): Promise<Uint8Array> {
   return (await phrase(seed)(r)).secret
 }
 
@@ -145,7 +145,8 @@ describe('move sync to a new key', () => {
     w.platform.keys.delete(BOB)
     const ctx = moveCtx(w.platform)
     const out = await moveSyncKey(ctx)
-    expect(out).toEqual({ keyId: OLD_ID + 1, created: true, slots: 3, shares: 1, startedSlots: [] })
+    expect(out).toMatchObject({ keyId: OLD_ID + 1, created: true, slots: 3, shares: 1, startedSlots: [] })
+    expect(out.written).toBe(6)
     await expectMoved(w)
     expect(w.platform.shares.get(`${OWNER}/${REPO}`)!.fields.epoch).toBe(before + 1)
     expect(ctx.stored.map((s) => s.keyId)).toEqual([OLD_ID + 1])
@@ -221,11 +222,77 @@ describe('move sync to a new key', () => {
     w.platform.keys.delete(BOB)
     await moveSyncKey(moveCtx(w.platform))
     const out = await moveSyncKey(moveCtx(w.platform))
-    expect(out).toEqual({ keyId: OLD_ID + 2, created: true, slots: 3, shares: 1, startedSlots: [] })
+    expect(out).toMatchObject({ keyId: OLD_ID + 2, created: true, slots: 3, shares: 1, startedSlots: [] })
     const e2 = await E('owner', 2)
     expect(w.platform.keys.get(OWNER)?.pub).toEqual(secp.getPublicKey(e2, true))
     const doc = w.platform.states.get(`${OWNER}/storage`)!
     expect(await openStateBytes(ctxOf(e2, OLD_ID + 2), doc.fields)).toEqual(w.plain['storage'])
+  })
+})
+
+describe('which key a move goes to', () => {
+  const pubOf = async (r: number | 'legacy'): Promise<Uint8Array> => (await phrase('owner')(r)).pub
+
+  it('a key added back under an older rotation is never resumed to: the move goes past the newest rotation', async () => {
+    const w = await world()
+    w.platform.keys.delete(BOB)
+    await moveSyncKey(moveCtx(w.platform))
+    // Rotation 0 disabled, rotation 1 live (key 6); rotation 0 registered again as key 7, now current.
+    w.platform.olderKeys.set(OWNER, [w.platform.keys.get(OWNER)!])
+    w.platform.keys.set(OWNER, { keyId: OLD_ID + 2, pub: await pubOf(0) })
+    w.platform.maxKeyIds.set(OWNER, OLD_ID + 2)
+    const port = w.platform.port(OWNER)
+    const sealedWith: number[] = []
+    const watched: UserSyncPort = { ...port, writeState: async (f, e) => { sealedWith.push(f.keyId); await port.writeState(f, e) }, writeShare: async (r, f, e) => { sealedWith.push(f.keyId); await port.writeShare(r, f, e) } }
+    const out = await moveSyncKey(moveCtx(w.platform, { port: watched }))
+    expect(out).toMatchObject({ keyId: OLD_ID + 3, created: true })
+    expect(w.platform.keys.get(OWNER)).toEqual({ keyId: OLD_ID + 3, pub: await pubOf(2) })
+    expect(w.platform.olderKeys.get(OWNER)).toEqual([])
+    expect(w.platform.disabledKeys.get(OWNER)?.map((k) => k.keyId).sort()).toEqual([OLD_ID, OLD_ID + 1, OLD_ID + 2])
+    expect(new Set(sealedWith)).toEqual(new Set([OLD_ID + 3]))
+    const e2 = await E('owner', 2)
+    expect(await openStateBytes(ctxOf(e2, OLD_ID + 3), w.platform.states.get(`${OWNER}/storage`)!.fields)).toEqual(w.plain['storage'])
+  })
+
+  it('a device holding an older key resumes: the update landed but nothing else did, and no second key is made', async () => {
+    const platform = fakePlatform()
+    platform.keys.set(OWNER, { keyId: OLD_ID, pub: await pubOf(0) })
+    platform.maxKeyIds.set(OWNER, OLD_ID)
+    // An identity with nothing synced yet: after the update, nothing is left under the old key.
+    await expect(moveSyncKey(moveCtx(platform, { store: async () => { throw new Error('the vault refused') } }))).rejects.toThrow('the vault refused')
+    expect(platform.keys.get(OWNER)?.keyId).toBe(OLD_ID + 1)
+    const again = moveCtx(platform, { held: OLD_ID })
+    const out = await moveSyncKey(again)
+    expect(out).toMatchObject({ keyId: OLD_ID + 1, created: false, written: 0 })
+    expect(again.stored.map((k) => k.keyId)).toEqual([OLD_ID + 1])
+    expect(platform.disabledKeys.get(OWNER)?.map((k) => k.keyId)).toEqual([OLD_ID])
+  })
+
+  it('moves a legacy key (no rotation level) to rotation 1, and adds a legacy current key', async () => {
+    const platform = fakePlatform()
+    const legacy = await E('owner', 'legacy')
+    platform.keys.set(OWNER, { keyId: OLD_ID, pub: await pubOf('legacy') })
+    platform.maxKeyIds.set(OWNER, OLD_ID)
+    const plain = encodePlain(SLOTS['storage'])
+    await platform.port(OWNER).writeState(await sealStateBytes(ctxOf(legacy, OLD_ID), 'storage', plain), null)
+    const stored: { keyId: number; secret: Uint8Array }[] = []
+    expect(await addSyncKey({ port: platform.port(OWNER), networkKey: NET, identityId: OWNER, derive: phrase('owner'), store: async (keyId, secret) => void stored.push({ keyId, secret: secret.slice() }) })).toEqual({ keyId: OLD_ID })
+    expect(stored[0]!.secret).toEqual(legacy)
+    const out = await moveSyncKey(moveCtx(platform))
+    expect(out).toMatchObject({ keyId: OLD_ID + 1, created: true })
+    expect(platform.keys.get(OWNER)?.pub).toEqual(await pubOf(1))
+    expect(await openStateBytes(ctxOf(await E('owner', 1), OLD_ID + 1), platform.states.get(`${OWNER}/storage`)!.fields)).toEqual(plain)
+  })
+
+  it('refuses when the identity already has the key a move would add', async () => {
+    const platform = fakePlatform()
+    platform.keys.set(OWNER, { keyId: 9, pub: await pubOf(4) })
+    platform.disabledKeys.set(OWNER, [{ keyId: 10, pub: await pubOf(5) }])
+    platform.maxKeyIds.set(OWNER, 10)
+    const replace = vi.fn()
+    await expect(moveSyncKey(moveCtx(platform, { replace }))).rejects.toThrow('already has the sync key a move would add')
+    expect(replace).not.toHaveBeenCalled()
+    expect(platform.writes).toBe(0)
   })
 })
 
@@ -320,6 +387,31 @@ describe('a session holding the old key', () => {
     local.setItem('forge:fiat:v1', JSON.stringify({ v: 1, enabled: true, currency: 'EUR' }))
     await expect(syncUserSettings({ port: platform.port(OWNER), networkKey: NET, network: NET, identityId: OWNER, keyId: OLD_ID, E: e0, deviceId: 'aaaa', storage: null, localStore: local })).rejects.toBeInstanceOf(SyncKeyMovedError)
     expect(platform.writes).toBe(0)
+  })
+})
+
+describe('a failed identity read', () => {
+  it("can't tell, so sync and sharing go ahead as before", async () => {
+    const w = await world()
+    const port = w.platform.port(OWNER)
+    const blind: UserSyncPort = { ...port, identitySyncKeys: async () => { throw new Error('Platform is busy') } }
+    const e0 = await E('owner', 0)
+    const local = memoryStorage()
+    local.setItem('forge:fiat:v1', JSON.stringify({ v: 1, enabled: true, currency: 'EUR' }))
+    const writes = w.platform.writes
+    await syncUserSettings({ port: blind, networkKey: NET, network: NET, identityId: OWNER, keyId: OLD_ID, E: e0, deviceId: 'aaaa', storage: null, localStore: local })
+    expect(w.platform.writes).toBeGreaterThan(writes)
+    const before = w.platform.writes
+    await reconcileRepoShare({ port: blind, networkKey: NET, ownerId: OWNER, keyId: OLD_ID, E: e0 }, { repoId: REPO, view: VIEW, maintainers: [ALICE], removed: [BOB] })
+    expect(w.platform.writes).toBeGreaterThan(before)
+  })
+
+  it('a read that shows another current key refuses', async () => {
+    const w = await world()
+    w.platform.keys.set(OWNER, { keyId: OLD_ID + 1, pub: secp.getPublicKey(await E('owner', 1), true) })
+    const writes = w.platform.writes
+    await expect(reconcileRepoShare({ port: w.platform.port(OWNER), networkKey: NET, ownerId: OWNER, keyId: OLD_ID, E: await E('owner', 0) }, { repoId: REPO, view: VIEW, maintainers: [ALICE], removed: [BOB] })).rejects.toBeInstanceOf(SyncKeyMovedError)
+    expect(w.platform.writes).toBe(writes)
   })
 })
 

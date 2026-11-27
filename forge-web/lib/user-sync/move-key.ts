@@ -5,8 +5,10 @@
  * and leave the old one behind:
  *
  * 1. The identity's current forge-user key (its newest live one) must be one the phrase makes.
- * 2. Unless an earlier move was cut short (some `state`, `share` or `grant` still names an older
- *    key), one master-key IdentityUpdate adds the next rotation and disables the current key.
+ * 2. Unless an earlier move was cut short (the current key is the newest rotation the phrase makes,
+ *    and some `state`, `share` or `grant` still names an older key, or this device holds an older
+ *    one), one master-key IdentityUpdate adds the next rotation and disables every live key the
+ *    phrase makes. A legacy key (the wallets' path with no rotation level) counts as below rotation 0.
  * 3. Every `state` slot is sealed again under the new key, its plaintext byte for byte.
  *    A `storage` or `prefs` slot the identity lacks is started empty under the new key.
  * 4. Every `share` moves to a new epoch under the new key, content unchanged; then its grants are
@@ -39,17 +41,23 @@ export class WrongSyncPhraseError extends Error {
   }
 }
 
-/** A key the identity has from the phrase: its rotation and private key (wiped by the move). */
+/** A key the identity has from the phrase: its rotation ({@link LEGACY_ROTATION} for the legacy path) and private key (wiped by the move). */
 interface Held {
   readonly rotation: number
   readonly secret: Uint8Array
 }
 
-/** A forge-user key made from the recovery phrase at `rotation` (the caller derives it; it is wiped after use). */
-export type DeriveSyncKey = (rotation: number) => Promise<{ readonly secret: Uint8Array; readonly pub: Uint8Array }>
+/**
+ * A forge-user key made from the recovery phrase at `rotation`, or at the wallets' legacy path
+ * with no rotation level (keys registered before rotations; the caller derives it, it is wiped after use).
+ */
+export type DeriveSyncKey = (rotation: number | 'legacy') => Promise<{ readonly secret: Uint8Array; readonly pub: Uint8Array }>
 
-/** The master-key IdentityUpdate: add `add` as a forge-user ENCRYPTION key and disable `disable`, in one transition. */
-export type ReplaceSyncKey = (add: { readonly keyId: number; readonly secret: Uint8Array; readonly pub: Uint8Array }, disable: number) => Promise<void>
+/** Where a legacy key sorts among rotations: below 0, so a move from one goes to rotation 1 (0 is what wallets hand out). */
+const LEGACY_ROTATION = -1
+
+/** The master-key IdentityUpdate: add `add` as a forge-user ENCRYPTION key and disable every key in `disable`, in one transition. */
+export type ReplaceSyncKey = (add: { readonly keyId: number; readonly secret: Uint8Array; readonly pub: Uint8Array }, disable: readonly number[]) => Promise<void>
 
 export interface KeyPhraseContext {
   readonly port: UserSyncPort
@@ -62,6 +70,8 @@ export interface KeyPhraseContext {
 
 export interface MoveContext extends KeyPhraseContext {
   readonly replace: ReplaceSyncKey
+  /** The sync key id this device holds, if any: one that is not the current key means a move here stopped part-way. */
+  readonly held?: number | null
   /** Waits between reads of the identity while a node catches up with the update. */
   readonly sleep?: (ms: number) => Promise<void>
 }
@@ -75,6 +85,8 @@ export interface MoveOutcome {
   readonly shares: number
   /** Guarded slots the identity lacked, started empty under the new key. */
   readonly startedSlots: readonly string[]
+  /** Settings, shares and grants this run wrote (0 with `created` false: sync already used the newest key). */
+  readonly written: number
 }
 
 /** Slots a move starts (empty) when the identity has none: storage and display preferences. */
@@ -96,13 +108,13 @@ function currentOf(keys: readonly IdentitySyncKey[]): IdentitySyncKey {
 }
 
 /**
- * The phrase's rotations 0..n-1 (n: the identity's forge-user keys plus two, at least four) matched
- * to the identity's keys; what matches nothing is wiped at once.
+ * The phrase's legacy key and rotations 0..n (n: the identity's forge-user keys plus two, at least
+ * four) matched to the identity's keys; what matches nothing is wiped at once.
  */
 async function matchRotations(derive: DeriveSyncKey, keys: readonly IdentitySyncKey[], held: Map<number, Held>): Promise<void> {
   const n = Math.max(keys.length + 2, 4)
-  for (let rotation = 0; rotation < n; rotation++) {
-    const { secret, pub } = await derive(rotation)
+  for (let rotation = LEGACY_ROTATION; rotation <= n; rotation++) {
+    const { secret, pub } = await derive(rotation === LEGACY_ROTATION ? 'legacy' : rotation)
     const matches = keys.filter((k) => same(k.pub, pub) && !held.has(k.keyId))
     if (matches.length === 0) {
       secret.fill(0)
@@ -175,18 +187,30 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
     for (const keyId of [...states.map((s) => s.fields.keyId), ...shares.map((s) => s.share.fields.keyId)]) {
       if (!held.has(keyId)) throw new Error(`Some of your synced settings are sealed with key ${keyId}, which this recovery phrase doesn't make. Nothing was changed.`)
     }
-    const interrupted =
+    const behind =
       states.some((s) => s.fields.keyId !== current.keyId) || shares.some((s) => s.share.fields.keyId !== current.keyId) || [...grants.values()].flat().some((g) => g.fields.senderKeyId !== current.keyId)
+    // A resume only when the current key is the newest rotation the phrase makes: a key added back
+    // later under an older rotation (one a site may have kept) is never what sync moves to.
+    const highest = Math.max(...[...held.values()].map((h) => h.rotation))
+    const newest = held.get(current.keyId)!.rotation === highest
+    const heldOther = ctx.held !== undefined && ctx.held !== null && ctx.held !== current.keyId
+    const interrupted = newest && (behind || heldOther)
     let target: { readonly keyId: number; readonly secret: Uint8Array } = { keyId: current.keyId, secret: held.get(current.keyId)!.secret }
     if (!interrupted) {
-      const rotation = Math.max(...[...held.values()].map((h) => h.rotation)) + 1
+      const rotation = Math.max(highest, 0) + 1
       const next = await ctx.derive(rotation)
+      if (read.keys.some((k) => same(k.pub, next.pub))) {
+        next.secret.fill(0)
+        throw new Error(`This identity already has the sync key a move would add (rotation ${rotation}). Nothing was changed.`)
+      }
       const keyId = read.maxKeyId + 1
       held.set(keyId, { rotation, secret: next.secret })
-      await ctx.replace({ keyId, secret: next.secret, pub: next.pub }, current.keyId)
+      const disable = read.keys.filter((k) => !k.disabled && held.has(k.keyId)).map((k) => k.keyId)
+      await ctx.replace({ keyId, secret: next.secret, pub: next.pub }, disable)
       await awaitKey(ctx, keyId, next.pub)
       target = { keyId, secret: next.secret }
     }
+    let written = 0
     for (const s of states) {
       if (s.fields.keyId === target.keyId) continue
       const from = { E: held.get(s.fields.keyId)!.secret, keyId: s.fields.keyId, identityId: identity, network }
@@ -195,6 +219,7 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
       await ctx.port.writeState(await sealStateBytes(to, s.fields.slot, plain), s)
       const back = await ctx.port.readState(ctx.identityId, s.fields.slot)
       if (back === null || back.fields.keyId !== target.keyId || !same(await openStateBytes(to, back.fields), plain)) throw new SyncReadBackError(s.fields.slot)
+      written++
     }
     // A slot the identity lacks is started empty under the new key: a client holding the old key
     // finds it sealed under another key and never starts it under the old one (forge-core `GUARDED_SLOTS`).
@@ -207,10 +232,11 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
       const back = await ctx.port.readState(ctx.identityId, slot)
       if (back === null || back.fields.keyId !== target.keyId || canonicalJson(await openState(to, back.fields)) !== canonicalJson(empty)) throw new SyncReadBackError(slot)
       created.push(slot)
+      written++
     }
-    for (const { repoId, share } of shares) await moveShare(ctx, repoId, share, grants.get(repoId) ?? [], target, held)
+    for (const { repoId, share } of shares) written += await moveShare(ctx, repoId, share, grants.get(repoId) ?? [], target, held)
     await ctx.store(target.keyId, target.secret.slice())
-    return { keyId: target.keyId, created: !interrupted, slots: states.length, shares: shares.length, startedSlots: created }
+    return { keyId: target.keyId, created: !interrupted, slots: states.length, shares: shares.length, startedSlots: created, written }
   } finally {
     wipe(held)
   }
@@ -219,6 +245,7 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
 /**
  * One share: at a new epoch past every grant's (unless an earlier run already moved it), under the
  * new key, content unchanged; then its grants from the new key; a grant to a key no longer live last.
+ * Returns how many writes it made.
  */
 async function moveShare(
   ctx: MoveContext,
@@ -227,7 +254,8 @@ async function moveShare(
   grants: readonly Stored<GrantFields>[],
   target: { readonly keyId: number; readonly secret: Uint8Array },
   held: ReadonlyMap<number, Held>,
-): Promise<void> {
+): Promise<number> {
+  let written = 0
   const network = ctx.networkKey
   const repo = decodeIdentifier(repoId)
   let epoch = share.fields.epoch
@@ -248,6 +276,7 @@ async function moveShare(
       if (back === null || back.fields.keyId !== target.keyId || back.fields.epoch !== epoch || !same(await openShareBytes(rsk, { network, repoId: repo }, back.fields), plain)) {
         throw new SyncReadBackError('shared storage')
       }
+      written++
     } finally {
       rsk.fill(0)
     }
@@ -264,9 +293,11 @@ async function moveShare(
       }
       const params: GrantParams = { network, ownerId: decodeIdentifier(ctx.identityId), repoId: repo, memberId: decodeIdentifier(g.fields.memberId), epoch, senderKeyId: target.keyId, recipientKeyId: key.keyId }
       await ctx.port.writeGrant({ ...g.fields, epoch, senderKeyId: target.keyId, wrapped: await wrapGrant(target.secret, key.pub, params, rsk) }, g)
+      written++
     }
   } finally {
     rsk.fill(0)
   }
   for (const g of gone) await ctx.port.deleteGrant(g)
+  return written + gone.length
 }

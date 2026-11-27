@@ -12,7 +12,7 @@ import { authSdk } from '../sdk/facade'
 import { decodeIdentifier } from './base58'
 import { deriveAppEncryptionKey, deriveAt, identityKeyPath, invalidMnemonicMessage, isValidMnemonic, normalizeMnemonic, wasmNetwork } from './hd'
 import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate } from './limited-key'
-import { VaultLockedError, storeSyncKey, unlockedSecret } from './vault'
+import { VaultLockedError, heldSyncKeyId, storeSyncKey, unlockedSecret } from './vault'
 import type { WriteAuth } from '../sdk/write'
 import { addSyncKey, moveSyncKey, type DeriveSyncKey, type MoveOutcome, type ReplaceSyncKey } from '../user-sync/move-key'
 import { forgeUserPort } from '../user-sync/platform'
@@ -59,7 +59,7 @@ async function masterWifOf(identity: Parameters<typeof assertMasterKeyOf>[0], id
 
 /**
  * The IdentityUpdate a move sends: add the new key (ECDSA_SECP256K1, ENCRYPTION, MEDIUM, bound to
- * forge-user alone, not read-only) at its key id and disable the current one, signed by the master
+ * forge-user alone, not read-only) at its key id and disable the keys named, signed by the master
  * key the same phrase makes.
  */
 export function phraseReplaceSyncKey(sdk: EvoSDK, network: Network, identityId: string, contractId: string, mnemonic: string): ReplaceSyncKey {
@@ -83,7 +83,7 @@ export function phraseReplaceSyncKey(sdk: EvoSDK, network: Network, identityId: 
         contractBounds: ContractBounds.SingleContract(contractId),
       })
       try {
-        await sendIdentityUpdate(sdk, identityId, () => authSdk(sdk).identities.update({ identity, addPublicKeys: [key], disablePublicKeys: [disable], signer }))
+        await sendIdentityUpdate(sdk, identityId, () => authSdk(sdk).identities.update({ identity, addPublicKeys: [key], disablePublicKeys: [...disable], signer }))
       } catch (e) {
         if (/revision|duplicate|already exists|key id/i.test(String((e as { message?: unknown })?.message ?? e))) {
           throw new Error('another key was registered on this identity at the same moment; try again')
@@ -135,6 +135,7 @@ export async function moveSyncKeyWithPhrase(p: PhraseSyncInput & { readonly auth
     identityId: p.identityId,
     derive: phraseSyncKeys(mnemonic, p.network, p.identityId, p.contractId),
     replace: (add, disable) => p.charged(() => replace(add, disable)),
+    held: await heldSyncKeyId(p.network, p.identityId),
     store: (keyId, secret) => keepSyncKey(p.network, p.identityId, keyId, secret),
   })
 }

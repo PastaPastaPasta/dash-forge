@@ -354,19 +354,54 @@ impl SyncSeed {
         contract: &[u8; 32],
         rotation: u32,
     ) -> Result<crate::app_connect::SecretBytes> {
+        self.secret_at(
+            &sync_key_path(mainnet, identity, contract, rotation)?,
+            mainnet,
+        )
+    }
+
+    /// The key at the pre-rotation path ([`legacy_sync_key_path`]), which testnet and devnet
+    /// wallets registered before DIP-13 gained the rotation level. Only to recognise such a key.
+    pub fn legacy_sync_secret(
+        &self,
+        mainnet: bool,
+        identity: &[u8; 32],
+        contract: &[u8; 32],
+    ) -> Result<crate::app_connect::SecretBytes> {
+        self.secret_at(&legacy_sync_key_path(mainnet, identity, contract), mainnet)
+    }
+
+    fn secret_at(
+        &self,
+        path: &DerivationPath,
+        mainnet: bool,
+    ) -> Result<crate::app_connect::SecretBytes> {
         let network = if mainnet {
             dash_sdk::dpp::dashcore::Network::Mainnet
         } else {
             dash_sdk::dpp::dashcore::Network::Testnet
         };
-        let derived = sync_key_path(mainnet, identity, contract, rotation)?
+        let mut derived = path
             .derive_priv_ecdsa_for_master_seed(self.0.as_slice(), network)
             .map_err(|e| Error::Config(format!("deriving the sync key: {e}")))?;
-        let mut sk = derived.private_key.clone();
-        let secret = crate::app_connect::SecretBytes::new(*sk.to_bytes());
-        sk.zeroize();
+        let secret = crate::app_connect::SecretBytes::new(*derived.private_key.to_bytes());
+        derived.zeroize();
         Ok(secret)
     }
+}
+
+fn sync_key_base(mainnet: bool, identity: &[u8; 32], contract: &[u8; 32]) -> Vec<ChildNumber> {
+    let hardened = |index| ChildNumber::Hardened { index };
+    vec![
+        hardened(9),
+        hardened(if mainnet { 5 } else { 1 }),
+        hardened(5),
+        hardened(7),
+        hardened(0),
+        ChildNumber::Hardened256 { index: *identity },
+        ChildNumber::Hardened256 { index: *contract },
+        hardened(SYNC_KEY_PURPOSE),
+    ]
 }
 
 /// DIP-13's application encryption path, the wallet's
@@ -383,18 +418,18 @@ pub fn sync_key_path(
             "a sync key rotation must be below 2^31".into(),
         ));
     }
-    let hardened = |index| ChildNumber::Hardened { index };
-    Ok(DerivationPath::from(vec![
-        hardened(9),
-        hardened(if mainnet { 5 } else { 1 }),
-        hardened(5),
-        hardened(7),
-        hardened(0),
-        ChildNumber::Hardened256 { index: *identity },
-        ChildNumber::Hardened256 { index: *contract },
-        hardened(SYNC_KEY_PURPOSE),
-        hardened(rotation),
-    ]))
+    let mut path = sync_key_base(mainnet, identity, contract);
+    path.push(ChildNumber::Hardened { index: rotation });
+    Ok(DerivationPath::from(path))
+}
+
+/// The pre-rotation path `m/9'/coin'/5'/7'/0'/identityId'/contractId'/1'` (no rotation level).
+pub fn legacy_sync_key_path(
+    mainnet: bool,
+    identity: &[u8; 32],
+    contract: &[u8; 32],
+) -> DerivationPath {
+    DerivationPath::from(sync_key_base(mainnet, identity, contract))
 }
 
 /// The signer for an identity update that adds keys: the MASTER key and each new key (which
@@ -890,6 +925,31 @@ mod tests {
             let rotation = u32::try_from(v["rotation"].as_u64().unwrap()).unwrap();
             let secret = seed
                 .sync_secret(true, &id("identityIdHex"), &id("contractIdHex"), rotation)
+                .unwrap();
+            assert_eq!(
+                hex::encode(crate::app_connect::public_key_of(secret.expose()).unwrap()),
+                text(v, "publicKeyHex")
+            );
+        }
+        for v in fixture["legacyVectors"].as_array().unwrap() {
+            let mainnet = text(v, "network") == "mainnet";
+            let secret = seed
+                .legacy_sync_secret(mainnet, &identity, &contract)
+                .unwrap();
+            assert_eq!(hex::encode(secret.expose()), text(v, "privateKeyHex"));
+            assert_eq!(
+                hex::encode(crate::app_connect::public_key_of(secret.expose()).unwrap()),
+                text(v, "publicKeyHex")
+            );
+            assert_eq!(
+                legacy_sync_key_path(mainnet, &identity, &contract).to_string(),
+                text(v, "path")
+            );
+        }
+        for v in fixture["walletLegacyVectors"].as_array().unwrap() {
+            let id = |k: &str| -> [u8; 32] { hex::decode(text(v, k)).unwrap().try_into().unwrap() };
+            let secret = seed
+                .legacy_sync_secret(true, &id("identityIdHex"), &id("contractIdHex"))
                 .unwrap();
             assert_eq!(
                 hex::encode(crate::app_connect::public_key_of(secret.expose()).unwrap()),

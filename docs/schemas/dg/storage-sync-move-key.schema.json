@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/storage-sync-move-key.schema.json",
   "title": "dg storage sync move-key --json",
-  "description": "Synced settings moved to a new sync key.",
+  "description": "Synced settings moved to a new sync key, or already under the newest one.",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -11,8 +11,10 @@
     "status": {
       "type": "string",
       "enum": [
-        "moved"
-      ]
+        "moved",
+        "current"
+      ],
+      "description": "moved: this run moved or finished moving; current: already under the newest key, nothing written."
     },
     "identityId": {
       "type": "string"
@@ -20,12 +22,12 @@
     "keyId": {
       "type": "integer"
     },
-    "disabledKeyId": {
-      "type": [
-        "integer",
-        "null"
-      ],
-      "description": "The key this run disabled; null when an earlier run or another device already moved."
+    "disabledKeyIds": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      },
+      "description": "The keys this run disabled; empty when an earlier run or another device already moved."
     },
     "resealed": {
       "type": "array",
@@ -55,15 +57,18 @@
       "type": "integer"
     },
     "storedAt": {
-      "type": "string"
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Where this computer keeps the key; null when nothing changed."
     }
   },
   "required": [
     "schemaVersion",
     "status",
     "identityId",
-    "keyId",
-    "storedAt"
+    "keyId"
   ],
   "additionalProperties": true
 }

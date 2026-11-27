@@ -47,14 +47,25 @@ pub trait KeyLedger: Send + Sync {
     async fn forge_user_keys(&self, identity: &str) -> Result<Vec<ForgeUserKey>>;
     /// One `IdentityUpdate` signed by the master key: add `secret` as the next key id (one above
     /// the highest), `ECDSA_SECP256K1` / `ENCRYPTION` / `MEDIUM`, bound to forge-user, not
-    /// read-only, and disable key `disable` in the same transition. The new key's id, once a
-    /// read shows it on the identity.
+    /// read-only, and disable the keys `disable` in the same transition. The new key's id, once
+    /// a read shows it on the identity.
     async fn add_and_disable(
         &self,
         identity: &str,
         secret: &SecretBytes,
-        disable: u32,
+        disable: &[u32],
     ) -> Result<u32>;
+}
+
+/// Where on the phrase's DIP-13 branch a forge-user key is: the pre-rotation path (testnet and
+/// devnet wallets before DIP-13 gained the rotation level), else a rotation. Ordered: a legacy
+/// key comes before rotation 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rotation {
+    /// `…/purpose'`, no rotation level.
+    Legacy,
+    /// `…/purpose'/r'`.
+    At(u32),
 }
 
 /// The identity's forge-user keys as the recovery phrase makes them.
@@ -63,6 +74,8 @@ pub struct PhraseKeys {
     identity_id: String,
     current: u32,
     keys: BTreeMap<u32, SyncKey>,
+    rotations: BTreeMap<u32, Rotation>,
+    live: Vec<u32>,
     next: SecretBytes,
 }
 
@@ -71,7 +84,7 @@ impl std::fmt::Debug for PhraseKeys {
         f.debug_struct("PhraseKeys")
             .field("identity_id", &self.identity_id)
             .field("current", &self.current)
-            .field("keys", &self.keys.keys().collect::<Vec<_>>())
+            .field("rotations", &self.rotations)
             .finish_non_exhaustive()
     }
 }
@@ -80,6 +93,14 @@ impl PhraseKeys {
     /// The identity's current (highest-id live) forge-user key.
     pub fn current(&self) -> &SyncKey {
         &self.keys[&self.current]
+    }
+
+    /// Whether the current key is at the highest rotation the phrase made of any of the
+    /// identity's forge-user keys, live or disabled. Only then can an earlier move be finished
+    /// under it; a current key at a lower rotation (one an attacker could hold, registered
+    /// again under a newer id) is always moved away from.
+    pub fn current_is_newest(&self) -> bool {
+        self.rotations.values().max() == self.rotations.get(&self.current)
     }
 }
 
@@ -99,9 +120,11 @@ pub const NOT_SYNCING: &str = "This identity doesn't sync yet.";
 /// The line for [`PhraseCheck::NotThisPhrase`].
 pub const NOT_THIS_PHRASE: &str = "This recovery phrase doesn't make this identity's sync key.";
 
-/// Derive rotations `0..=n` (`n` = the number of forge-user keys + 2, at least 4) and match them
-/// to `identity_id`'s forge-user keys. `network` is Forge's network key (coin type 5 only on
-/// `mainnet`); `contract_id` is forge-user's. Reads the identity once and writes nothing.
+/// Derive the legacy key and rotations `0..=n` (`n` = the number of forge-user keys + 2, at
+/// least 4) and match them to `identity_id`'s forge-user keys. `network` is Forge's network key
+/// (coin type 5 only on `mainnet`); `contract_id` is forge-user's. Reads the identity once and
+/// writes nothing. The next key is one rotation past the highest the phrase made (at least
+/// rotation 1: rotation 0 is what wallets hand out at sign-in).
 pub async fn phrase_keys(
     ledger: &dyn KeyLedger,
     seed: &SyncSeed,
@@ -118,34 +141,55 @@ pub async fn phrase_keys(
     let n = u32::try_from(all.len() + 2).unwrap_or(u32::MAX).max(4);
     let mainnet = network == "mainnet";
     let mut keys = BTreeMap::new();
-    let mut highest = None;
-    for rotation in 0..=n {
-        let secret = seed.sync_secret(mainnet, &identity, &contract, rotation)?;
+    let mut rotations = BTreeMap::new();
+    let candidates = std::iter::once(Rotation::Legacy).chain((0..=n).map(Rotation::At));
+    for rotation in candidates {
+        let secret = match rotation {
+            Rotation::Legacy => seed.legacy_sync_secret(mainnet, &identity, &contract)?,
+            Rotation::At(r) => seed.sync_secret(mainnet, &identity, &contract, r)?,
+        };
         let public = crypto::public_key(&secret)?;
         for k in all.iter().filter(|k| k.public_key == public) {
             keys.insert(
                 k.id,
                 SyncKey::new(network, identity_id, k.id, secret.clone())?,
             );
-            highest = highest.max(Some(rotation));
+            rotations.insert(k.id, rotation);
         }
     }
     if !keys.contains_key(&current) {
         return Ok(PhraseCheck::NotThisPhrase);
     }
-    let next_rotation = highest
-        .and_then(|r: u32| r.checked_add(1))
-        .ok_or(Error::Integrity)?;
-    let next = seed.sync_secret(mainnet, &identity, &contract, next_rotation)?;
+    let highest = rotations
+        .values()
+        .filter_map(|r| match r {
+            Rotation::At(r) => Some(*r),
+            Rotation::Legacy => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let next = seed.sync_secret(
+        mainnet,
+        &identity,
+        &contract,
+        highest.checked_add(1).ok_or(Error::Integrity)?,
+    )?;
     let next_public = crypto::public_key(&next)?;
     if all.iter().any(|k| k.public_key == next_public) {
         return Err(Error::Integrity);
     }
+    let live = all
+        .iter()
+        .filter(|k| !k.disabled && keys.contains_key(&k.id))
+        .map(|k| k.id)
+        .collect();
     Ok(PhraseCheck::Keys(PhraseKeys {
         network: network.to_string(),
         identity_id: identity_id.to_string(),
         current,
         keys,
+        rotations,
+        live,
         next,
     }))
 }
@@ -155,8 +199,8 @@ pub async fn phrase_keys(
 pub struct Moved {
     /// The key sync is under now.
     pub key_id: u32,
-    /// The key this run disabled (`None`: an earlier run, or another device, already moved).
-    pub disabled: Option<u32>,
+    /// The keys this run disabled (none: an earlier run, or another device, already moved).
+    pub disabled: Vec<u32>,
     /// Slots re-sealed under the new key.
     pub states: Vec<String>,
     /// Slots created empty under the new key ([`GUARDED_SLOTS`]).
@@ -167,6 +211,42 @@ pub struct Moved {
     pub grants: usize,
     /// Grants deleted: their recipient key is no longer live.
     pub dropped: usize,
+}
+
+impl Moved {
+    /// Whether the run changed nothing: no update, nothing written (sync was already under the
+    /// newest key).
+    pub fn nothing_done(&self) -> bool {
+        self.disabled.is_empty()
+            && self.states.is_empty()
+            && self.created.is_empty()
+            && self.shares.is_empty()
+            && self.grants == 0
+            && self.dropped == 0
+    }
+}
+
+/// A move that failed: whether it failed before anything was written (`started` false: nothing
+/// changed) or part-way (the same command finishes it).
+#[derive(Debug)]
+pub struct MoveError {
+    /// Whether something was already written (this run's update landed, or an earlier run's
+    /// move is being finished).
+    pub started: bool,
+    /// Why.
+    pub error: Error,
+}
+
+impl std::fmt::Display for MoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for MoveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 struct Plan {
@@ -233,35 +313,63 @@ fn unknown_key(what: &str, key_id: u32) -> Error {
 /// Move `keys`' identity to a new sync key (spec §B), or finish a move that stopped part-way.
 /// `held` is the key id this device holds, if any.
 ///
-/// When every document is already under the current key and the current key is the one this
-/// device holds (or it holds none), the next rotation's key is added and the current one
-/// disabled in one update; otherwise no update is sent and only what is still behind is
-/// re-sealed under the current key. Then: every `state` slot, read with the key its `keyId`
-/// names, is written again under the new key with the same plaintext and read back; missing
-/// [`GUARDED_SLOTS`] are created empty; every share moves to an epoch above it and every grant
-/// of it, then each grant is rewritten (a grant whose recipient key is no longer live is
+/// A run finishes an earlier move only when the current key is at the highest rotation the
+/// phrase makes ([`PhraseKeys::current_is_newest`]) and something is still behind it (or this
+/// device holds another key); then no update is sent and what is behind is re-sealed under the
+/// current key. Otherwise the next rotation's key is added and every live forge-user key the
+/// phrase makes is disabled, in one update. Then: every `state` slot, read with the key its
+/// `keyId` names, is written again under the new key with the same plaintext and read back;
+/// missing [`GUARDED_SLOTS`] are created empty; every share moves to an epoch above it and every
+/// grant of it, then each grant is rewritten (a grant whose recipient key is no longer live is
 /// deleted). Returns the new key and what was written.
 pub async fn move_key(
     store: &dyn UserStore,
     ledger: &dyn KeyLedger,
     keys: &PhraseKeys,
     held: Option<u32>,
-) -> Result<(SyncKey, Moved)> {
-    let plan = Plan::read(store, keys).await?;
+) -> std::result::Result<(SyncKey, Moved), MoveError> {
+    let before = |error| MoveError {
+        started: false,
+        error,
+    };
+    let plan = Plan::read(store, keys).await.map_err(before)?;
     let current = keys.current();
-    let start_over = !plan.behind(current.key_id) && held.is_none_or(|h| h == current.key_id);
+    let resume = keys.current_is_newest()
+        && (plan.behind(current.key_id) || held.is_some_and(|h| h != current.key_id));
     let mut out = Moved::default();
-    let target = if start_over {
-        let id = ledger
-            .add_and_disable(&keys.identity_id, &keys.next, current.key_id)
-            .await?;
-        out.disabled = Some(current.key_id);
-        SyncKey::new(&keys.network, &keys.identity_id, id, keys.next.clone())?
-    } else {
+    let target = if resume {
         current.clone()
+    } else {
+        let id = ledger
+            .add_and_disable(&keys.identity_id, &keys.next, &keys.live)
+            .await
+            .map_err(before)?;
+        out.disabled.clone_from(&keys.live);
+        SyncKey::new(&keys.network, &keys.identity_id, id, keys.next.clone()).map_err(|error| {
+            MoveError {
+                started: true,
+                error,
+            }
+        })?
     };
     out.key_id = target.key_id;
-    let sync = UserSync::new(&target, store);
+    reseal(store, keys, &plan, &target, &mut out)
+        .await
+        .map_err(|error| MoveError {
+            started: true,
+            error,
+        })?;
+    Ok((target, out))
+}
+
+async fn reseal(
+    store: &dyn UserStore,
+    keys: &PhraseKeys,
+    plan: &Plan,
+    target: &SyncKey,
+    out: &mut Moved,
+) -> Result<()> {
+    let sync = UserSync::new(target, store);
     for s in &plan.states {
         if s.key_id == target.key_id {
             continue;
@@ -288,7 +396,7 @@ pub async fn move_key(
         out.grants += rewritten;
         out.dropped += dropped;
     }
-    Ok((target, out))
+    Ok(())
 }
 
 /// The identity's current sync key, for a device that does not hold it (spec §B').
@@ -403,10 +511,13 @@ pub const KEY_MOVED: &str = "your synced settings moved to a new key, which this
 
 /// Refuse a write under `key` when it is not the identity's current forge-user key: a client
 /// holding a key that was moved away from must not write state or shares under it.
+///
+/// A read that fails can't tell, and allows the write, as before sync keys could move: a user
+/// who never moves is never blocked by it.
 pub async fn require_current(store: &dyn UserStore, key: &SyncKey) -> Result<()> {
-    match standing(store, key).await? {
-        KeyStanding::Current => Ok(()),
-        KeyStanding::Moved => Err(Error::InvalidInput(KEY_MOVED.into())),
+    match standing(store, key).await {
+        Ok(KeyStanding::Moved) => Err(Error::InvalidInput(KEY_MOVED.into())),
+        Ok(KeyStanding::Current) | Err(_) => Ok(()),
     }
 }
 
@@ -462,7 +573,7 @@ mod tests {
             &self,
             identity: &str,
             secret: &SecretBytes,
-            disable: u32,
+            disable: &[u32],
         ) -> Result<u32> {
             if self.fail.swap(false, Ordering::SeqCst) {
                 return Err(Error::Platform("no answer".into()));
@@ -476,7 +587,9 @@ mod tests {
                 .unwrap_or(0);
             self.store
                 .add_key(identity, next, crypto::public_key(secret)?.to_vec());
-            self.store.disable_key(identity, disable);
+            for id in disable {
+                self.store.disable_key(identity, *id);
+            }
             self.updates.fetch_add(1, Ordering::SeqCst);
             Ok(next)
         }
@@ -602,6 +715,15 @@ mod tests {
     /// The end state of a finished move to key `new_id`: everything under it, the plaintext as
     /// before byte for byte, the share as before at a newer epoch, the old key shut out.
     async fn assert_moved(w: &World, before: &BTreeMap<String, Vec<u8>>, new_id: u32) {
+        assert_moved_to(w, before, new_id, 1).await;
+    }
+
+    async fn assert_moved_to(
+        w: &World,
+        before: &BTreeMap<String, Vec<u8>>,
+        new_id: u32,
+        rotation: u32,
+    ) {
         let live = w.store.encryption_keys(&w.me).await.unwrap();
         assert_eq!(live.iter().map(|k| k.id).collect::<Vec<_>>(), [new_id]);
         let new_key = SyncKey::new(
@@ -613,7 +735,7 @@ mod tests {
                     false,
                     w.e0.identity(),
                     &crate::platform::decode_identifier(CONTRACT).unwrap(),
-                    1,
+                    rotation,
                 )
                 .unwrap(),
         )
@@ -665,7 +787,7 @@ mod tests {
         assert_eq!(add_key(&keys).key_id, 3);
         let (key, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
         assert_eq!(key.key_id, 4);
-        assert_eq!(moved.disabled, Some(3));
+        assert_eq!(moved.disabled, [3]);
         assert_eq!(moved.states, ["storage", "zeta"]);
         assert_eq!(moved.created, ["prefs"]);
         assert_eq!(moved.shares, std::slice::from_ref(&w.repo));
@@ -689,7 +811,8 @@ mod tests {
         // A device that still holds key 3 runs the move again: it only adopts key 4.
         let writes = w.store.writes();
         let (again, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
-        assert_eq!((again.key_id, moved.disabled), (4, None));
+        assert_eq!(again.key_id, 4);
+        assert!(moved.nothing_done());
         assert_eq!(w.store.writes(), writes);
         assert_eq!(ledger.updates.load(Ordering::SeqCst), 1);
     }
@@ -802,7 +925,8 @@ mod tests {
             // This device still holds key 3; the phrase now makes key 4 the current one.
             let keys = ready(&w, &ledger).await;
             let (key, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
-            assert_eq!((key.key_id, moved.disabled), (4, None), "cut {cut}");
+            assert_eq!(key.key_id, 4, "cut {cut}");
+            assert!(moved.disabled.is_empty(), "cut {cut}");
             assert_eq!(ledger.updates.load(Ordering::SeqCst), 1, "cut {cut}");
             assert_moved(&w, &before, 4).await;
         }
@@ -816,7 +940,7 @@ mod tests {
         assert!(move_key(&w.store, &ledger, &keys, Some(3)).await.is_err());
         assert_eq!(w.store.writes(), writes);
         let (key, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
-        assert_eq!((key.key_id, moved.disabled), (4, Some(3)));
+        assert_eq!((key.key_id, moved.disabled), (4, vec![3]));
         assert_moved(&w, &before, 4).await;
     }
 
@@ -848,5 +972,130 @@ mod tests {
             w.store.share(&w.me, &w.repo).await.unwrap().unwrap().epoch,
             8
         );
+    }
+
+    #[tokio::test]
+    async fn a_lower_rotation_registered_again_is_moved_away_from_never_resealed_under() {
+        let w = world().await;
+        let before = w.plaintexts(&w.e0);
+        let ledger = w.ledger();
+        let keys = ready(&w, &ledger).await;
+        move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
+        // Rotation 0 (the leaked key) is registered again under a newer id, and is now current.
+        w.store.add_key(&w.me, 5, w.e0.public_key().to_vec());
+        let keys = ready(&w, &ledger).await;
+        assert_eq!(keys.current().key_id, 5);
+        assert!(!keys.current_is_newest());
+        let held = Some(5);
+        let (key, moved) = move_key(&w.store, &ledger, &keys, held).await.unwrap();
+        assert_eq!(key.key_id, 6);
+        assert_eq!(moved.disabled, [4, 5]);
+        assert_moved_to(&w, &before, 6, 2).await;
+        let rot0 = SyncKey::new("testnet", &w.me, 5, w.e0.secret().clone()).unwrap();
+        assert!(UserSync::new(&rot0, &w.store)
+            .read_slot(SLOT_STORAGE)
+            .await
+            .is_err());
+        // Even with a document still under rotation 1, the move never stops at rotation 0.
+        let w = world().await;
+        let before = w.plaintexts(&w.e0);
+        let ledger = w.ledger();
+        let keys = ready(&w, &ledger).await;
+        w.store.fail_writes_after(Some(w.store.writes() + 1));
+        assert!(move_key(&w.store, &ledger, &keys, Some(3)).await.is_err());
+        w.store.fail_writes_after(None);
+        w.store.add_key(&w.me, 5, w.e0.public_key().to_vec());
+        let keys = ready(&w, &ledger).await;
+        let (key, _) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
+        assert_eq!(key.key_id, 6);
+        assert_moved_to(&w, &before, 6, 2).await;
+    }
+
+    #[tokio::test]
+    async fn a_legacy_key_is_recognised_and_moves_to_rotation_1() {
+        let w = world().await;
+        let before = w.plaintexts(&w.e0);
+        let legacy = seed(ABANDON)
+            .legacy_sync_secret(
+                false,
+                w.e0.identity(),
+                &crate::platform::decode_identifier(CONTRACT).unwrap(),
+            )
+            .unwrap();
+        let old = SyncKey::new("testnet", &w.me, 3, legacy).unwrap();
+        // An identity whose only sync key is the pre-rotation one, its slot sealed under it.
+        let store = MemoryStore::new();
+        store.add_key(&w.me, 3, old.public_key().to_vec());
+        store.as_signer(&w.me);
+        UserSync::new(&old, &store)
+            .write_plain(SLOT_STORAGE, &before[SLOT_STORAGE], None)
+            .await
+            .unwrap();
+        let legacy_ledger = Ledger {
+            store: &store,
+            fail: AtomicBool::new(false),
+            updates: AtomicU32::new(0),
+        };
+        let PhraseCheck::Keys(keys) =
+            phrase_keys(&legacy_ledger, &seed(ABANDON), "testnet", &w.me, CONTRACT)
+                .await
+                .unwrap()
+        else {
+            panic!("the legacy key is not recognised");
+        };
+        assert_eq!(add_key(&keys).secret().expose(), old.secret().expose());
+        let (key, moved) = move_key(&store, &legacy_ledger, &keys, None).await.unwrap();
+        assert_eq!((key.key_id, moved.disabled), (4, vec![3]));
+        let rot1 = seed(ABANDON)
+            .sync_secret(
+                false,
+                w.e0.identity(),
+                &crate::platform::decode_identifier(CONTRACT).unwrap(),
+                1,
+            )
+            .unwrap();
+        assert_eq!(key.secret().expose(), rot1.expose());
+        let read = UserSync::new(&key, &store)
+            .read_slot(SLOT_STORAGE)
+            .await
+            .unwrap();
+        assert!(read.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_key_read_that_fails_never_blocks_a_write() {
+        let w = world().await;
+        w.store.fail_key_reads(true);
+        let mut change = SlotDoc::new(SLOT_STORAGE);
+        change.set(
+            "profile:more",
+            super::super::now_ms(),
+            json!({"settings": {}}),
+        );
+        UserSync::new(&w.e0, &w.store)
+            .merge_into(SLOT_STORAGE, &change)
+            .await
+            .unwrap();
+        assert!(require_current(&w.store, &w.e0).await.is_ok());
+        w.store.fail_key_reads(false);
+        assert!(require_current(&w.store, &w.e0).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_error_before_any_write_says_nothing_started() {
+        let w = world().await;
+        let ledger = w.ledger();
+        ledger.fail.store(true, Ordering::SeqCst);
+        let keys = ready(&w, &ledger).await;
+        let e = move_key(&w.store, &ledger, &keys, Some(3))
+            .await
+            .unwrap_err();
+        assert!(!e.started);
+        let keys = ready(&w, &ledger).await;
+        w.store.fail_writes_after(Some(w.store.writes()));
+        let e = move_key(&w.store, &ledger, &keys, Some(3))
+            .await
+            .unwrap_err();
+        assert!(e.started);
     }
 }

@@ -22,7 +22,7 @@ vi.mock('@/lib/constants', async (orig) => {
   return { ...real, ACTIVE_NETWORK: { ...real.ACTIVE_NETWORK, key: 'testnet', v2: { ...real.ACTIVE_NETWORK.v2, user: 'User111111111111111111111111111111111111111' } } }
 })
 
-import { ADD_ACTION, ADD_WHY, ADDED, MOVE_ACTION, MOVE_WHY, MOVED_DONE, MOVED_LINE, OTHER_DEVICES, ROTATE_NOW, WALLET_NOTE } from './sync-key-sheet'
+import { ADD_ACTION, ADD_SYNC_KEY, ADD_WHY, ADDED, ALREADY_NEWEST, MOVE_ACTION, MOVE_WHY, MOVED_DONE, MOVED_LINE, OTHER_DEVICES, ROTATE_NOW, WALLET_NOTE } from './sync-key-sheet'
 import { ADD_KEY_LINE, SyncNote } from './sync-note'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -33,7 +33,7 @@ beforeEach(() => {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
-  calls.move.mockReset().mockResolvedValue({ keyId: 6, created: true, slots: 2, shares: 0 })
+  calls.move.mockReset().mockResolvedValue({ keyId: 6, created: true, slots: 2, shares: 0, startedSlots: [], written: 2 })
   calls.add.mockReset().mockResolvedValue(6)
   calls.charged.mockReset()
 })
@@ -74,11 +74,18 @@ describe('the sync line', () => {
     expect(byTestId('sync-note')?.className).not.toMatch(/danger|caution/)
   })
 
-  it('a browser without the identity’s sync key offers the same action; one without the offer shows none', () => {
+  it('a browser without the identity’s sync key offers to add it, without saying anything moved; one without the offer shows none', () => {
     show({ kind: 'local', syncedAt: null, addKey: true })
     expect(byTestId('sync-note')?.textContent).toContain('On this device only')
     expect(byTestId('sync-note')?.textContent).toContain(ADD_KEY_LINE)
-    expect(buttons()).toEqual([ADD_ACTION])
+    expect(ADD_KEY_LINE).toBe("Your identity syncs its settings with a key this browser doesn't have yet.")
+    expect(buttons()).toEqual([ADD_SYNC_KEY])
+    expect(ADD_SYNC_KEY).toBe('Add the sync key')
+    expect(byTestId('sync-note')?.textContent).not.toMatch(/new key|moved/)
+    click(byTestId('sync-add-key'))
+    expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe(ADD_SYNC_KEY)
+    act(() => root.unmount())
+    root = createRoot(host)
     show({ kind: 'local', syncedAt: null })
     expect(buttons()).toEqual([])
     expect(byTestId('sync-note')?.textContent).not.toContain(ADD_KEY_LINE)
@@ -104,6 +111,7 @@ describe('the sheet', () => {
     show({ kind: 'moved', syncedAt: 1 })
     click(byTestId('sync-add-key'))
     const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.querySelector('h2')?.textContent).toBe(ADD_ACTION)
     expect(dialog.textContent).toContain(ADD_WHY)
     expect(byTestId('phrase-warning')).not.toBeNull()
     expect([...dialog.querySelectorAll('button')].map((b) => b.textContent).filter((t) => t !== '')).toEqual(['Add the key'])
@@ -128,11 +136,20 @@ describe('the sheet', () => {
     expect(WALLET_NOTE).toBe('Wallet sign-ins no longer carry the sync key.')
   })
 
+  it('move that changed nothing: says so, not the rotate-credentials screen', async () => {
+    calls.move.mockResolvedValue({ keyId: 6, created: false, slots: 2, shares: 0, startedSlots: [], written: 0 })
+    show({ kind: 'synced', syncedAt: 1 })
+    click(byTestId('sync-move-key'))
+    await submit('words')
+    expect(byTestId('sync-key-done')?.textContent).toBe(ALREADY_NEWEST)
+    expect(ALREADY_NEWEST).toBe('Your synced settings already use your newest key.')
+  })
+
   it('move: the identity update runs through the spend ledger', async () => {
     calls.move.mockImplementation(async (p: { charged: (u: () => Promise<void>) => Promise<void> }) => {
       const update = vi.fn(async () => {})
       await p.charged(update)
-      return { keyId: 6, created: true, slots: 0, shares: 0 }
+      return { keyId: 6, created: true, slots: 0, shares: 0, startedSlots: [], written: 1 }
     })
     calls.charged.mockImplementation(async (_id: string, kind: string, run: () => Promise<boolean>) => run().then(() => kind === 'key:encryption'))
     show({ kind: 'synced', syncedAt: 1 })

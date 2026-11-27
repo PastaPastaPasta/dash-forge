@@ -861,8 +861,8 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             "on"
         }
     };
-    // Off although the identity syncs: its current sync key is one the wallet no longer hands
-    // out (sync moved to a new key), so this computer adds it from the recovery phrase.
+    // Off although the identity syncs: its current sync key is one the wallet did not hand out,
+    // so this computer adds it from the recovery phrase.
     let syncs_elsewhere = sync_label == "off"
         && !args.no_sync
         && forge.user.as_ref().is_some_and(|contract| {
@@ -916,7 +916,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             }
             match sync_label {
                 "on" => println!("  storage settings sync with your identity across devices"),
-                "off" if syncs_elsewhere => println!("  {}", crate::sync::ADD_KEY_NOTE),
+                "off" if syncs_elsewhere => println!("  {}", crate::sync::NOT_HELD_NOTE),
                 "off" => println!("  {}", crate::sync::OFF_HINT),
                 _ => {}
             }

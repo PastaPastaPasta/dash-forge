@@ -209,6 +209,40 @@ fn identity_key_path(network: &Network, key_index: u32) -> String {
     format!("m/9'/{}'/5'/0'/0'/0'/{key_index}'", coin_type(network))
 }
 
+/// The wallet identity indexes a recovery phrase's identity is looked for at, as the web app does.
+pub const MASTER_IDENTITY_INDEXES: std::ops::RangeInclusive<u32> = 0..=4;
+
+/// The MASTER key (key 0) `mnemonic` makes at identity index 0 to 4 that is `identity`'s enabled
+/// MASTER authentication key on Platform, as a WIF; `None` when there is none.
+pub fn master_wif_of(
+    mnemonic: &Secret,
+    network: &Network,
+    identity: &LoadedIdentity,
+) -> Result<Option<Secret>> {
+    let masters: Vec<Vec<u8>> = identity
+        .public_keys()
+        .into_iter()
+        .filter(|k| {
+            !k.disabled
+                && k.purpose == "AUTHENTICATION"
+                && k.security_level == "MASTER"
+                && k.key_type == "ECDSA_SECP256K1"
+        })
+        .map(|k| k.public_key)
+        .collect();
+    for index in MASTER_IDENTITY_INDEXES {
+        let path = format!("m/9'/{}'/5'/0'/0'/{index}'/0'", coin_type(network));
+        let d = derive(mnemonic, &path, network)?;
+        if masters
+            .iter()
+            .any(|m| m.as_slice() == d.public.to_bytes().as_slice())
+        {
+            return Ok(Some(wif(&d.secret, network)));
+        }
+    }
+    Ok(None)
+}
+
 fn asset_lock_path(network: &Network) -> String {
     format!("m/44'/{}'/0'/0/0", coin_type(network))
 }

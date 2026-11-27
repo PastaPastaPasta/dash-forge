@@ -79,15 +79,13 @@ export function fakePlatform(): FakePlatform {
   return p
 }
 
-/** The identity update a move sends, on the fake: `add` becomes the newest live key, `disable` is disabled. */
-export function fakeReplaceKey(p: FakePlatform, identityId: string): (add: { readonly keyId: number; readonly pub: Uint8Array }, disable: number) => Promise<void> {
+/** The identity update a move sends, on the fake: `add` becomes the newest live key, every key in `disable` is disabled. */
+export function fakeReplaceKey(p: FakePlatform, identityId: string): (add: { readonly keyId: number; readonly pub: Uint8Array }, disable: readonly number[]) => Promise<void> {
   return async (add, disable) => {
     const live = [...(p.olderKeys.get(identityId) ?? []), ...(p.keys.has(identityId) ? [p.keys.get(identityId)!] : [])]
-    const off = live.find((k) => k.keyId === disable)
-    if (off === undefined) throw new Error(`key ${disable} is not live`)
-    p.disabledKeys.set(identityId, [...(p.disabledKeys.get(identityId) ?? []), off])
-    const rest = live.filter((k) => k.keyId !== disable)
-    p.olderKeys.set(identityId, rest)
+    for (const id of disable) if (!live.some((k) => k.keyId === id)) throw new Error(`key ${id} is not live`)
+    p.disabledKeys.set(identityId, [...(p.disabledKeys.get(identityId) ?? []), ...live.filter((k) => disable.includes(k.keyId))])
+    p.olderKeys.set(identityId, live.filter((k) => !disable.includes(k.keyId)))
     p.keys.set(identityId, { keyId: add.keyId, pub: add.pub })
     p.maxKeyIds.set(identityId, Math.max(p.maxKeyIds.get(identityId) ?? -1, add.keyId))
   }

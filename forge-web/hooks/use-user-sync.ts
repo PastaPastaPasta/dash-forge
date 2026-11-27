@@ -69,7 +69,7 @@ export function UserSyncDriver(): null {
       const at = syncedAt(ACTIVE_NETWORK.key, identity)
       if (keyId === null || sdk === null || signer === null) {
         setSyncSubject(identity, { kind: 'local', syncedAt: at })
-        // The identity syncs with a key this browser lacks (a wallet that no longer sends it, after a move): the phrase adds it.
+        // The identity syncs with a key this browser lacks (another sign-in, or a wallet that did not send it): the phrase adds it.
         if (keyId === null && sdk !== null && unlockScope === 'full') {
           const current = await forgeUserPort(sdk, user, null).syncKey(identity).catch(() => null)
           if (!stale && current !== null) setSyncSubject(identity, { kind: 'local', syncedAt: at, addKey: true })

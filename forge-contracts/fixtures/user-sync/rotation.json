@@ -49,6 +49,20 @@
    "publicKeyHex": "03f35d5651d9ba9c5ff9ee17bad5d912bb69638afd4693b3a2a2a43dc317ca887e"
   }
  ],
+ "legacyVectors": [
+  {
+   "network": "testnet",
+   "path": "m/9'/1'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'",
+   "privateKeyHex": "da93144c055b5c80c5e6712ef6fbf4ddaaab44a0944e578ab592c8a05e5b70e9",
+   "publicKeyHex": "02bfed2730cf7c4e3fa752aa8cac821169b9eaa7b17bf388c7d2e32360a2f0a18c"
+  },
+  {
+   "network": "mainnet",
+   "path": "m/9'/5'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'",
+   "privateKeyHex": "3a9e84d5ccdb42320c37cbc59bd30e0e3bfdc9a564a44cb5b0cd77aa97d915df",
+   "publicKeyHex": "03cc2ef3a4222c869141d49f63ac42d4d8ba6c2e85e2dc4581a3ee1f140b682a30"
+  }
+ ],
  "walletVectors": [
   {
    "network": "mainnet",
@@ -73,6 +87,22 @@
    "purpose": 1,
    "rotation": 0,
    "publicKeyHex": "02dfed57ddaaea8c0758e8da44513520038eb8d6b0b92109953c14d6ab1087259b"
+  }
+ ],
+ "walletLegacyVectors": [
+  {
+   "network": "mainnet",
+   "identityIdHex": "3535353535353535353535353535353535353535353535353535353535353535",
+   "contractIdHex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+   "purpose": 1,
+   "publicKeyHex": "03e989de1b62f137231cc06659c810c17100becd1f5e23d5710faa7602769fe434"
+  },
+  {
+   "network": "mainnet",
+   "identityIdHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "contractIdHex": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0",
+   "purpose": 1,
+   "publicKeyHex": "03c4e462229f176595ec17e28e9096d3cfbc42496fb8ed4d48f8f58355d6105aa9"
   }
  ]
 }
