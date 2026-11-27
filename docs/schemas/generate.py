@@ -240,7 +240,10 @@ cmd('auth export', 'The identity file written.', {
     'scope': E('group', 'core'), 'group': S, 'boundContract': S, **GROUP,
 }, ['status', 'path', 'identityId'])
 cmd('auth logout', 'Signed out on this computer.', {
-    'status': E('logged_out'), 'identityId': S, 'removed': ANY, 'disabledKeyId': nl(I),
+    'status': E('logged_out'), 'identityId': S, 'removed': ANY,
+    'keptAt': D('Copies kept before removing a key that holds the master key, or that dg could not open to check, '
+                'as key sources `--identity` takes.', SA),
+    'disabledKeyId': nl(I),
 }, ['status'])
 
 # -- repo -------------------------------------------------------------------------------------

@@ -999,7 +999,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             }
             if let Some(at) = &master_kept {
                 let logout = if store::is_main_slot_file(&network, &grant.identity_id, at) {
-                    " (`dg auth logout` deletes that file: keep your identity file elsewhere too)"
+                    " (`dg auth logout` removes that file after keeping a `.bak-` copy beside it: keep your identity file elsewhere too)"
                 } else {
                     ""
                 };

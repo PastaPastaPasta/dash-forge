@@ -1972,12 +1972,28 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
     let mut config = Config::load()?;
     // Without --disable the key is not needed: a missing or locked keychain entry, or a sealed
     // file whose passphrase is lost, must not stop a sign-out.
-    let identity_id = match (disable, ctx.load_bridge()) {
-        (_, Ok(b)) => b.identity_id,
-        (false, Err(_)) => config.default_identity_id.clone().ok_or_else(|| {
+    // The key file as it was when its key was opened: logout trusts what it opened to only
+    // while the file still holds these bytes.
+    let file_bytes = || {
+        ctx.identity_path
+            .as_deref()
+            .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file()))
+            .and_then(|p| std::fs::read(p).ok())
+            .map(zeroize::Zeroizing::new)
+    };
+    let before = file_bytes();
+    let loaded = ctx.load_bridge();
+    let opened_bytes = before.filter(|b| file_bytes().as_ref() == Some(b));
+    let opened = match (disable, loaded) {
+        (_, Ok(b)) => Some(b),
+        (false, Err(_)) => None,
+        (true, Err(e)) => return Err(e),
+    };
+    let identity_id = match &opened {
+        Some(b) => b.identity_id.clone(),
+        None => config.default_identity_id.clone().ok_or_else(|| {
             crate::errors::usage("no identity is signed in (nothing recorded to sign out of)")
         })?,
-        (true, Err(e)) => return Err(e),
     };
     let mut disabled = None;
     if disable {
@@ -1997,20 +2013,28 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
         .identity_path
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned());
-    let removed = store::remove(&network, &identity_id, source.as_deref());
+    let opened_file = opened
+        .as_ref()
+        .zip(opened_bytes.as_deref())
+        .map(|(key, bytes)| store::OpenedFile { key, bytes });
+    let removed = store::remove(&network, &identity_id, source.as_deref(), opened_file);
     // The default goes either way: a half-removed key must not stay the one every command uses.
     if config.default_identity_id.as_deref() == Some(identity_id.as_str()) {
         config.default_identity = None;
         config.default_identity_id = None;
         config.save()?;
     }
-    let removed = removed?;
+    let store::Removed { removed, kept } = removed?;
+    let kept_at: Vec<&str> = kept.iter().map(|k| k.at.as_str()).collect();
     ctx.emit(
-        json!({ "status": "logged_out", "identityId": identity_id, "removed": removed, "disabledKeyId": disabled }),
+        json!({ "status": "logged_out", "identityId": identity_id, "removed": removed, "keptAt": kept_at, "disabledKeyId": disabled }),
         || {
             println!("✓ signed out of {identity_id}");
             for r in &removed {
                 println!("  removed {r}");
+            }
+            for k in &kept {
+                println!("  {}", kept_line(k));
             }
             match disabled {
                 Some(id) => println!("  key #{id} disabled on chain"),
@@ -2019,6 +2043,21 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
         },
     );
     Ok(())
+}
+
+/// Where `dg auth logout` kept a copy of a key it removed, and why.
+fn kept_line(k: &store::KeptCopy) -> String {
+    if k.master {
+        format!(
+            "kept a copy at {}: it holds this identity's master key (`--identity {}` uses it; delete it once you keep the master key elsewhere)",
+            k.at, k.at
+        )
+    } else {
+        format!(
+            "kept a copy at {}: dg could not open it to check that it holds no master key (delete it once you no longer need it)",
+            k.at
+        )
+    }
 }
 
 #[cfg(test)]
