@@ -22,7 +22,7 @@ import { useCopy } from '@/hooks/use-copy'
 import { saveBytes } from '@/lib/view/release-download'
 import { GATEWAY, gatewayCloneUrl, verifyGateway, type GatewayCheck, type GatewayConfig, type ProvedRef } from '@/lib/gateway'
 import { formatBytes, isPublicRef, plural, selectedTip, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
-import { repoCommands } from '@/lib/view/repo-commands'
+import { dgNetworkFlags, repoCommands } from '@/lib/view/repo-commands'
 import { resolveTip } from '@/lib/view/tip'
 import { repoKey } from '@/lib/repo'
 import {
@@ -253,7 +253,7 @@ function GatewayVerdict({ state, url }: { state: VerifyState; url: string }): JS
         </ul>
       ) : null}
       <p className="text-anvil-500 dark:text-anvil-400">
-        Full check: <span className="font-mono">dg verify-mirror {url}</span>
+        Full check: <span className="font-mono">dg verify-mirror {url} {dgNetworkFlags(ACTIVE_NETWORK)}</span>
       </p>
     </div>
   )

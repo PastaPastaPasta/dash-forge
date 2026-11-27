@@ -67,17 +67,17 @@ caddy_step() {
       fi
     done
   fi
-  sudo cp -n "$CADDYFILE" "$CADDYFILE.bak-pre-forge-gateway"
-  sudo install -m 0644 "$tmp" "$CADDY_INCLUDE.new"
+  if ! sudo test -f "$CADDYFILE.bak-pre-forge-gateway"; then sudo cp "$CADDYFILE" "$CADDYFILE.bak-pre-forge-gateway"; fi
+  sudo rm -f "$CADDY_INCLUDE.prev"
+  if sudo test -f "$CADDY_INCLUDE"; then sudo cp "$CADDY_INCLUDE" "$CADDY_INCLUDE.prev"; fi
+  # The include goes in place before the Caddyfile imports it.
+  sudo install -m 0644 "$tmp" "$CADDY_INCLUDE"
   rm -f "$tmp"
   if ! sudo grep -qxF "import $CADDY_INCLUDE" "$CADDYFILE"; then
     sudo cp "$CADDYFILE" "$CADDYFILE.prev"
     printf '\nimport %s\n' "$CADDY_INCLUDE" | sudo tee -a "$CADDYFILE" >/dev/null
     added_import=1
   fi
-  sudo rm -f "$CADDY_INCLUDE.prev"
-  if sudo test -f "$CADDY_INCLUDE"; then sudo cp "$CADDY_INCLUDE" "$CADDY_INCLUDE.prev"; fi
-  sudo mv "$CADDY_INCLUDE.new" "$CADDY_INCLUDE"
   restore() {
     if sudo test -f "$CADDY_INCLUDE.prev"; then sudo mv "$CADDY_INCLUDE.prev" "$CADDY_INCLUDE"; else sudo rm -f "$CADDY_INCLUDE"; fi
     if [[ $added_import == 1 ]]; then sudo mv "$CADDYFILE.prev" "$CADDYFILE"; fi
@@ -124,6 +124,10 @@ verify() {
   [[ -n $repo ]] || { echo "set FORGE_SAMPLE_REPO=<owner>/<name> (a public $net repository) for the clone checks"; return $rc; }
   clone_check "loopback http://127.0.0.1:$port/$repo.git" "http://127.0.0.1:$port/$repo.git" || rc=1
   if grep -qs "^$host {" "$CADDY_INCLUDE"; then
+    # http.curloptResolve (pinning the address) needs git 2.37; older git ignores it silently.
+    if ! printf '2.37\n%s\n' "$(git --version | awk '{print $3}')" | sort -V -C; then
+      echo "FAIL origin checks need git 2.37 or later (have $(git --version))"; return 1
+    fi
     v4=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -Ev '^(10|127)\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^192\.168\.' | head -1 || true)
     v6=$(ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -Evi '^f[cd]' | head -1 || true)
     # Caddy gets the certificate in the background after a reload: give it a minute.

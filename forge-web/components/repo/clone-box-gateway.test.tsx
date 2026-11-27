@@ -29,7 +29,7 @@ vi.mock('@/lib/gateway', async (orig) => {
 
 import { CloneBox } from './clone-box'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { repoCommands } from '@/lib/view/repo-commands'
+import { dgNetworkFlags, repoCommands } from '@/lib/view/repo-commands'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -147,7 +147,7 @@ describe('CloneBox with a gateway', () => {
     const verdict = host.querySelector('[data-testid="gateway-verdict"]')?.textContent ?? ''
     expect(verdict).toContain('Matches Dash Platform: 1 ref checked.')
     expect(verdict).toContain('block 9')
-    expect(verdict).toContain('dg verify-mirror https://gw.invalid/alice/proj.git')
+    expect(verdict).toContain(`dg verify-mirror https://gw.invalid/alice/proj.git ${dgNetworkFlags(ACTIVE_NETWORK)}`)
   })
 
   it('verify flags a gateway serving a tip Platform never set', async () => {
