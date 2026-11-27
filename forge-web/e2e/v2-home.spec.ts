@@ -263,14 +263,20 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expectNoSeriousA11y(page, 'b-releases')
   })
 
-  test('b-8. 390px phone: rail under the content, Verification first, clone commands scroll in place', async ({ page }) => {
+  test('b-8. 390px phone: Clone above the README, the rail under the content, clone commands scroll in place', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await openHome(page)
     const card = page.getByTestId('verification-card')
     const list = page.getByRole('link', { name: 'README.md', exact: true }).first()
     const [cardBox, listBox] = [await card.boundingBox(), await list.boundingBox()]
     expect(cardBox && listBox && cardBox.y > listBox.y).toBe(true)
+    // One Clone card, between the file list and the README (the rail leaves it out on a phone).
     const box = page.getByTestId('clone-box')
+    await expect(box).toHaveCount(1)
+    const readme = page.getByRole('region', { name: 'README' })
+    await expect(readme).toBeVisible({ timeout: 45_000 })
+    const [cloneBox, readmeBox] = [await box.boundingBox(), await readme.boundingBox()]
+    expect(cloneBox && listBox && readmeBox && cloneBox.y > listBox.y && cloneBox.y < readmeBox.y).toBe(true)
     // A long command scrolls inside its box: it never wraps mid-id or widens the page.
     const command = box.getByText(`git clone ${GIT_NETWORK} dash://${OWNER}/${NAME}`, { exact: true })
     await expect(command).toBeVisible()

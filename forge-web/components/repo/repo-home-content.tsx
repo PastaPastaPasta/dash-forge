@@ -62,6 +62,7 @@ import { ownerLabel } from '@/lib/page-title'
 import { BeingMadePublicState } from '@/components/repo/conversion-status'
 import { FiatNote } from '@/components/ui/fiat-note'
 import { DOCS } from '@/lib/docs-links'
+import { PhoneCloneBox } from '@/components/repo/phone-clone'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
 const HOME_COMMIT_COUNT_CAP = 100
@@ -227,6 +228,7 @@ function RootBody({
         commitColumn={(name) => <CommitCell commit={lastCommits.found.get(name)} column={lastCommits} addr={addr} />}
       />
       <SearchOlderHistory column={lastCommits} />
+      <PhoneCloneBox home={home} addr={addr} selected={selected} />
 
       {readme.data ? (
         <section aria-label="README" className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
