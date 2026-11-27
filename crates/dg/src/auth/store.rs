@@ -334,7 +334,9 @@ fn unguarded_overwrite(
             path.display(),
             if plain.is_some() {
                 "this identity's master key"
-            } else if raw.as_deref().is_some_and(sealed::is_sealed) {
+            } else if raw.as_deref().is_some_and(|raw| {
+                sealed::is_sealed(raw) && pass.is_none_or(|p| sealed::open(raw, p.expose()).is_err())
+            }) {
                 "a key sealed with another passphrase than the one typed, so dg cannot tell whether it is the master key"
             } else {
                 "something dg could not read as a key"
@@ -804,6 +806,19 @@ mod tests {
                 .unwrap()
                 .contains("another passphrase")),
             "another passphrase"
+        );
+        // ...unless wallet login already opened it as a limited key (with its own passphrase)
+        let mut storer = Storer::new(false);
+        storer.guarded_main = Some(Vec::new());
+        storer.may_replace([file.to_string_lossy().into_owned()]);
+        assert!(
+            unguarded_overwrite(
+                storer.guarded_main.as_deref(),
+                &file,
+                Some(&Secret::new("other-passphrase-2"))
+            )
+            .is_none(),
+            "a key login opened as limited, sealed with another passphrase than this run's"
         );
         std::fs::write(&file, master).unwrap();
         assert!(
