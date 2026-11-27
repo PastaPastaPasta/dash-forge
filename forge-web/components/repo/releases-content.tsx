@@ -33,7 +33,7 @@ import {
 import { urlHost } from '@/lib/view/format'
 import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isDraft, isPrereleaseView, isUnpublish, latestRelease, notesShown, type OmittedAssets, type ReleaseList } from '@/lib/repo/releases'
 import { LongBodyLoading, LongBodyNote, useLongText } from '@/components/repo/long-body'
-import { useReleases } from '@/hooks/use-repo-chrome'
+import { useReleases, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
@@ -87,6 +87,8 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
   const shownAbove = new Set(unpublished.map((r) => r.id))
   const previous = data ? data.previous.filter((r) => !shownAbove.has(r.id)) : []
   const altered = useAlteredReleaseTags(home.repo, data)
+  // How to publish is for maintainers; a visitor is pointed at the tags instead.
+  const maintainer = useViewerRole(home.repo).role === 'maintainer'
 
   return (
     <div className="max-w-4xl space-y-4">
@@ -113,7 +115,12 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
           <EmptyState
             icon={Tag}
             title={unpublished.length > 0 ? 'No published releases' : 'No releases yet'}
-            body={`Publish one with New release, or with dg release create ${home.repo.ownerId}/${home.repo.name} --tag v1 --asset ./dist/app.tar.gz ${dgNetworkFlags(ACTIVE_NETWORK)}.`}
+            body={maintainer ? `Publish one with New release, or with dg release create ${home.repo.ownerId}/${home.repo.name} --tag v1 --asset ./dist/app.tar.gz ${dgNetworkFlags(ACTIVE_NETWORK)}.` : undefined}
+            action={maintainer ? undefined : (
+              <Link href={repoHref('/repo/tags', addr)} className="hit-area text-dense text-forge-700 underline dark:text-forge-300" data-testid="releases-see-tags">
+                See tags
+              </Link>
+            )}
           />
           <SealedListNotes list={data} />
         </>

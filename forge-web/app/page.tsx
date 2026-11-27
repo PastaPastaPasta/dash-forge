@@ -124,7 +124,7 @@ export default function LandingPage(): JSX.Element {
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-xl">Recent repos</h2>
           <div className="flex items-center gap-3">
-            {feed.loading ? <Spinner label="Reading forge-core" /> : null}
+            {feed.loading ? <Spinner label="Loading recent repos" /> : null}
             <Link href="/explore/" className="hit-area text-dense text-forge-700 underline dark:text-forge-300">
               Explore more
             </Link>

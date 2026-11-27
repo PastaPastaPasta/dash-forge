@@ -105,7 +105,7 @@ fn not_registered(typed: &str, label: &str, network: &str) -> Error {
     };
     UserError::new(codes::NOT_FOUND, message)
         .fix(format!(
-            "check the spelling, and that {network} is the network you meant (`--network`)"
+            "check the spelling, and that {network} is the network you meant (dg: `--network`; git: `git clone -c dash.network=<testnet|mainnet> dash://…`)"
         ))
         .fix("use the identity's base58 id")
         .into()
@@ -297,6 +297,10 @@ mod tests {
             "no DPNS name qacli2dx7.dash is registered on devnet-moutai"
         );
         assert!(u.fix[0].contains("devnet-moutai is the network you meant"));
+        assert!(
+            u.fix[0].contains("git clone -c dash.network="),
+            "git has no --network"
+        );
         assert!(u.fix.iter().all(|f| !f.contains("owner")), "{:?}", u.fix);
     }
 
