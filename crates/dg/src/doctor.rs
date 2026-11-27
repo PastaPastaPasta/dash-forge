@@ -1036,7 +1036,7 @@ fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
 async fn check_storage(ctx: &Ctx) -> Vec<Check> {
     let sync = match crate::sync::state(ctx) {
         crate::sync::SyncState::Unavailable => None,
-        crate::sync::SyncState::Off => Some(Check::ok("settings sync", crate::sync::OFF_HINT)),
+        crate::sync::SyncState::Off => Some(Check::ok("settings sync", crate::sync::off_hint(ctx))),
         crate::sync::SyncState::Locked => Some(Check::warn(
             "settings sync",
             "its key is in a passphrase-sealed file, so this run uses this computer's storage only",

@@ -21,6 +21,19 @@ use crate::context::Ctx;
 pub const OFF_HINT: &str =
     "storage on this computer only: sign in with your wallet again (`dg auth login --wallet`) to sync storage across devices";
 
+/// The line shown before anyone signed in on this computer, on a network that has sync.
+pub const NOT_SIGNED_IN_HINT: &str =
+    "after you sign in with your wallet (`dg auth login --wallet`), storage settings follow your identity across devices";
+
+/// [`OFF_HINT`], or [`NOT_SIGNED_IN_HINT`] when no identity is signed in.
+pub fn off_hint(ctx: &Ctx) -> &'static str {
+    if ctx.identity_id_hint().is_some() {
+        OFF_HINT
+    } else {
+        NOT_SIGNED_IN_HINT
+    }
+}
+
 /// The guide a maintainer removal points to.
 pub const ROTATE_GUIDE: &str = user_sync::ROTATE_GUIDE;
 

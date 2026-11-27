@@ -674,7 +674,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
                 crate::sync::SyncState::On { .. } => {
                     println!("Synced with your identity: profiles marked synced come from another device.");
                 }
-                crate::sync::SyncState::Off => println!("{}", crate::sync::OFF_HINT),
+                crate::sync::SyncState::Off => println!("{}", crate::sync::off_hint(ctx)),
                 crate::sync::SyncState::Locked => println!(
                     "Settings sync is off for this run: its key is in a passphrase-sealed file; set DASH_FORGE_PASSPHRASE to use it"
                 ),
