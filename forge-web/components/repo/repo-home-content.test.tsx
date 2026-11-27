@@ -4,6 +4,7 @@
  * empty repo, and the storage warning on an empty one is for whoever can configure storage.
  */
 
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -106,11 +107,17 @@ describe('the empty repo’s first-push steps', () => {
     expect(summaries).toEqual(['Start from scratch', 'First time? Install tools & sign in', 'Storage & push cost'])
     const lines = [...host.querySelectorAll('section[aria-label="Empty repository"] code')].map((c) => c.textContent)
     expect(lines[0]).toMatch(/^git remote add origin dash:\/\//)
-    // Testnet (this build's network): released DashPay can't sign in there, so the command takes the 12 words.
-    expect(lines).toContainEqual(expect.stringMatching(/^dg auth login --mnemonic --network /))
+    // Released DashPay can't sign in on testnet, so there the command takes the 12 words.
     const signIn = host.querySelector('[data-testid="empty-repo-sign-in"]')?.textContent ?? ''
-    expect(signIn).toContain('Type your 12 words when it asks')
-    expect(signIn).not.toContain('Scan the QR code')
+    if (ACTIVE_NETWORK.network === 'testnet') {
+      expect(lines).toContainEqual(expect.stringMatching(/^dg auth login --mnemonic --network /))
+      expect(signIn).toContain('Type your 12 words when it asks')
+      expect(signIn).not.toContain('Scan the QR code')
+    } else {
+      expect(lines).toContainEqual(expect.stringMatching(/^dg auth login --network /))
+      expect(signIn).toContain('Scan the QR code with DashPay for Android')
+      expect(signIn).toMatch(/dg auth login --mnemonic --network /)
+    }
     expect(lines).toContainEqual(expect.stringMatching(/> README\.md && git add README\.md && git commit -m 'First commit' && git push -u origin HEAD:main$/))
     expect(host.textContent).toContain('Push your code to get started.')
   })
