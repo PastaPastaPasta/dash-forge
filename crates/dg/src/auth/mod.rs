@@ -962,7 +962,7 @@ async fn login_source(
 /// that key and the identity's encryption keys (or, with `--full-key`, the whole identity).
 #[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
-    if args.wallet || signs_in_with_wallet(ctx, args)? {
+    if args.wallet || args.any_identity || signs_in_with_wallet(ctx, args)? {
         return wallet::login(ctx, args).await;
     }
     let client = ctx.connect().await?;

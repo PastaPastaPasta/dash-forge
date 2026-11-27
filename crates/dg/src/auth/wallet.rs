@@ -51,6 +51,8 @@ const SCAN_HOW: &str =
 const TESTNET_WALLET: &str = "on testnet, use DashPay's testnet build: the `-testnet.apk` on https://github.com/dashpay/dash-wallet/releases/latest (installs beside the store app)";
 /// The fix a JSON field and `dg auth status` name for a wallet key.
 pub(crate) const RENEW: &str = "dg auth login";
+/// How long a key a wallet added stays usable (#664).
+const STAYS_LIVE: &str = "stays live on the identity until it expires, a wallet renewal replaces it, or you disconnect Dash Forge in your wallet (More → Tools → Connections)";
 /// A wallet sign-in that any identity can answer (no `IDENTITY_HINT`).
 const ANY_IDENTITY: &str = "dg auth login --wallet --any-identity";
 
@@ -378,7 +380,7 @@ fn login_error(
         .fix(format!(
             "run `{RENEW}` again and keep the code private; scan only a code dg printed on this computer"
         ))
-        .note(nothing_stored(renewing, "a key a wallet added stays on its identity until disconnected in that wallet")),
+        .note(nothing_stored(renewing, &format!("a key a wallet added {STAYS_LIVE}"))),
         LoginError::TooManyAnswers => UserError::new(
             codes::REJECTED,
             "too many answers reached the sign-in code to check them all",
@@ -510,14 +512,20 @@ fn renew_text(shown_as: &str) -> String {
     format!("This code renews {shown_as}; only that identity's answer is read. To sign in as another identity: `{ANY_IDENTITY}`\n")
 }
 
-/// The lines around the QR code.
-fn request_text(uri: &str, network: &str) -> String {
+/// The lines around the QR code. A renewal's code is read only for the identity it renews
+/// ([`renew_text`]), so its warning does not say anyone who answers signs in.
+fn request_text(uri: &str, network: &str, renewing: bool) -> String {
+    let warning = if renewing {
+        ""
+    } else {
+        ": anyone who answers it signs in this terminal as their identity"
+    };
     format!(
         "Sign in to Dash Forge ({network}) with your DashPay wallet:\n\
          {qr}\n\
          {SCAN_HOW}.\n\
          Or copy this link to the phone:\n  {uri}\n\
-         Scan only a code dg printed on this computer: anyone who answers it signs in this terminal as their identity.\n",
+         Scan only a code dg printed on this computer{warning}.\n",
         qr = super::new::qr_text(uri),
     )
 }
@@ -528,7 +536,10 @@ impl LoginUi for Terminal<'_> {
     }
 
     fn show(&self, req: &LoginRequest) {
-        eprint!("{}", request_text(req.uri(), &self.ctx.network_label()));
+        eprint!(
+            "{}",
+            request_text(req.uri(), &self.ctx.network_label(), self.renews.is_some())
+        );
         if let Some(shown_as) = &self.renews {
             eprint!("{}", renew_text(shown_as));
         }
@@ -717,15 +728,18 @@ fn guard_replacement(ctx: &Ctx, held: &[HeldKey], renewing: bool) -> Result<()> 
     }
     Err(u
         .fix(format!("keep using it, or run `{RENEW}` in a terminal and confirm: dg first copies a key it replaces beside it"))
-        .note(nothing_stored(renewing, "the key your wallet added stays on the identity until you disconnect Dash Forge in the wallet (More → Tools → Connections)"))
+        .note(nothing_stored(renewing, &format!("the key your wallet added {STAYS_LIVE}")))
         .into())
 }
 
-/// Where the master key stays when the wallet's key only takes its place as the default.
-fn master_kept(held: &[HeldKey]) -> Option<String> {
+/// The key source that still holds the master key once the wallet's key is `stored_at`: one
+/// that storing did not overwrite (compared by real path, so an alias of `stored_at` is not it).
+fn master_kept(held: &[HeldKey], stored_at: &str) -> Option<String> {
+    let real = |s: &str| std::fs::canonicalize(s).unwrap_or_else(|_| s.into());
     held.iter()
-        .find(|h| !h.replaced && h.key.as_ref().is_ok_and(|b| b.master_key().is_some()))
-        .map(|h| store::describe_source(&h.source).0)
+        .filter(|h| !h.replaced && h.key.as_ref().is_ok_and(|b| b.master_key().is_some()))
+        .find(|h| real(&h.source) != real(stored_at))
+        .map(|h| h.source.clone())
 }
 
 /// The limited keys `held` signed with that stay live on Platform once the wallet's key
@@ -850,7 +864,6 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let replaced = key_store.main_slot_replaced(&network, &grant.identity_id)?;
     let held = held_keys(ctx, &replaced, &grant.identity_id);
     guard_replacement(ctx, &held, renewing)?;
-    let master_kept = master_kept(&held);
     // A request naming forge-user is a new app to the wallet, so it may not disable the key it
     // granted this computer under forge-core: the chain says whether it did.
     let app = if forge.user.is_some() && !args.no_sync {
@@ -869,6 +882,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let stored = key_store
         .store(&network, &grant.identity_id, &text, store::Slot::Main)
         .map_err(|e| not_stored(&e, grant.key_id, renewing))?;
+    let master_kept = master_kept(&held, &stored.source());
     let sync_key = keep_sync_key(ctx, &mut key_store, &network, &grant);
     if let Err(e) =
         State::record_wallet_key(&state, &network, &grant.identity_id, grant.key_id, app)
@@ -962,7 +976,15 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 println!("  {line}");
             }
             if let Some(at) = &master_kept {
-                println!("  your master key stays in {at}; dg signs with the wallet's key now");
+                let logout = if store::is_main_slot_file(&network, &grant.identity_id, at) {
+                    " (`dg auth logout` deletes that file: keep your identity file elsewhere too)"
+                } else {
+                    ""
+                };
+                println!(
+                    "  your master key stays in {}{logout}; dg signs with the wallet's key now",
+                    store::describe_source(at).0
+                );
             }
             println!("  renew: {RENEW}; disconnect Dash Forge in your wallet to disable the key");
         },
@@ -1017,10 +1039,16 @@ fn rewrap(e: &anyhow::Error, message: String) -> UserError {
 
 /// The key the wallet added to the identity (`key_id`) could not be stored here (`e`).
 fn not_stored(e: &anyhow::Error, key_id: u32, renewing: bool) -> anyhow::Error {
-    rewrap(e, format!("key #{key_id} your wallet added could not be stored here"))
-        .fix(format!("then run `{RENEW}` again"))
-        .note(nothing_stored(renewing, &format!("key #{key_id} stays live on the identity until it expires, a wallet renewal replaces it, or you disconnect Dash Forge in your wallet (More → Tools → Connections)")))
-        .into()
+    rewrap(
+        e,
+        format!("key #{key_id} your wallet added could not be stored here"),
+    )
+    .fix(format!("then run `{RENEW}` again"))
+    .note(nothing_stored(
+        renewing,
+        &format!("key #{key_id} {STAYS_LIVE}"),
+    ))
+    .into()
 }
 
 /// The wallet's key was stored as `stored`, but config.toml did not take it as the default (`e`).
@@ -1646,7 +1674,7 @@ mod tests {
             .unwrap()
             .contains("MASTER"));
 
-        // Alice answering is judged by alice's key, the default: limited, so it is replaced.
+        // Alice answering: her default is a limited key, which the guard never asks about.
         let held = held_keys(&ctx, &[], &grant.identity_id);
         assert_eq!(held.len(), 1);
         assert!(guard_replacement(&ctx, &held, false).is_ok());
@@ -1667,13 +1695,20 @@ mod tests {
         assert_eq!(held.len(), 1, "the default is this identity's");
         assert!(!held[0].replaced);
         assert!(guard_replacement(&ctx, &held, false).is_ok());
-        assert!(master_kept(&held)
-            .is_some_and(|at| at.contains(&*file.file_name().unwrap().to_string_lossy())));
+        assert_eq!(
+            master_kept(&held, "keychain:dash-forge/testnet/ALICE"),
+            Some(source.clone())
+        );
+        // stored over that very file (the keychain refused): it no longer holds the master key
+        assert_eq!(master_kept(&held, &source), None);
         // the same file as what the store overwrites (no keychain) is still guarded
         let held = held_keys(&ctx, &[source], &alice);
         assert!(held[0].replaced);
         assert!(guard_replacement(&ctx, &held, false).is_err());
-        assert_eq!(master_kept(&held), None);
+        assert_eq!(
+            master_kept(&held, "keychain:dash-forge/testnet/ALICE"),
+            None
+        );
     }
 
     /// Review finding 1, second case: the stored key does not open (a sealed file with no
@@ -1863,10 +1898,12 @@ mod tests {
 
     #[test]
     fn the_code_screen_has_the_qr_the_link_and_the_warning() {
-        let text = request_text("dashpay://connect?v=2&n=t&r=abc", "testnet");
+        let text = request_text("dashpay://connect?v=2&n=t&r=abc", "testnet", false);
         assert!(text.contains('█') || text.contains('▀') || text.contains('▄'));
         assert!(text.contains("  dashpay://connect?v=2&n=t&r=abc\n"));
-        assert!(text.contains("Scan only a code dg printed on this computer"));
+        assert!(text.contains("Scan only a code dg printed on this computer: anyone who answers"));
+        let renewal = request_text("dashpay://connect?v=2&n=t&r=abc", "testnet", true);
+        assert!(renewal.contains("Scan only a code dg printed on this computer.\n"));
         assert!(text.contains("More → Tools → Connections → Scan QR"));
         assert_eq!(clock(600_000), "10:00");
         assert_eq!(clock(61_001), "1:02");

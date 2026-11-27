@@ -160,6 +160,9 @@ pub struct Storer {
     /// Where this storer last put a pending key, and the key, so [`promote`] removes that copy
     /// only while it still holds this run's key.
     staged: Option<(Stored, Secret)>,
+    /// What [`Storer::main_slot_replaced`] said a main-slot store overwrites (the caller asked
+    /// about exactly that): a main-slot key file outside it is never written over.
+    guarded_main: Option<Vec<String>>,
 }
 
 impl Storer {
@@ -240,6 +243,11 @@ impl Storer {
             }
         }
         let path = slot_file(network, identity_id, slot)?;
+        if slot == Slot::Main {
+            if let Some(refused) = unguarded_overwrite(self.guarded_main.as_deref(), &path) {
+                return Err(refused.into());
+            }
+        }
         if self.insecure_plaintext && !self.no_keychain {
             keep_replaced_file(&path, text.expose().as_bytes(), slot)?;
             keystore::write_private_file(&path, text.expose().as_bytes())?;
@@ -277,6 +285,27 @@ impl Storer {
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
         Ok(Stored::Sealed(path))
     }
+}
+
+/// Why the main-slot key file `path` must not be written over: it holds a key, and the caller
+/// was told the store overwrites only `predicted` ([`Storer::main_slot_replaced`]), which does
+/// not name it (the keychain was to take the key, and refused it).
+fn unguarded_overwrite(predicted: Option<&[String]>, path: &std::path::Path) -> Option<UserError> {
+    let predicted = predicted?;
+    if !path.exists() || predicted.contains(&path.to_string_lossy().into_owned()) {
+        return None;
+    }
+    Some(
+        UserError::new(
+            codes::USAGE,
+            "the key could not be stored in the keychain, and the key file there was kept",
+        )
+        .cause(format!(
+            "the keychain did not take the key, and {} holds a key dg did not ask you about replacing",
+            path.display()
+        ))
+        .fix("allow dg in the OS keychain when it asks"),
+    )
 }
 
 /// The `keychain:` key source of dg's entry `acct`, which `--identity` and `DASH_FORGE_KEY`
@@ -444,7 +473,15 @@ impl Storer {
     /// overwrite (after keeping a copy): dg's keychain entry when the keychain takes the key and
     /// an entry is there, else the key file when it exists. An entry that cannot be read is left
     /// as it is and the key goes to the file, so the file is what is overwritten then.
-    pub fn main_slot_replaced(&self, network: &str, identity_id: &str) -> Result<Vec<String>> {
+    /// A later main-slot store refuses to write over a key file this did not name (the keychain
+    /// refused the key, and the file holds a key nobody was asked about).
+    pub fn main_slot_replaced(&mut self, network: &str, identity_id: &str) -> Result<Vec<String>> {
+        let predicted = self.predict_main(network, identity_id)?;
+        self.guarded_main = Some(predicted.clone());
+        Ok(predicted)
+    }
+
+    fn predict_main(&self, network: &str, identity_id: &str) -> Result<Vec<String>> {
         if !self.no_keychain && keychain::available() {
             match keychain::get(
                 keychain::SERVICE,
@@ -462,6 +499,15 @@ impl Storer {
             Vec::new()
         })
     }
+}
+
+/// Whether `source` is `identity_id`'s main-slot key file on `network`, which `dg auth logout`
+/// deletes ([`remove`]).
+pub fn is_main_slot_file(network: &str, identity_id: &str, source: &str) -> bool {
+    slot_file(network, identity_id, Slot::Main).is_ok_and(|f| {
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.into());
+        real(&f) == real(std::path::Path::new(source))
+    })
 }
 
 /// Whether a limited key can be stored here without failing: in the keychain, unencrypted
@@ -638,6 +684,34 @@ mod tests {
     use super::*;
 
     /// QW4-058: the passphrase prompt is introduced by why it is asked.
+    /// #664 review: the keychain refusing the key never writes over a key file nobody was asked
+    /// about (it may hold the master key).
+    #[test]
+    fn a_key_file_the_guard_did_not_name_is_never_written_over() {
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("testnet-X.key");
+        let named = file.to_string_lossy().into_owned();
+        assert!(
+            unguarded_overwrite(Some(&[]), &file).is_none(),
+            "no file yet"
+        );
+        std::fs::write(&file, "master").unwrap();
+        let refused = unguarded_overwrite(Some(&[]), &file).expect("refused");
+        assert_eq!(refused.code, codes::USAGE);
+        assert!(refused.cause.as_deref().unwrap().contains("did not ask"));
+        assert!(
+            unguarded_overwrite(Some(&["keychain:dash-forge/testnet/X".into()]), &file).is_some()
+        );
+        assert!(
+            unguarded_overwrite(Some(&[named]), &file).is_none(),
+            "the guard asked about it"
+        );
+        assert!(
+            unguarded_overwrite(None, &file).is_none(),
+            "a store the guard did not predict"
+        );
+    }
+
     #[test]
     fn the_passphrase_prompt_says_why() {
         let line = passphrase_reason(
