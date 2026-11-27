@@ -209,6 +209,40 @@ fn identity_key_path(network: &Network, key_index: u32) -> String {
     format!("m/9'/{}'/5'/0'/0'/0'/{key_index}'", coin_type(network))
 }
 
+/// The wallet identity indexes a recovery phrase's identity is looked for at, as the web app does.
+pub const MASTER_IDENTITY_INDEXES: std::ops::RangeInclusive<u32> = 0..=4;
+
+/// The MASTER key (key 0) `mnemonic` makes at identity index 0 to 4 that is `identity`'s enabled
+/// MASTER authentication key on Platform, as a WIF; `None` when there is none.
+pub fn master_wif_of(
+    mnemonic: &Secret,
+    network: &Network,
+    identity: &LoadedIdentity,
+) -> Result<Option<Secret>> {
+    let masters: Vec<Vec<u8>> = identity
+        .public_keys()
+        .into_iter()
+        .filter(|k| {
+            !k.disabled
+                && k.purpose == "AUTHENTICATION"
+                && k.security_level == "MASTER"
+                && k.key_type == "ECDSA_SECP256K1"
+        })
+        .map(|k| k.public_key)
+        .collect();
+    for index in MASTER_IDENTITY_INDEXES {
+        let path = format!("m/9'/{}'/5'/0'/0'/{index}'/0'", coin_type(network));
+        let d = derive(mnemonic, &path, network)?;
+        if masters
+            .iter()
+            .any(|m| m.as_slice() == d.public.to_bytes().as_slice())
+        {
+            return Ok(Some(wif(&d.secret, network)));
+        }
+    }
+    Ok(None)
+}
+
 fn asset_lock_path(network: &Network) -> String {
     format!("m/44'/{}'/0'/0/0", coin_type(network))
 }
@@ -359,6 +393,15 @@ impl FreshKey {
     /// The private key (WIF).
     pub fn wif(&self) -> Secret {
         wif(&self.secret, &self.network)
+    }
+
+    /// A key derived elsewhere (the sync key of a rotation), not drawn at random.
+    pub fn from_secret_bytes(secret: &[u8; 32], network: &Network) -> Result<Self> {
+        Ok(Self {
+            secret: SecretKey::from_bytes(secret)
+                .map_err(|_| Error::Config("not a valid secp256k1 private key".into()))?,
+            network: network.clone(),
+        })
     }
 
     fn public(&self) -> PublicKey {
@@ -886,6 +929,41 @@ impl PlatformClient {
         add: &[(&FreshKey, KeySpec)],
         disable: &[u32],
     ) -> Result<Vec<u32>> {
+        self.try_update_identity_keys(identity_id, master_wif, add, disable)
+            .await
+            .map_err(|f| f.error)
+    }
+
+    /// [`Self::update_identity_keys`], saying on failure whether the update was broadcast (so
+    /// it may still land) or failed before anything was sent.
+    pub async fn try_update_identity_keys(
+        &self,
+        identity_id: &str,
+        master_wif: &Secret,
+        add: &[(&FreshKey, KeySpec)],
+        disable: &[u32],
+    ) -> std::result::Result<Vec<u32>, UpdateFailed> {
+        let unsent = |error| UpdateFailed { sent: false, error };
+        let (st, added) = self
+            .build_identity_keys_update(identity_id, master_wif, add, disable)
+            .await
+            .map_err(unsent)?;
+        st.broadcast_and_wait::<StateTransitionProofResult>(self.sdk(), None)
+            .await
+            .map_err(|e| UpdateFailed {
+                sent: true,
+                error: sdk_err("updating the identity's keys", e),
+            })?;
+        Ok(added)
+    }
+
+    async fn build_identity_keys_update(
+        &self,
+        identity_id: &str,
+        master_wif: &Secret,
+        add: &[(&FreshKey, KeySpec)],
+        disable: &[u32],
+    ) -> Result<(dash_sdk::dpp::state_transition::StateTransition, Vec<u32>)> {
         let id = parse_id(identity_id, "identity id")?;
         let mut identity = self.fetch_identity(identity_id).await?.0;
         let master_secret = secret_from_wif(master_wif.expose(), self.network())?;
@@ -920,6 +998,16 @@ impl PlatformClient {
                     SecurityLevel::MEDIUM,
                     &key.public(),
                 ),
+                KeySpec::SyncEncryption { contract } => key_v0(
+                    next,
+                    Purpose::ENCRYPTION,
+                    SecurityLevel::MEDIUM,
+                    &key.public(),
+                    Some(ContractBounds::SingleContract {
+                        id: parse_id(contract, "contract id")?,
+                    }),
+                )
+                .into(),
             };
             signer.add(&key.secret, self.network());
             new_keys.push(pk);
@@ -944,10 +1032,7 @@ impl PlatformClient {
         )
         .await
         .map_err(|e| sdk_err("signing the identity update", e))?;
-        st.broadcast_and_wait::<StateTransitionProofResult>(self.sdk(), None)
-            .await
-            .map_err(|e| sdk_err("updating the identity's keys", e))?;
-        Ok(added)
+        Ok((st, added))
     }
 
     /// Whether DPNS name `label` is free.
@@ -1329,6 +1414,15 @@ pub struct GroupOwnership {
     pub admins: Vec<String>,
 }
 
+/// A failed [`PlatformClient::try_update_identity_keys`].
+#[derive(Debug)]
+pub struct UpdateFailed {
+    /// Whether the update was broadcast: it may still land.
+    pub sent: bool,
+    /// Why.
+    pub error: Error,
+}
+
 /// What a key added by [`PlatformClient::update_identity_keys`] is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeySpec {
@@ -1339,6 +1433,12 @@ pub enum KeySpec {
     DocumentType(DocTypeKeySpec),
     /// An ENCRYPTION / MEDIUM key (private repositories).
     Encryption,
+    /// An ENCRYPTION / MEDIUM key bound to one contract (`ContractBounds::SingleContract`):
+    /// forge-user's settings-sync key.
+    SyncEncryption {
+        /// The contract (base58).
+        contract: String,
+    },
 }
 
 /// Whether `label` is a valid DPNS label, and whether it is contested (short names that go to

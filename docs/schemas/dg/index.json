@@ -206,6 +206,8 @@
     "storage remove": "storage-remove.schema.json",
     "storage share": "storage-share.schema.json",
     "storage status": "storage-status.schema.json",
+    "storage sync add-key": "storage-sync-add-key.schema.json",
+    "storage sync move-key": "storage-sync-move-key.schema.json",
     "storage test": "storage-test.schema.json",
     "storage use": "storage-use.schema.json",
     "verify-app": "verify-app.schema.json",

@@ -3,9 +3,24 @@
 Rotate a storage credential when someone may have seen it:
 
 - **A maintainer you shared a repository's storage with**. When you share a repository's storage with its maintainers (`dg storage share <owner/repo> <profile>`, or the repo's **Settings → Storage**; see [Collaborating](collaborating.md#storage-for-maintainers)), each maintainer's client decrypts the storage profiles you set for that repository, credentials included, so their pushes can write packs to your bucket or IPFS node. Removing a maintainer stops them reading anything shared **after** the removal: Forge moves the share to a new key and deletes their grant. It cannot take back what they already decrypted.
-- **Your settings-sync key**, if a site may have tricked you into approving a wallet code: whoever holds it can read every storage credential synced with your identity ([Identity and keys](identity-and-keys.md#settings-that-follow-your-identity)).
+- **Your settings-sync key**, if a site may have tricked you into approving a wallet code: whoever holds it can read every storage credential synced with your identity ([Identity and keys](identity-and-keys.md#settings-that-follow-your-identity)). Move sync to a new key first, as below, or the new credentials sync under the key the site has.
 
 Sharing and settings sync use the forge-user contract, which is registered on testnet and mainnet.
+
+## If a site may have your settings-sync key
+
+Disabling keys doesn't take the sync key back, and every wallet sign-in hands out the same one. Shut the site out first, then move sync to a new key made from your recovery phrase, then rotate:
+
+1. **Disable the signing key the site got** ([Revoke keys](revoke-keys.md)). The same approval gave it a key that signs as you, and with it the site could still overwrite your synced settings.
+2. **Move sync to a new key.** Close your other Forge tabs first. In the web app: **Settings → Storage → Synced with your identity → Move sync to a new key**, then enter your recovery phrase. With `dg` v0.3.2 or later: `dg storage sync move-key`, which asks for the phrase. Forge registers the new key on your identity, disables the old one, and encrypts your synced settings and your repositories' shares again under the new key. Your settings stay as they were; nothing of yours is deleted. A maintainer whose own key is no longer live, or whose access an interrupted removal left behind, loses access to your shared storage until your next push or visit to the repository's settings refreshes it.
+3. **Rotate each credential**, as in the rest of this page. The update syncs under the new key, which the site doesn't have.
+4. **Add the new key on your other devices**, once each: **Settings → Storage → Add the new key** in the web app, or `dg storage sync add-key`, with the same recovery phrase.
+
+After the move:
+
+- **Wallet sign-ins no longer carry the sync key.** A new device signs in with your wallet as before, then adds the key once with your recovery phrase (**Add the sync key**, or `dg storage sync add-key`).
+- **A device still holding the old key stops syncing**, released `dg` v0.3.1 included: it can no longer read your synced settings, and a change made there stays on that device. Its own `storage.toml` is untouched. Add the new key there, or update it first.
+- **A profile changed on another device while this one waited** for the new key shows up twice after **Add the new key**: the synced one under its name and this device's older copy as `<name>-<device>`. Nothing is dropped; remove the copy you don't want.
 
 Rotating takes four steps, in this order, so nobody is left holding a key that no longer works:
 

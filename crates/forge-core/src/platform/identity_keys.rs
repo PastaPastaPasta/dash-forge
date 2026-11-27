@@ -22,6 +22,7 @@ use dash_sdk::dpp::dashcore::ecdsa::EcdsaSecretKey;
 use dash_sdk::dpp::dashcore::hashes::hash160;
 use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::key_wallet::{ChildNumber, ExtendedPrivKey, Mnemonic};
 use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
@@ -320,6 +321,115 @@ pub fn file_holds_key(bridge: &BridgeIdentity, key: &super::IdentityKeyInfo) -> 
                 _ => false,
             }
         })
+}
+
+/// The Platform purpose number of `ENCRYPTION`, the `purpose'` level of the sync key's path.
+pub const SYNC_KEY_PURPOSE: u32 = 1;
+
+/// A recovery phrase's BIP39 seed (empty passphrase), wiped on drop: what the forge-user sync key
+/// of every rotation derives from ([`SyncSeed::sync_secret`]). `Debug` is redacted.
+pub struct SyncSeed(Zeroizing<[u8; 64]>);
+
+impl fmt::Debug for SyncSeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SyncSeed(<redacted>)")
+    }
+}
+
+impl SyncSeed {
+    /// The seed of `phrase` (normalized as every phrase input is). Errors never echo it.
+    pub fn from_phrase(phrase: &str) -> Result<Self> {
+        let words = super::identity::normalize_mnemonic(phrase)?;
+        let mnemonic = Mnemonic::from_phrase(words.expose())
+            .map_err(|_| Error::Config("those words are not a valid recovery phrase".into()))?;
+        Ok(Self(mnemonic.to_seed("")))
+    }
+
+    /// The forge-user `ENCRYPTION` private key of `identity` at `rotation`, as DashPay derives it
+    /// ([`sync_key_path`], rust-dashcore's `derive_priv_ecdsa_for_master_seed`).
+    pub fn sync_secret(
+        &self,
+        mainnet: bool,
+        identity: &[u8; 32],
+        contract: &[u8; 32],
+        rotation: u32,
+    ) -> Result<crate::app_connect::SecretBytes> {
+        self.secret_at(
+            &sync_key_path(mainnet, identity, contract, rotation)?,
+            mainnet,
+        )
+    }
+
+    /// The key at the pre-rotation path ([`legacy_sync_key_path`]), which testnet and devnet
+    /// wallets registered before DIP-13 gained the rotation level. Only to recognise such a key.
+    pub fn legacy_sync_secret(
+        &self,
+        mainnet: bool,
+        identity: &[u8; 32],
+        contract: &[u8; 32],
+    ) -> Result<crate::app_connect::SecretBytes> {
+        self.secret_at(&legacy_sync_key_path(mainnet, identity, contract), mainnet)
+    }
+
+    fn secret_at(
+        &self,
+        path: &DerivationPath,
+        mainnet: bool,
+    ) -> Result<crate::app_connect::SecretBytes> {
+        let network = if mainnet {
+            dash_sdk::dpp::dashcore::Network::Mainnet
+        } else {
+            dash_sdk::dpp::dashcore::Network::Testnet
+        };
+        let mut derived = path
+            .derive_priv_ecdsa_for_master_seed(self.0.as_slice(), network)
+            .map_err(|e| Error::Config(format!("deriving the sync key: {e}")))?;
+        let secret = crate::app_connect::SecretBytes::new(*derived.private_key.to_bytes());
+        derived.zeroize();
+        Ok(secret)
+    }
+}
+
+fn sync_key_base(mainnet: bool, identity: &[u8; 32], contract: &[u8; 32]) -> Vec<ChildNumber> {
+    let hardened = |index| ChildNumber::Hardened { index };
+    vec![
+        hardened(9),
+        hardened(if mainnet { 5 } else { 1 }),
+        hardened(5),
+        hardened(7),
+        hardened(0),
+        ChildNumber::Hardened256 { index: *identity },
+        ChildNumber::Hardened256 { index: *contract },
+        hardened(SYNC_KEY_PURPOSE),
+    ]
+}
+
+/// DIP-13's application encryption path, the wallet's
+/// `m/9'/coin'/5'/7'/0'/identityId'/contractId'/1'/rotation'`: coin 5 on mainnet, else 1; the
+/// identity and contract are DIP-14 256-bit hardened indices. `rotation` must be below 2^31.
+pub fn sync_key_path(
+    mainnet: bool,
+    identity: &[u8; 32],
+    contract: &[u8; 32],
+    rotation: u32,
+) -> Result<DerivationPath> {
+    if rotation >= 1 << 31 {
+        return Err(Error::InvalidInput(
+            "a sync key rotation must be below 2^31".into(),
+        ));
+    }
+    let mut path = sync_key_base(mainnet, identity, contract);
+    path.push(ChildNumber::Hardened { index: rotation });
+    Ok(DerivationPath::from(path))
+}
+
+/// The pre-rotation path `m/9'/coin'/5'/7'/0'/identityId'/contractId'/1'` (no rotation level).
+pub fn legacy_sync_key_path(
+    mainnet: bool,
+    identity: &[u8; 32],
+    contract: &[u8; 32],
+) -> DerivationPath {
+    DerivationPath::from(sync_key_base(mainnet, identity, contract))
 }
 
 /// The signer for an identity update that adds keys: the MASTER key and each new key (which
@@ -776,6 +886,79 @@ mod tests {
                 Some(target.derivation_path.as_str())
             );
         }
+    }
+
+    /// `forge-contracts/fixtures/user-sync/rotation.json` (also read by forge-web), computed by
+    /// `tools/user-sync-vectors/rotation.py` without rust-dashcore, and the wallet's own vectors.
+    #[test]
+    fn sync_keys_match_the_shared_rotation_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../forge-contracts/fixtures/user-sync/rotation.json"
+        ))
+        .unwrap();
+        let text = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap().to_string();
+        let seed = SyncSeed::from_phrase(&text(&fixture, "mnemonic")).unwrap();
+        let identity = crate::app_connect::decode_id(&text(&fixture, "identityId")).unwrap();
+        let contract = crate::app_connect::decode_id(&text(&fixture, "contractId")).unwrap();
+        let vectors = fixture["vectors"].as_array().unwrap();
+        assert_eq!(vectors.len(), 6);
+        for v in vectors {
+            let mainnet = text(v, "network") == "mainnet";
+            let rotation = u32::try_from(v["rotation"].as_u64().unwrap()).unwrap();
+            let secret = seed
+                .sync_secret(mainnet, &identity, &contract, rotation)
+                .unwrap();
+            assert_eq!(hex::encode(secret.expose()), text(v, "privateKeyHex"));
+            assert_eq!(
+                hex::encode(crate::app_connect::public_key_of(secret.expose()).unwrap()),
+                text(v, "publicKeyHex")
+            );
+            assert_eq!(
+                sync_key_path(mainnet, &identity, &contract, rotation)
+                    .unwrap()
+                    .to_string(),
+                text(v, "path")
+            );
+        }
+        for v in fixture["walletVectors"].as_array().unwrap() {
+            let id = |k: &str| -> [u8; 32] { hex::decode(text(v, k)).unwrap().try_into().unwrap() };
+            let rotation = u32::try_from(v["rotation"].as_u64().unwrap()).unwrap();
+            let secret = seed
+                .sync_secret(true, &id("identityIdHex"), &id("contractIdHex"), rotation)
+                .unwrap();
+            assert_eq!(
+                hex::encode(crate::app_connect::public_key_of(secret.expose()).unwrap()),
+                text(v, "publicKeyHex")
+            );
+        }
+        for v in fixture["legacyVectors"].as_array().unwrap() {
+            let mainnet = text(v, "network") == "mainnet";
+            let secret = seed
+                .legacy_sync_secret(mainnet, &identity, &contract)
+                .unwrap();
+            assert_eq!(hex::encode(secret.expose()), text(v, "privateKeyHex"));
+            assert_eq!(
+                hex::encode(crate::app_connect::public_key_of(secret.expose()).unwrap()),
+                text(v, "publicKeyHex")
+            );
+            assert_eq!(
+                legacy_sync_key_path(mainnet, &identity, &contract).to_string(),
+                text(v, "path")
+            );
+        }
+        for v in fixture["walletLegacyVectors"].as_array().unwrap() {
+            let id = |k: &str| -> [u8; 32] { hex::decode(text(v, k)).unwrap().try_into().unwrap() };
+            let secret = seed
+                .legacy_sync_secret(true, &id("identityIdHex"), &id("contractIdHex"))
+                .unwrap();
+            assert_eq!(
+                hex::encode(crate::app_connect::public_key_of(secret.expose()).unwrap()),
+                text(v, "publicKeyHex")
+            );
+        }
+        assert!(sync_key_path(false, &identity, &contract, 1 << 31).is_err());
+        assert!(SyncSeed::from_phrase("abandon abandon").is_err());
+        assert_eq!(format!("{seed:?}"), "SyncSeed(<redacted>)");
     }
 
     #[test]
