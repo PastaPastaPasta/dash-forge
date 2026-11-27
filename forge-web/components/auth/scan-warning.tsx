@@ -55,8 +55,8 @@ export function ScanSafety({ syncs = ACTIVE_NETWORK.v2?.user !== undefined }: { 
         <li data-testid="scan-warning-sync">
           It can also give the key that reads the storage settings you sync, credentials included. Disabling keys
           doesn’t take that back:{' '}
-          <Link prefetch={false} href={DOCS.rotateStorage} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-rotate">
-            rotate those credentials
+          <Link prefetch={false} href={DOCS.moveSyncKey} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-rotate">
+            move sync to a new key
           </Link>
           .
         </li>
