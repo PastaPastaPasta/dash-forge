@@ -243,12 +243,11 @@ impl Storer {
             }
         }
         let path = slot_file(network, identity_id, slot)?;
-        if slot == Slot::Main {
-            if let Some(refused) = unguarded_overwrite(self.guarded_main.as_deref(), &path) {
+        let guarded = self.guarded_main.as_deref().filter(|_| slot == Slot::Main);
+        if self.insecure_plaintext && !self.no_keychain {
+            if let Some(refused) = unguarded_overwrite(guarded, &path, None) {
                 return Err(refused.into());
             }
-        }
-        if self.insecure_plaintext && !self.no_keychain {
             keep_replaced_file(&path, text.expose().as_bytes(), slot)?;
             keystore::write_private_file(&path, text.expose().as_bytes())?;
             return Ok(Stored::Plaintext(path));
@@ -280,6 +279,9 @@ impl Storer {
             self.pass = Some(pass);
         }
         let pass = self.pass.as_ref().context("no passphrase")?;
+        if let Some(refused) = unguarded_overwrite(guarded, &path, Some(pass)) {
+            return Err(refused.into());
+        }
         let sealed_text = sealed::seal(text.expose().as_bytes(), pass.expose())?;
         keep_before_sealing(&path, pass, text, sealed_text.as_bytes(), slot)?;
         keystore::write_private_file(&path, sealed_text.as_bytes())?;
@@ -287,12 +289,29 @@ impl Storer {
     }
 }
 
-/// Why the main-slot key file `path` must not be written over: it holds a key, and the caller
-/// was told the store overwrites only `predicted` ([`Storer::main_slot_replaced`]), which does
-/// not name it (the keychain was to take the key, and refused it).
-fn unguarded_overwrite(predicted: Option<&[String]>, path: &std::path::Path) -> Option<UserError> {
+/// Why the main-slot key file `path` must not be written over: the caller was told the store
+/// overwrites only `predicted` ([`Storer::main_slot_replaced`]), which does not name it (the
+/// keychain was to take the key, and refused it), and it holds what the guard would have asked
+/// about: a master key, or a key that does not open (as plain text, or sealed with `pass`). A
+/// limited key there is replaced after a copy is kept, as any store does.
+fn unguarded_overwrite(
+    predicted: Option<&[String]>,
+    path: &std::path::Path,
+    pass: Option<&Secret>,
+) -> Option<UserError> {
     let predicted = predicted?;
     if !path.exists() || predicted.contains(&path.to_string_lossy().into_owned()) {
+        return None;
+    }
+    let raw = std::fs::read_to_string(path).ok();
+    let plain = raw.as_deref().and_then(|raw| {
+        if let Ok(b) = keystore::BridgeIdentity::from_source_text(raw) {
+            return Some(b);
+        }
+        let opened = sealed::open(raw, pass?.expose()).ok()?;
+        keystore::BridgeIdentity::from_source_text(std::str::from_utf8(&opened).ok()?).ok()
+    });
+    if plain.is_some_and(|b| b.master_key().is_none()) {
         return None;
     }
     Some(
@@ -301,10 +320,14 @@ fn unguarded_overwrite(predicted: Option<&[String]>, path: &std::path::Path) -> 
             "the key could not be stored in the keychain, and the key file there was kept",
         )
         .cause(format!(
-            "the keychain did not take the key, and {} holds a key dg did not ask you about replacing",
+            "the keychain did not take the key, and {} holds a master key or a key dg could not open",
             path.display()
         ))
-        .fix("allow dg in the OS keychain when it asks"),
+        .fix("unlock the keychain (over SSH on a Mac: `security unlock-keychain`) and run it again")
+        .fix(format!(
+            "or move {} somewhere safe and run it again",
+            path.display()
+        )),
     )
 }
 
@@ -683,35 +706,73 @@ pub fn set_default(ctx: &Ctx, identity_id: &str, source: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// QW4-058: the passphrase prompt is introduced by why it is asked.
-    /// #664 review: the keychain refusing the key never writes over a key file nobody was asked
-    /// about (it may hold the master key).
+    /// #664 review: the keychain refusing the key never writes over a master key (or a key that
+    /// does not open) nobody was asked about; a limited key there is replaced as usual.
     #[test]
     fn a_key_file_the_guard_did_not_name_is_never_written_over() {
+        let master = &serde_json::json!({
+            "network": "testnet",
+            "identityId": "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB",
+            "identityKeys": [{
+                "id": 0, "name": "Master", "keyType": "ECDSA_SECP256K1", "purpose": "AUTHENTICATION",
+                "securityLevel": "MASTER", "privateKeyWif": "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw",
+                "privateKeyHex": "", "publicKeyHex": "", "derivationPath": ""
+            }],
+            "mnemonic": "",
+            "assetLockKey": { "wif": "", "publicKeyHex": "", "derivationPath": "" }
+        })
+        .to_string();
         let t = tempfile::tempdir().unwrap();
         let file = t.path().join("testnet-X.key");
         let named = file.to_string_lossy().into_owned();
+        let pass = Secret::new("test-passphrase-1");
+        let refused = |pass: Option<&Secret>| unguarded_overwrite(Some(&[]), &file, pass);
+        assert!(refused(None).is_none(), "no file yet");
+        std::fs::write(&file, master).unwrap();
+        assert!(keystore::BridgeIdentity::from_source_text(master)
+            .unwrap()
+            .master_key()
+            .is_some());
+        let u = refused(None).expect("a master key is refused");
+        assert_eq!(u.code, codes::USAGE);
+        assert!(u.cause.as_deref().unwrap().contains("master key"));
+        std::fs::write(
+            &file,
+            sealed::seal(master.as_bytes(), "test-passphrase-1").unwrap(),
+        )
+        .unwrap();
+        assert!(refused(Some(&pass)).is_some(), "a sealed master key");
         assert!(
-            unguarded_overwrite(Some(&[]), &file).is_none(),
-            "no file yet"
+            refused(None).is_some(),
+            "a sealed file without its passphrase"
         );
-        std::fs::write(&file, "master").unwrap();
-        let refused = unguarded_overwrite(Some(&[]), &file).expect("refused");
-        assert_eq!(refused.code, codes::USAGE);
-        assert!(refused.cause.as_deref().unwrap().contains("did not ask"));
+        // a limited key (a wallet key an earlier fallback stored) is replaced as usual
+        let limited = "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
+        assert!(keystore::BridgeIdentity::from_source_text(limited).is_ok());
+        std::fs::write(&file, limited).unwrap();
+        assert!(refused(None).is_none(), "a plain limited key");
+        std::fs::write(
+            &file,
+            sealed::seal(limited.as_bytes(), "test-passphrase-1").unwrap(),
+        )
+        .unwrap();
+        assert!(refused(Some(&pass)).is_none(), "a sealed limited key");
         assert!(
-            unguarded_overwrite(Some(&["keychain:dash-forge/testnet/X".into()]), &file).is_some()
+            refused(Some(&Secret::new("other-passphrase-2"))).is_some(),
+            "another passphrase"
         );
+        std::fs::write(&file, master).unwrap();
         assert!(
-            unguarded_overwrite(Some(&[named]), &file).is_none(),
+            unguarded_overwrite(Some(&[named]), &file, None).is_none(),
             "the guard asked about it"
         );
         assert!(
-            unguarded_overwrite(None, &file).is_none(),
+            unguarded_overwrite(None, &file, None).is_none(),
             "a store the guard did not predict"
         );
     }
 
+    /// QW4-058: the passphrase prompt is introduced by why it is asked.
     #[test]
     fn the_passphrase_prompt_says_why() {
         let line = passphrase_reason(

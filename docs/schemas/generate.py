@@ -192,8 +192,6 @@ cmd('auth login', 'Signed in: the identity and the key stored for it.', {
     'previousKeyKeptAt': D('Where the keys this sign-in replaced were kept, as key sources `--identity` '
                            'takes: a `.bak-<UTC time>` copy of the key file, or a `keychain:` entry of that '
                            'name. Empty when nothing was replaced.', SA),
-    'masterKeyKeptAt': D('With `--wallet`: the key source that still holds this identity\'s master key, which '
-                         'the wallet\'s key only replaced as the default; else null.', nl(S)),
 }, ['status', 'identityId', 'network'])
 cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', {
     'network': S, 'authenticated': B, 'identityId': S, 'names': SA, 'keyId': nl(I), 'keyDisabled': nl(B),
