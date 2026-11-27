@@ -7,7 +7,8 @@
 #                                        their DNS points at this host, so ACME can succeed)
 #   deploy.sh verify <mainnet|testnet>   readyz + a plain git clone on loopback, and over the
 #                                        host's public IPv4 and IPv6 once Caddy serves it
-#   deploy.sh down <mainnet|testnet>     stop it (keeps the mirror volume)
+#   deploy.sh down <mainnet|testnet>     stop it (keeps the mirror volume; its Caddy site
+#                                        then answers 502 until it is up again)
 set -euo pipefail
 
 REV=${FORGE_REV:-master}
@@ -23,7 +24,10 @@ snippet_of() { [[ $1 == mainnet ]] && echo forge_gateway_mainnet || echo forge_g
 port_of() { [[ $1 == mainnet ]] && echo 18081 || echo 18082; }
 sample_of() { [[ $1 == mainnet ]] && echo "${FORGE_SAMPLE_REPO:-forg3/dash-forge}" || echo "${FORGE_SAMPLE_REPO:-AyvEsSQfK5qBotCsi2gZpePa7DcniqWzZ281TaNsJGv7/forge-v2-demo}"; }
 
-fetch() { curl -fsSL --retry 3 "$RAW/$1" -o "$2.tmp" && mv "$2.tmp" "$2"; }
+fetch() {
+  if ! curl -fsSL --retry 3 "$RAW/$1" -o "$2.tmp"; then rm -f "$2.tmp"; die "could not fetch $1 at $REV"; fi
+  mv "$2.tmp" "$2"
+}
 
 up() {
   local net=$1 dir=$BASE/$1 port; port=$(port_of "$net")
@@ -102,6 +106,15 @@ clone_check() {
   rm -rf "$d"
 }
 
+retry() {
+  local n=$1; shift
+  for i in $(seq 1 "$n"); do
+    "$@" && return 0
+    [[ $i == "$n" ]] || { echo "  retrying in 20 s"; sleep 20; }
+  done
+  return 1
+}
+
 verify() {
   local net=$1 host port repo rc=0 v4 v6
   host=$(host_of "$net"); port=$(port_of "$net"); repo=$(sample_of "$net")
@@ -111,10 +124,19 @@ verify() {
   [[ -n $repo ]] || { echo "set FORGE_SAMPLE_REPO=<owner>/<name> (a public $net repository) for the clone checks"; return $rc; }
   clone_check "loopback http://127.0.0.1:$port/$repo.git" "http://127.0.0.1:$port/$repo.git" || rc=1
   if grep -qs "^$host {" "$CADDY_INCLUDE"; then
-    v4=$(curl -4 -fsS --max-time 10 https://api.ipify.org || true)
-    v6=$(ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
-    [[ -n $v4 ]] && clone_check "origin IPv4 $v4" "https://$host/$repo.git" -c "http.curloptResolve=$host:443:$v4" || rc=1
-    [[ -n $v6 ]] && clone_check "origin IPv6 $v6" "https://$host/$repo.git" -c "http.curloptResolve=$host:443:[$v6]" || rc=1
+    v4=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -Ev '^(10|127)\.|^172\.(1[6-9]|2[0-9]|3[01])\.|^192\.168\.' | head -1 || true)
+    v6=$(ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | grep -Evi '^f[cd]' | head -1 || true)
+    # Caddy gets the certificate in the background after a reload: give it a minute.
+    if [[ -n $v4 ]]; then
+      retry 4 clone_check "origin IPv4 $v4" "https://$host/$repo.git" -c "http.curloptResolve=$host:443:$v4" || rc=1
+    else
+      echo "FAIL origin IPv4: this host has no public IPv4 address"; rc=1
+    fi
+    if [[ -n $v6 ]]; then
+      retry 4 clone_check "origin IPv6 $v6" "https://$host/$repo.git" -c "http.curloptResolve=$host:443:[$v6]" || rc=1
+    else
+      echo "FAIL origin IPv6: this host has no public IPv6 address"; rc=1
+    fi
   else
     echo "skip origin checks: Caddy does not serve $host yet (deploy.sh caddy $net)"
   fi
@@ -127,5 +149,5 @@ case $cmd in
   caddy) [[ $# -ge 1 ]] || die "name at least one network"; caddy_step "$@" ;;
   verify) net_ok "${1:-}"; verify "$1" ;;
   down) net_ok "${1:-}"; docker compose --project-directory "$BASE/$1" down ;;
-  *) sed -n '2,12p' "$0"; exit 2 ;;
+  *) sed -n '2,11p' "$0"; exit 2 ;;
 esac

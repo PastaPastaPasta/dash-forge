@@ -56,13 +56,13 @@ How a refresh works: the gateway reads a proof-verified snapshot (chain tip firs
 
 ## What you need
 
-| | Minimum | dashhq (testnet) |
+| | Minimum | dashhq (both networks) |
 |---|---|---|
-| Host | 2 vCPU, 2 GiB RAM, Docker | An LXC or VM on the home Proxmox (proxmox3), Docker Compose |
-| Disk | The mirror cap (`GATEWAY_CACHE_MAX`, default 20 GiB) plus 5 GiB | 40 GiB volume |
+| Host | 2 vCPU, 2 GiB RAM, Docker | One DigitalOcean droplet, Docker Compose, one project per network |
+| Disk | The mirror cap (`GATEWAY_CACHE_MAX`, default 20 GiB) plus 5 GiB | 15 GiB cap (mainnet), 10 GiB (testnet) |
 | Network out | HTTPS to the network's DAPI nodes (port 1443) and to the storage the repos use (IPFS gateways, S3 endpoints) | as is |
-| Network in | HTTPS only, through a TLS proxy | Cloudflare tunnel |
-| Domain | One hostname | `git-forge.dashhq.org` (suggested) |
+| Network in | HTTPS only, through a TLS proxy | Cloudflare proxy in front of Caddy |
+| Domain | One hostname | `git-forge.dashhq.org`, `testnet-git-forge.dashhq.org` |
 | Contact | An abuse contact address | the owner's choice |
 
 A repository costs about its pack size on disk: the dash mirror (606 refs, a 258.7 MiB pack) is about 300 MB with its bitmap index. CPU is spent on the first mirror of a repository and on repacks; serving a warm clone streams from disk.
@@ -157,12 +157,14 @@ The fetch runs with `HOME` set to `<data>/home` and without `DASH_FORGE_KEY`: no
 
 ## DNS and TLS
 
-**dashhq, through a Cloudflare tunnel** (no inbound port on the home network):
+**dashhq: a VPS behind the Cloudflare proxy.** Each hostname has proxied `A` and `AAAA` records for the droplet. Caddy on the droplet holds an ACME certificate for each name (the zone uses Cloudflare's "Full (strict)" mode) and proxies to the gateway on loopback. The gateways keep `GATEWAY_TRUST_PROXY=cloudflare`, and Caddy overwrites `CF-Connecting-IP` with the real peer for any request that does not come from a Cloudflare address, because the droplet can be reached directly and a client could otherwise pick its own rate-limit key. The files and the runbook are in [`services/forge-gateway/deploy/dashhq/`](../../services/forge-gateway/deploy/dashhq/README.md).
+
+**Through a Cloudflare tunnel** (no inbound port, for example on a home network):
 
 1. In the Cloudflare dashboard (Zero Trust → Networks → Tunnels), add a public hostname to the tunnel that runs on the gateway's host: `git-forge.dashhq.org` → `http://localhost:8080`. Cloudflare creates the proxied `CNAME git-forge.dashhq.org → <tunnel-id>.cfargotunnel.com` and terminates TLS.
    - **Use a hostname one level under the zone.** Cloudflare's free certificate covers `dashhq.org` and `*.dashhq.org` only, so a deeper name such as `git.forge.dashhq.org` fails the TLS handshake (alert 40) unless the zone buys Advanced Certificate Manager. That is why dashhq's gateway is `git-forge.dashhq.org`.
-   - When `cloudflared` runs as a container next to the gateway (dashhq does this: a `cloudflared` service in a `docker-compose.override.yml`, its token in a `0600` env file), point the hostname at `http://forge-gateway:8080` instead of `localhost`.
-2. Keep `GATEWAY_TRUST_PROXY=cloudflare`.
+   - When `cloudflared` runs as a container next to the gateway (a `cloudflared` service in a `docker-compose.override.yml`, its token in a `0600` env file), point the hostname at `http://forge-gateway:8080` instead of `localhost`.
+2. Keep `GATEWAY_TRUST_PROXY=cloudflare`. Behind a tunnel only Cloudflare reaches the gateway.
 3. Cache rules: let Cloudflare cache `/badge/*`, `/feed/*` and `/og/*` (they send `Cache-Control: public, max-age=300`; a share page is the same for every client, so caching it is safe). Do **not** cache `*/info/refs`, `*/git-upload-pack` or `*/forge-manifest.json` (they say `no-cache` or `max-age=30`; the default rules already respect that).
 4. Cloudflare's 100-second origin timeout applies to the first byte only: a clone streams, and a cold mirror answers `503 Retry-After` after `GATEWAY_COLD_WAIT_SECS`.
 
@@ -359,7 +361,7 @@ The clone box shows the HTTPS URL only when the web build names a gateway:
 NEXT_PUBLIC_GATEWAY_URL=https://git-forge.dashhq.org NEXT_PUBLIC_GATEWAY_LABEL="dashhq gateway" pnpm build
 ```
 
-`dash://` stays first. The HTTPS line sits under **More options** and reads "Centralized mirror run by dashhq gateway: plain git, read only, optional. The Dash remote above needs no server · Verify". Without the variable there is no HTTPS line.
+`dash://` stays first. The HTTPS line sits under **More options** and reads "Centralized mirror on dashhq gateway: plain git, read only, optional. The Dash remote above needs no server · Verify". Without the variable there is no HTTPS line.
 
 The same variable turns **Copy link** on a public repository's pages into a [share link](#share-links-preview-cards) (`https://git-forge.dashhq.org/og/alice/project/issues/7`), which unfurls with a preview card and opens the page. The gateway sends people to its own `GATEWAY_WEB_URL`, so point a build at a gateway whose `GATEWAY_WEB_URL` is that build's site.
 
@@ -386,9 +388,9 @@ The MVP is free with rate limits. A paid tier is a later spike, and needs no con
 
 > **Dash Forge gateway: privacy notice**
 >
-> The gateways at `git-forge.dashhq.org` (mainnet) and `testnet-git-forge.dashhq.org` (testnet) are run by dashhq. It serves read-only copies of **public** Dash Forge repositories, which anyone can already read on Dash Platform.
+> The gateways at `git-forge.dashhq.org` (mainnet) and `testnet-git-forge.dashhq.org` (testnet) are run by dashhq. They serve read-only copies of **public** Dash Forge repositories, which anyone can already read on Dash Platform.
 >
-> **What we process.** To answer a request we see your IP address, the URL you request and your client's request headers. We use your IP address only to apply rate limits, in memory, for at most two hours after your last request. We do not log IP addresses, user agents or request headers. Our logs record the requested path, the response status and its duration, and are kept for 14 days.
+> **What we process.** To answer a request we see your IP address, the URL you request and your client's request headers. We use your IP address only to apply rate limits, in memory, for at most two hours after your last request. We do not log IP addresses, user agents or request headers, except that when a request fails inside our TLS proxy, its error log records the client address and the request headers in the host's system journal. Our gateway logs record the requested path, the response status and its duration, and are kept for 14 days.
 >
 > **What we do not do.** We use no cookies, no analytics and no tracking. We do not serve private repositories and hold no keys for them. We do not sell or share data.
 >
@@ -402,9 +404,9 @@ The MVP is free with rate limits. A paid tier is a later spike, and needs no con
 
 What the owner provides; the software is ready:
 
-1. **A host:** an LXC or VM on proxmox3 with Docker, 2 vCPU, 2–4 GiB RAM, a 40 GiB volume.
-2. **The hostname:** `git-forge.dashhq.org` (or another), added as a public hostname on a Cloudflare tunnel → `http://localhost:8080` (dashboard step, or a Cloudflare API token scoped to the tunnel and the `dashhq.org` DNS zone).
-3. **Build and start:** the commands under [Run it](#run-it), with `GATEWAY_PUBLIC_URL=https://git-forge.dashhq.org`.
+1. **A host:** a VPS with Docker and Caddy, 2 vCPU, 2–4 GiB RAM per gateway, 40 GiB of disk. dashhq uses one DigitalOcean droplet for both networks.
+2. **The hostnames:** `git-forge.dashhq.org` (mainnet) and `testnet-git-forge.dashhq.org` (testnet), `A` and `AAAA` records, proxied by Cloudflare.
+3. **Deploy:** [`services/forge-gateway/deploy/dashhq/`](../../services/forge-gateway/deploy/dashhq/README.md) (`deploy.sh up`, `caddy`, `verify`).
 4. **Optional, for seconds-fresh mirrors:** a forge-relay with `[wake]` listing the repositories, and its secret in `GATEWAY_WAKE_SECRET_FILE`.
 5. **The web app:** set the variable for the site of the gateway's network, `TESTNET_SITE_GATEWAY_URL` for testnet-forge.dashhq.org or `PAGES_GATEWAY_URL` for a mainnet gateway on forge.dashhq.org (and the matching label), then deploy ([Show it in the web app](#show-it-in-the-web-app)).
 6. **An abuse and privacy contact,** filled into the privacy notice, and the notice published (for example on the gateway's index page or the docs site).

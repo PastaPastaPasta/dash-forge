@@ -96,7 +96,7 @@ describe('CloneBox with a gateway', () => {
     expect(codes()).toContain(cmd.remote)
     expect(codes()).toContain(cmd.dgClone)
     expect(morePanel()?.textContent).toContain('git clone https://gw.invalid/alice/proj.git')
-    expect(morePanel()?.textContent).toContain('Centralized mirror run by dashhq gateway')
+    expect(morePanel()?.textContent).toContain('Centralized mirror on dashhq gateway')
   })
 
   it('copies the git clone command whole and says so', async () => {
@@ -147,6 +147,7 @@ describe('CloneBox with a gateway', () => {
     const verdict = host.querySelector('[data-testid="gateway-verdict"]')?.textContent ?? ''
     expect(verdict).toContain('Matches Dash Platform: 1 ref checked.')
     expect(verdict).toContain('block 9')
+    expect(verdict).toContain('dg verify-mirror https://gw.invalid/alice/proj.git')
   })
 
   it('verify flags a gateway serving a tip Platform never set', async () => {

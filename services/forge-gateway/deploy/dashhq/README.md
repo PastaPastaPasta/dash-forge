@@ -36,10 +36,10 @@ Then, once a hostname's DNS points at pasta1 (see below), let Caddy serve it and
 
 ```sh
 # sudo needs Pasta's password: from a 0600 file, over stdin, then delete the file.
-ssh pasta1 "sudo -S -p '' env FORGE_REV=$REV bash ~/forge-gateway/deploy.sh caddy mainnet testnet && ~/forge-gateway/deploy.sh verify mainnet && ~/forge-gateway/deploy.sh verify testnet" < "$PASSWORD_FILE"
+ssh pasta1 "sudo -S -p '' env FORGE_REV=$REV bash ~/forge-gateway/deploy.sh caddy testnet && ~/forge-gateway/deploy.sh verify testnet" < "$PASSWORD_FILE"
 ```
 
-To enable one name at a time, name only that network (`caddy testnet`); names enabled earlier stay.
+Name only the networks whose DNS already points at pasta1; names enabled earlier stay. `verify` retries the origin clones for a minute while Caddy gets the certificate.
 
 `caddy` keeps a copy of the original Caddyfile as `Caddyfile.bak-pre-forge-gateway`, validates before it reloads, and restores the previous config if Caddy rejects it.
 
@@ -51,6 +51,19 @@ Caddy gets each certificate by ACME HTTP-01, which needs the name to reach pasta
 |---|---|---|---|
 | `testnet-git-forge` | none | `A 178.128.228.195`, `AAAA 2604:a880:cad:d0::c40:d001` | the same, proxied |
 | `git-forge` | `CNAME 93d75225-….cfargotunnel.com`, proxied (the testnet gateway in CT 181) | delete the CNAME; `A 178.128.228.195`, `AAAA 2604:a880:cad:d0::c40:d001` | the same, proxied |
+
+### Cutover order
+
+Each web build names one gateway (`docs/hosting/forge-gateway.md`, "Show it in the web app"), and a build must never name a gateway of the other network. So the switch goes:
+
+1. `testnet-git-forge`: DNS step 1, `deploy.sh caddy testnet`, `deploy.sh verify testnet` (origin over IPv4 and IPv6).
+2. `gh variable set TESTNET_SITE_GATEWAY_URL -R PastaPastaPasta/dash-forge -b https://testnet-git-forge.dashhq.org`, then `gh workflow run pages-testnet.yml -R PastaPastaPasta/dash-forge --ref master`, and wait for the deploy. The testnet site now names the new host.
+3. `git-forge`: DNS step 1. The testnet gateway in CT 181 stops being reachable here.
+4. `deploy.sh caddy mainnet`, `deploy.sh verify mainnet`.
+5. DNS step 2 for both names. Check through Cloudflare over IPv4 and IPv6.
+6. `gh variable set PAGES_GATEWAY_URL -R PastaPastaPasta/dash-forge -b https://git-forge.dashhq.org`, then `gh workflow run pages.yml -R PastaPastaPasta/dash-forge --ref master`.
+
+Both Pages workflows run `check-gateway-network.mjs`, so a build whose gateway's `/readyz` names the other network fails instead of deploying.
 
 ## The old testnet gateway (CT 181)
 

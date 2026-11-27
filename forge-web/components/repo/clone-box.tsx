@@ -191,7 +191,7 @@ export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; ho
     <div data-testid="gateway-clone">
       <CommandBox text={`git clone ${url}`} what="HTTPS clone command" />
       <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">
-        Centralized mirror run by {gateway.label}: plain git, read only, optional. The Dash remote above needs no server ·{' '}
+        Centralized mirror on {gateway.label}: plain git, read only, optional. The Dash remote above needs no server ·{' '}
         <button type="button" onClick={() => void verify()} disabled={state.kind === 'checking'} className={HELP_LINK} data-testid="gateway-verify">
           Verify
         </button>

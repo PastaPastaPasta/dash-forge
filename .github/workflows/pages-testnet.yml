@@ -118,6 +118,8 @@ jobs:
           for v in NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL NEXT_PUBLIC_MAINNET_SITE_URL NEXT_PUBLIC_TESTNET_SITE_URL; do
             [ -n "${!v}" ] || unset "$v"
           done
+          # A gateway on another network would hand out clone lines for that network's repos.
+          node scripts/check-gateway-network.mjs
           pnpm build
       - name: Check the export (network, security.txt, license notices)
         run: |
