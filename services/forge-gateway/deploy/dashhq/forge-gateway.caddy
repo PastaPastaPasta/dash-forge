@@ -21,7 +21,7 @@
 # repository mainnet does not serve says where testnet repositories went.
 (forge_gateway_mainnet) {
 	import forge_gateway_client
-	@git path_regexp repo ^/([^/]+/[^/]+\.git)/
+	@git path_regexp repo ^/([^/]+)/([^/]+?)(?:\.git)?/(?:info/refs|git-upload-pack)$
 	handle @git {
 		reverse_proxy 127.0.0.1:{args.0} {
 			flush_interval -1
@@ -29,7 +29,7 @@
 			handle_response @absent {
 				header X-Content-Type-Options nosniff
 				respond 404 {
-					body "no public repository {re.repo.1} on mainnet. Testnet repositories moved to https://testnet-git-forge.dashhq.org/{re.repo.1}"
+					body "no public repository {re.repo.1}/{re.repo.2} on mainnet. Testnet repositories moved to https://testnet-git-forge.dashhq.org/{re.repo.1}/{re.repo.2}.git"
 				}
 			}
 		}

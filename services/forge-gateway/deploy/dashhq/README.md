@@ -73,6 +73,12 @@ Until 2026-11-27 `git-forge.dashhq.org` was the testnet gateway in CT 181 on the
 
 Put the new (or previous) digest in `mainnet.env` / `testnet.env` through a PR, then `FORGE_REV=<that commit> ~/forge-gateway/deploy.sh up <network>`. The mirrors on the volume are reused. Check `version.buildSha` in `/readyz`.
 
+## Upkeep
+
+- `forge-gateway.caddy` lists Cloudflare's address ranges. Compare them with https://www.cloudflare.com/ips-v4 and https://www.cloudflare.com/ips-v6 now and then: a request from a new range would have its `CF-Connecting-IP` replaced by the edge's address, so its clients would share one rate-limit key.
+- Before the privacy notice in `docs/hosting/forge-gateway.md` is published, make its retention true: the compose file rotates gateway logs by size, and journald (Caddy's error log) keeps entries until its size limit. Set `MaxRetentionSec=14d` in journald and an age limit for the gateway logs, or change the notice.
+- Cloudflare cache rules for `/badge/*`, `/feed/*` and `/og/*` should name both hostnames.
+
 ## Takedowns
 
 Append to `~/forge-gateway/<network>/deny/deny.txt` (format in [Takedowns](../../../../docs/hosting/forge-gateway.md#takedowns-and-hidden-repositories)); it is re-read within seconds.
