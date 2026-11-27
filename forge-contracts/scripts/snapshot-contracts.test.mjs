@@ -1,5 +1,6 @@
 // node --test forge-contracts/scripts/snapshot-contracts.test.mjs
-// The offline parts of snapshot-contracts.mjs: which records it will snapshot, and where.
+// The offline parts of snapshot-contracts.mjs: which records it will snapshot, where, and at which
+// protocol version (against a fake SDK).
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { incompleteReason, resolveTarget, snapshotIds } from './snapshot-contracts.mjs';
+import { incompleteReason, resolveTarget, snapshotIds, snapshotVersion, takeSnapshot } from './snapshot-contracts.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const reg = (contractId) => ({ contractId, status: 'registered' });
@@ -68,4 +69,53 @@ test('a symlink into the committed snapshots is not a scratch location', () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/**
+ * A fake evo-sdk: the SDK starts at `seed` and, as the real one does, ratchets up to the version
+ * the proved answer names (`provedVersion`) during the read; `pinned` keeps it at `seed`.
+ */
+function fakeEvo(seed, provedVersion, { pinned = false, missing = [] } = {}) {
+  const made = [];
+  class EvoSDK {
+    current = seed;
+    constructor(options) { made.push(options); }
+    async connect() {}
+    version() { return this.current; }
+    contracts = {
+      getManyWithProof: async (ids) => {
+        if (!pinned && provedVersion > this.current) this.current = provedVersion;
+        return {
+          data: new Map(ids.filter((id) => !missing.includes(id)).map((id) => [id, { version: 1, toBytes: (v) => Uint8Array.of(v) }])),
+          metadata: provedVersion === undefined ? {} : { protocolVersion: provedVersion },
+        };
+      },
+    };
+  }
+  return { evo: { EvoSDK }, made };
+}
+
+const snap = (network, evo) => takeSnapshot({ network, key: network, dep: four(), evo });
+
+test('the snapshot is serialized at the version the proved answer names', async () => {
+  // seeded at 14, the SDK learns testnet's 15 from the read itself
+  const { evo, made } = fakeEvo(14, 15);
+  const { snapshot, platformVersion } = await snap('testnet', evo);
+  assert.equal(platformVersion, 15);
+  assert.deepEqual(snapshot.C, { version: 1, platformVersion: 15, bytes: Buffer.of(15).toString('base64') });
+  assert.equal(made[0].version, undefined, 'the SDK is not pinned');
+});
+
+test('a version the network does not run is refused', async () => {
+  // an SDK seeded or pinned above the network: the snapshot would raise every reader's stored version
+  await assert.rejects(snap('mainnet', fakeEvo(15, 14).evo), /mainnet runs protocol 14 but the SDK is at 15: nothing written/);
+  await assert.rejects(snap('testnet', fakeEvo(14, 15, { pinned: true }).evo), /testnet runs protocol 15 but the SDK is at 14/);
+  await assert.rejects(snap('mainnet', fakeEvo(14, 13).evo), /runs protocol 13, below 14/);
+  await assert.rejects(snap('mainnet', fakeEvo(14, undefined).evo), /named no protocol version/);
+  assert.equal(snapshotVersion(14, 14, 'mainnet'), 14);
+  assert.throws(() => snapshotVersion(14, 0, 'mainnet'), /named no protocol version/);
+});
+
+test('a contract the proved answer lacks is refused', async () => {
+  await assert.rejects(snap('testnet', fakeEvo(14, 14, { missing: ['E'] }).evo), /E is not on testnet/);
 });
