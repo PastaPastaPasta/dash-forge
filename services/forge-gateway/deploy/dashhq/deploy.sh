@@ -102,7 +102,7 @@ verify() {
   grep -q "\"network\":\"$net\"" <<<"$ready" || { echo "FAIL readyz network is not $net"; rc=1; }
   [[ -n $repo ]] || { echo "set FORGE_SAMPLE_REPO=<owner>/<name> (a public $net repository) for the clone checks"; return $rc; }
   clone_check "loopback http://127.0.0.1:$port/$repo.git" "http://127.0.0.1:$port/$repo.git" || rc=1
-  if sudo test -f "$CADDY_INCLUDE" && sudo grep -q "^$host {" "$CADDY_INCLUDE"; then
+  if grep -qs "^$host {" "$CADDY_INCLUDE"; then
     v4=$(curl -4 -fsS --max-time 10 https://api.ipify.org || true)
     v6=$(ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
     [[ -n $v4 ]] && clone_check "origin IPv4 $v4" "https://$host/$repo.git" -c "http.curloptResolve=$host:443:$v4" || rc=1

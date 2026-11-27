@@ -35,8 +35,11 @@ ssh pasta1 "curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-fo
 Then, once a hostname's DNS points at pasta1 (see below), let Caddy serve it and verify over the droplet's public IPv4 and IPv6:
 
 ```sh
-ssh pasta1 "FORGE_REV=$REV ~/forge-gateway/deploy.sh caddy mainnet testnet && ~/forge-gateway/deploy.sh verify mainnet && ~/forge-gateway/deploy.sh verify testnet"
+# sudo needs Pasta's password: from a 0600 file, over stdin, then delete the file.
+ssh pasta1 "sudo -S -p '' env FORGE_REV=$REV bash ~/forge-gateway/deploy.sh caddy mainnet testnet && ~/forge-gateway/deploy.sh verify mainnet && ~/forge-gateway/deploy.sh verify testnet" < "$PASSWORD_FILE"
 ```
+
+To enable one name at a time, name only that network (`caddy testnet`); names enabled earlier stay.
 
 `caddy` keeps a copy of the original Caddyfile as `Caddyfile.bak-pre-forge-gateway`, validates before it reloads, and restores the previous config if Caddy rejects it.
 
