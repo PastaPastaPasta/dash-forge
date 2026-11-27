@@ -41,7 +41,7 @@ RUN cargo build --locked --release -p dg -p git-remote-dash -p forge-runner --fe
 
 # nektos/act, a pinned release. Its archive is checked against a digest pinned here (bump both
 # with ACT_VERSION; the digests match the release's checksums.txt for v0.2.89).
-FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS act
+FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e AS act
 ARG ACT_VERSION=0.2.89
 ARG ACT_SHA256_X86_64=0191d6f1f3b716b5c55820032605d05fc3c1cdbf581ebeff655019e5dd1524c0
 ARG ACT_SHA256_ARM64=daa8679ba9615a74d2d0cec321dc593f21948a2a11bb65862b063d8b930f4bcb
@@ -51,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
  && echo "${sum}  /tmp/act.tgz" | sha256sum -c - \
  && tar -xzf /tmp/act.tgz -C /usr/local/bin act && act --version
 
-FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+FROM debian:bookworm-slim@sha256:e67eeead736ff7bbe258ef088bff683635c561b1fcfefad0806c1df4ab49ce0e
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git docker.io \
  && rm -rf /var/lib/apt/lists/* \
