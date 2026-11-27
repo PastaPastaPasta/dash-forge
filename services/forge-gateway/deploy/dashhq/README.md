@@ -15,7 +15,7 @@ The gateways hold no keys and spend nothing. Nothing on the volume needs a backu
 
 - `deploy.sh`: `up`, `caddy`, `verify` and `down`, each safe to run again. It downloads the stock `docker-compose.yml`, `docker-compose.override.yml` (the deny list mount) and the network's `.env` from this repository at `FORGE_REV`.
 - `mainnet.env`, `testnet.env`: the settings. No secrets.
-- `forge-gateway.caddy`: the Caddy snippet. A request that did not come from a Cloudflare address gets `CF-Connecting-IP` set to its real peer, so no client picks its own rate-limit key.
+- `forge-gateway.caddy`: the Caddy snippets. A request that did not come from a Cloudflare address gets `CF-Connecting-IP` set to its real peer, so no client picks its own rate-limit key. On `git-forge.dashhq.org`, a git request for a repository mainnet does not serve answers `404` with the repository's address on `testnet-git-forge.dashhq.org`, because that name served testnet until 2026-11-27.
 
 ## Deploy
 
@@ -51,6 +51,10 @@ Caddy gets each certificate by ACME HTTP-01, which needs the name to reach pasta
 |---|---|---|---|
 | `testnet-git-forge` | none | `A 178.128.228.195`, `AAAA 2604:a880:cad:d0::c40:d001` | the same, proxied |
 | `git-forge` | `CNAME 93d75225-….cfargotunnel.com`, proxied (the testnet gateway in CT 181) | delete the CNAME; `A 178.128.228.195`, `AAAA 2604:a880:cad:d0::c40:d001` | the same, proxied |
+
+## The old testnet gateway (CT 181)
+
+Until 2026-11-27 `git-forge.dashhq.org` was the testnet gateway in CT 181 on the R730 (`/opt/forge/gateway`, reached through the dashboard-managed Cloudflare tunnel `93d75225…`). After the DNS switch nothing routes to it. It is left running, untouched; retire it later: `docker compose down` in `/opt/forge/gateway`, then delete the tunnel's `git-forge.dashhq.org` public hostname in the Cloudflare dashboard.
 
 ## Upgrade or roll back
 
