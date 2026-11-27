@@ -687,7 +687,7 @@ export function WalletConnectFlow({
               {mode === 'renew' && origin !== 'app-connect' ? 'Approve in the wallet that holds this identity. ' : null}
               <ApprovalTerms budget={request.terms.budget} expiresAt={request.terms.expiresAt} />
             </p>
-            <ScanSafety />
+            <ScanSafety syncs={syncBinding.current && ACTIVE_NETWORK.v2?.user !== undefined} />
             {mode === 'login' ? <WalletSupportNote /> : null}
           </div>
         </details>

@@ -75,6 +75,18 @@ describe('ScanSafety (under Details)', () => {
     expect(host.textContent).not.toContain('encryption key')
   })
 
+  it('where settings sync, says a scan can also give the sync key and that disabling keys does not undo it', () => {
+    act(() => root.render(<ScanSafety syncs />))
+    expect(host.querySelector('[data-testid="scan-warning-sync"]')!.textContent).toContain('Disabling keys')
+    expect(host.querySelector('[data-testid="scan-warning-rotate"]')!.getAttribute('href')).toContain('/docs/rotate-storage-credentials/#if-a-site-may-have-your-settings-sync-key')
+    expect(host.textContent).not.toContain('encryption key')
+  })
+
+  it('where nothing syncs, says nothing about a sync key', () => {
+    act(() => root.render(<ScanSafety syncs={false} />))
+    expect(host.querySelector('[data-testid="scan-warning-sync"]')).toBeNull()
+  })
+
   it('closes the sign-in sheet when the way to disable the key is followed', () => {
     act(() => useUiStore.getState().openLogin('wallet'))
     act(() => root.render(<ScanSafety />))

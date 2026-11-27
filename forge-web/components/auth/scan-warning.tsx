@@ -13,6 +13,7 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { isImmutableCopy } from '@/lib/new-build'
 import { SITE_HOST } from '@/lib/site'
 import { DOCS } from '@/lib/docs-links'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 
 /**
  * The address to check: this build's site, or, on a copy served by CID from an IPFS gateway (the
@@ -40,7 +41,7 @@ export function ScanOnlyHere({ host: given }: { host?: string }): JSX.Element {
 }
 
 /** Why: what a lookalike can do, what an approval gives (within the limits above it), and the undo. */
-export function ScanSafety(): JSX.Element {
+export function ScanSafety({ syncs = ACTIVE_NETWORK.v2?.user !== undefined }: { syncs?: boolean }): JSX.Element {
   const closeLogin = useUiStore((s) => s.closeLogin)
   const here = hostToCheck()
   return (
@@ -61,6 +62,16 @@ export function ScanSafety(): JSX.Element {
         </Link>
         ).
       </li>
+      {syncs && (
+        <li data-testid="scan-warning-sync">
+          An approval can also give the key that reads the storage settings you sync, credentials included. Disabling keys
+          doesn’t take that back:{' '}
+          <Link prefetch={false} href={DOCS.moveSyncKey} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-rotate">
+            move sync to a new key
+          </Link>
+          .
+        </li>
+      )}
     </ul>
   )
 }
