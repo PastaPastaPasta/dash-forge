@@ -71,7 +71,8 @@ caddy_step() {
   sudo rm -f "$CADDY_INCLUDE.prev"
   if sudo test -f "$CADDY_INCLUDE"; then sudo cp "$CADDY_INCLUDE" "$CADDY_INCLUDE.prev"; fi
   # The include goes in place before the Caddyfile imports it.
-  sudo install -m 0644 "$tmp" "$CADDY_INCLUDE"
+  sudo install -m 0644 "$tmp" "$CADDY_INCLUDE.new"
+  sudo mv "$CADDY_INCLUDE.new" "$CADDY_INCLUDE"
   rm -f "$tmp"
   if ! sudo grep -qxF "import $CADDY_INCLUDE" "$CADDYFILE"; then
     sudo cp "$CADDYFILE" "$CADDYFILE.prev"
