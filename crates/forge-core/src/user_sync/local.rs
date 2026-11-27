@@ -20,8 +20,24 @@ struct LocalState {
     /// A one-time note's key → ms it was shown.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     noted: BTreeMap<String, u64>,
+    /// `<network>/<identity>` → the sync key a move is about to register (public values only),
+    /// so a retry after a lost answer finishes under it instead of registering another.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pending: BTreeMap<String, PendingKey>,
     #[serde(flatten)]
     extra: toml::Table,
+}
+
+/// A sync key a move is about to register: its expected id and its public key (hex). Never a
+/// secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingKey {
+    /// The id it is expected to get.
+    #[serde(rename = "keyId")]
+    pub key_id: u32,
+    /// The compressed public key, hex.
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
 }
 
 /// The file's path (`$XDG_CONFIG_HOME/dash-forge/user-sync.toml`).
@@ -125,6 +141,39 @@ pub fn record_synced(network: &str, identity: &str, at: u64) -> Result<()> {
     })
 }
 
+/// The key a move of `identity` on `network` was about to register, if one was not finished.
+pub fn pending_key(network: &str, identity: &str) -> Option<PendingKey> {
+    pending_key_at(&path()?, network, identity)
+}
+
+/// Record, before the identity update, the key a move is about to register.
+pub fn record_pending_key(network: &str, identity: &str, key: PendingKey) -> Result<()> {
+    let path = path().ok_or_else(|| Error::Config("no config directory".into()))?;
+    record_pending_key_at(&path, network, identity, key)
+}
+
+/// Forget the pending key once the move finished.
+pub fn clear_pending_key(network: &str, identity: &str) -> Result<()> {
+    update(|s| {
+        s.pending.remove(&account(network, identity));
+    })
+}
+
+fn pending_key_at(path: &Path, network: &str, identity: &str) -> Option<PendingKey> {
+    load(path).pending.get(&account(network, identity)).cloned()
+}
+
+fn record_pending_key_at(
+    path: &Path,
+    network: &str,
+    identity: &str,
+    key: PendingKey,
+) -> Result<()> {
+    update_at(path, |s| {
+        s.pending.insert(account(network, identity), key);
+    })
+}
+
 /// Whether the one-time note `what` is to be shown now: `true` the first time on this computer
 /// (and records it), `false` after. A file that cannot be written shows nothing.
 pub fn note_once(what: &str) -> bool {
@@ -161,6 +210,26 @@ mod tests {
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .ends_with("# kept\n"));
+    }
+
+    #[test]
+    fn a_pending_key_is_kept_per_identity_and_holds_no_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("user-sync.toml");
+        let key = PendingKey {
+            key_id: 4,
+            public_key: "02ab".into(),
+        };
+        record_pending_key_at(&path, "testnet", "ID", key.clone()).unwrap();
+        assert_eq!(pending_key_at(&path, "testnet", "ID"), Some(key));
+        assert_eq!(pending_key_at(&path, "mainnet", "ID"), None);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("publicKey") && !raw.to_lowercase().contains("secret"));
+        update_at(&path, |s| {
+            s.pending.remove("testnet/ID");
+        })
+        .unwrap();
+        assert_eq!(pending_key_at(&path, "testnet", "ID"), None);
     }
 
     #[test]

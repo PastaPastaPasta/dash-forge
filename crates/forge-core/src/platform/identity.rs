@@ -929,6 +929,41 @@ impl PlatformClient {
         add: &[(&FreshKey, KeySpec)],
         disable: &[u32],
     ) -> Result<Vec<u32>> {
+        self.try_update_identity_keys(identity_id, master_wif, add, disable)
+            .await
+            .map_err(|f| f.error)
+    }
+
+    /// [`Self::update_identity_keys`], saying on failure whether the update was broadcast (so
+    /// it may still land) or failed before anything was sent.
+    pub async fn try_update_identity_keys(
+        &self,
+        identity_id: &str,
+        master_wif: &Secret,
+        add: &[(&FreshKey, KeySpec)],
+        disable: &[u32],
+    ) -> std::result::Result<Vec<u32>, UpdateFailed> {
+        let unsent = |error| UpdateFailed { sent: false, error };
+        let (st, added) = self
+            .build_identity_keys_update(identity_id, master_wif, add, disable)
+            .await
+            .map_err(unsent)?;
+        st.broadcast_and_wait::<StateTransitionProofResult>(self.sdk(), None)
+            .await
+            .map_err(|e| UpdateFailed {
+                sent: true,
+                error: sdk_err("updating the identity's keys", e),
+            })?;
+        Ok(added)
+    }
+
+    async fn build_identity_keys_update(
+        &self,
+        identity_id: &str,
+        master_wif: &Secret,
+        add: &[(&FreshKey, KeySpec)],
+        disable: &[u32],
+    ) -> Result<(dash_sdk::dpp::state_transition::StateTransition, Vec<u32>)> {
         let id = parse_id(identity_id, "identity id")?;
         let mut identity = self.fetch_identity(identity_id).await?.0;
         let master_secret = secret_from_wif(master_wif.expose(), self.network())?;
@@ -997,10 +1032,7 @@ impl PlatformClient {
         )
         .await
         .map_err(|e| sdk_err("signing the identity update", e))?;
-        st.broadcast_and_wait::<StateTransitionProofResult>(self.sdk(), None)
-            .await
-            .map_err(|e| sdk_err("updating the identity's keys", e))?;
-        Ok(added)
+        Ok((st, added))
     }
 
     /// Whether DPNS name `label` is free.
@@ -1380,6 +1412,15 @@ pub struct GroupOwnership {
     pub owner: String,
     /// Identities that may add members besides the owner (base58); empty for a single owner.
     pub admins: Vec<String>,
+}
+
+/// A failed [`PlatformClient::try_update_identity_keys`].
+#[derive(Debug)]
+pub struct UpdateFailed {
+    /// Whether the update was broadcast: it may still land.
+    pub sent: bool,
+    /// Why.
+    pub error: Error,
 }
 
 /// What a key added by [`PlatformClient::update_identity_keys`] is.

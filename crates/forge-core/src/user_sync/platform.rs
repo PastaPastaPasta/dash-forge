@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 
+use super::rotate::MoveError;
 use super::store::{EncKeyInfo, GrantDoc, ShareDoc, StateDoc, UserStore};
 use super::{DOC_GRANT, DOC_SHARE, DOC_STATE};
 use crate::error::{Error, Result};
@@ -366,6 +367,7 @@ pub struct PlatformKeyLedger<'a> {
     client: &'a PlatformClient,
     contract_id: String,
     master_wif: Option<crate::keystore::Secret>,
+    pending_id: Option<u32>,
 }
 
 impl<'a> PlatformKeyLedger<'a> {
@@ -380,7 +382,18 @@ impl<'a> PlatformKeyLedger<'a> {
             client,
             contract_id: contract_id.to_string(),
             master_wif,
+            pending_id: None,
         }
+    }
+
+    /// Before sending the update, record the key it registers (`expected_id` and its public key,
+    /// never a secret) in this computer's `user-sync.toml`
+    /// ([`super::local::record_pending_key`]): a retry after a lost answer then finishes under
+    /// it ([`super::rotate::move_key_with`]).
+    #[must_use]
+    pub fn marking_pending(mut self, expected_id: u32) -> Self {
+        self.pending_id = Some(expected_id);
+        self
     }
 
     async fn live_id_of(&self, identity: &str, public: &[u8]) -> Result<Option<u32>> {
@@ -427,19 +440,41 @@ impl super::rotate::KeyLedger for PlatformKeyLedger<'_> {
         identity: &str,
         secret: &crate::app_connect::SecretBytes,
         disable: &[u32],
-    ) -> Result<u32> {
+    ) -> std::result::Result<u32, MoveError> {
         use crate::platform::identity::{FreshKey, KeySpec};
+        let unsent = |error| MoveError {
+            started: false,
+            error,
+        };
+        let sent = |error| MoveError {
+            started: true,
+            error,
+        };
         let master = self.master_wif.as_ref().ok_or_else(|| {
-            Error::Config("moving sync to a new key needs the identity's master key".into())
+            unsent(Error::Config(
+                "moving sync to a new key needs the identity's master key".into(),
+            ))
         })?;
-        let public = super::crypto::public_key(secret)?;
-        if let Some(id) = self.live_id_of(identity, &public).await? {
+        let public = super::crypto::public_key(secret).map_err(unsent)?;
+        if let Some(id) = self.live_id_of(identity, &public).await.map_err(unsent)? {
             return Ok(id);
         }
-        let fresh = FreshKey::from_secret_bytes(secret.expose(), self.client.network())?;
-        let sent = self
+        let fresh =
+            FreshKey::from_secret_bytes(secret.expose(), self.client.network()).map_err(unsent)?;
+        if let Some(key_id) = self.pending_id {
+            super::local::record_pending_key(
+                &self.client.network().key(),
+                identity,
+                super::local::PendingKey {
+                    key_id,
+                    public_key: hex::encode(public),
+                },
+            )
+            .map_err(unsent)?;
+        }
+        let result = self
             .client
-            .update_identity_keys(
+            .try_update_identity_keys(
                 identity,
                 master,
                 &[(
@@ -451,22 +486,37 @@ impl super::rotate::KeyLedger for PlatformKeyLedger<'_> {
                 disable,
             )
             .await;
-        // Whatever the broadcast said, a read of the identity decides (it may have landed).
+        let result = match result {
+            Err(failed) if !failed.sent => return Err(unsent(failed.error)),
+            r => r,
+        };
+        // From here the update was broadcast: whatever it answered, it may have landed, and a
+        // read of the identity decides. Any failure now is a move that started.
         for attempt in 0..5u64 {
             if attempt > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(2000 * attempt)).await;
             }
-            if let Some(id) = self.live_id_of(identity, &public).await? {
+            if let Some(id) = self.live_id_of(identity, &public).await.map_err(sent)? {
                 return Ok(id);
             }
-            if sent.is_err() && attempt >= 1 {
+            if result.is_err() && attempt >= 1 {
                 break;
             }
         }
-        sent?;
-        Err(Error::Platform(
-            "the identity update was accepted, but the new sync key is not on the identity yet; run the same command again in a minute"
+        if let Err(failed) = result {
+            return Err(sent(failed.error));
+        }
+        Err(sent(Error::Platform(
+            "the identity update was accepted, but the new sync key is not on the identity yet"
                 .into(),
-        ))
+        )))
+    }
+
+    async fn maintainers(&self, repo_id: &str) -> Result<std::collections::BTreeSet<String>> {
+        match crate::resolve::resolve_id(self.client, repo_id).await {
+            Ok(repo) => super::repo::current_maintainers(self.client, &repo).await,
+            Err(Error::NotFound) => Ok(std::collections::BTreeSet::new()),
+            Err(e) => Err(e),
+        }
     }
 }

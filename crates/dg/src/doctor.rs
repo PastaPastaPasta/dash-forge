@@ -1047,14 +1047,18 @@ async fn check_storage(ctx: &Ctx) -> Vec<Check> {
                 Ok(client) => crate::sync::moved_away(&client, &contract, &key).await,
                 Err(_) => false,
             };
-            Some(Check::ok(
-                "settings sync",
-                if moved {
-                    crate::sync::ADD_KEY_NOTE
-                } else {
-                    "on: storage profiles follow your identity across devices"
-                },
-            ))
+            Some(if moved {
+                Check::warn(
+                    "settings sync",
+                    "your synced settings moved to a new key, which this computer doesn't hold yet",
+                    "run `dg storage sync add-key`",
+                )
+            } else {
+                Check::ok(
+                    "settings sync",
+                    "on: storage profiles follow your identity across devices",
+                )
+            })
         }
     };
     sync.into_iter()

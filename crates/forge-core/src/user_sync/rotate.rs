@@ -11,7 +11,7 @@
 //! A run that stops part-way is finished by the next one: documents still sealed under an older
 //! key the phrase makes are re-sealed under the current key, with no second `IdentityUpdate`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 
@@ -48,13 +48,17 @@ pub trait KeyLedger: Send + Sync {
     /// One `IdentityUpdate` signed by the master key: add `secret` as the next key id (one above
     /// the highest), `ECDSA_SECP256K1` / `ENCRYPTION` / `MEDIUM`, bound to forge-user, not
     /// read-only, and disable the keys `disable` in the same transition. The new key's id, once
-    /// a read shows it on the identity.
+    /// a read shows it on the identity. A failure says whether the update was broadcast
+    /// ([`MoveError::started`]): once it was, it may land later.
     async fn add_and_disable(
         &self,
         identity: &str,
         secret: &SecretBytes,
         disable: &[u32],
-    ) -> Result<u32>;
+    ) -> std::result::Result<u32, MoveError>;
+    /// The current maintainers of repository `repo_id` (its owner left out): who a share's
+    /// grants may stay with. Empty for a repository that is gone.
+    async fn maintainers(&self, repo_id: &str) -> Result<BTreeSet<String>>;
 }
 
 /// Where on the phrase's DIP-13 branch a forge-user key is: the pre-rotation path (testnet and
@@ -77,6 +81,8 @@ pub struct PhraseKeys {
     rotations: BTreeMap<u32, Rotation>,
     live: Vec<u32>,
     next: SecretBytes,
+    next_taken: Option<u32>,
+    next_id: u32,
 }
 
 impl std::fmt::Debug for PhraseKeys {
@@ -95,12 +101,21 @@ impl PhraseKeys {
         &self.keys[&self.current]
     }
 
-    /// Whether the current key is at the highest rotation the phrase made of any of the
-    /// identity's forge-user keys, live or disabled. Only then can an earlier move be finished
-    /// under it; a current key at a lower rotation (one an attacker could hold, registered
-    /// again under a newer id) is always moved away from.
+    /// The key a move would register (public values only): its expected id (one above the
+    /// highest forge-user key id; the update decides) and its public key. What a device records
+    /// before the update, so a retry after a lost answer finishes under it ([`move_key_with`]).
+    pub fn next_key(&self) -> Result<(u32, [u8; 33])> {
+        Ok((self.next_id, crypto::public_key(&self.next)?))
+    }
+
+    /// Whether an earlier move can be finished under the current key: it is at rotation 1 or
+    /// above (a move never registers rotation 0, which wallets hand out at sign-in, nor the
+    /// legacy key) and at the highest rotation the phrase made of any of the identity's
+    /// forge-user keys, live or disabled. A current key at a lower rotation (one an attacker
+    /// could hold, registered again under a newer id) is always moved away from.
     pub fn current_is_newest(&self) -> bool {
-        self.rotations.values().max() == self.rotations.get(&self.current)
+        let current = self.rotations.get(&self.current);
+        current >= Some(&Rotation::At(1)) && self.rotations.values().max() == current
     }
 }
 
@@ -175,9 +190,10 @@ pub async fn phrase_keys(
         highest.checked_add(1).ok_or(Error::Integrity)?,
     )?;
     let next_public = crypto::public_key(&next)?;
-    if all.iter().any(|k| k.public_key == next_public) {
-        return Err(Error::Integrity);
-    }
+    let next_taken = all
+        .iter()
+        .any(|k| k.public_key == next_public)
+        .then_some(highest + 1);
     let live = all
         .iter()
         .filter(|k| !k.disabled && keys.contains_key(&k.id))
@@ -191,7 +207,16 @@ pub async fn phrase_keys(
         rotations,
         live,
         next,
+        next_taken,
+        next_id: all.iter().map(|k| k.id + 1).max().unwrap_or(0),
     }))
+}
+
+/// The refusal of a move whose next key is already on the identity.
+pub fn next_taken_line(rotation: u32) -> String {
+    format!(
+        "This identity already has the sync key a move would add (rotation {rotation}). Nothing was changed."
+    )
 }
 
 /// What a move did.
@@ -252,10 +277,15 @@ impl std::error::Error for MoveError {
 struct Plan {
     states: Vec<StateDoc>,
     shares: Vec<(ShareDoc, Vec<GrantDoc>)>,
+    maintainers: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Plan {
-    async fn read(store: &dyn UserStore, keys: &PhraseKeys) -> Result<Self> {
+    async fn read(
+        store: &dyn UserStore,
+        ledger: &dyn KeyLedger,
+        keys: &PhraseKeys,
+    ) -> Result<Self> {
         let me = &keys.identity_id;
         let states: Vec<StateDoc> = store
             .states_of(me)
@@ -286,12 +316,56 @@ impl Plan {
                 ));
             }
         }
-        for (s, _) in &shares {
+        for (s, gs) in &shares {
             if !keys.keys.contains_key(&s.key_id) {
                 return Err(unknown_key("shared storage of a repository", s.key_id));
             }
+            if gs
+                .iter()
+                .map(|g| g.epoch)
+                .fold(s.epoch, u32::max)
+                .checked_add(1)
+                .is_none()
+            {
+                return Err(Error::InvalidInput(
+                    "a repository's shared storage is at the last epoch there is; nothing was changed"
+                        .into(),
+                ));
+            }
         }
-        Ok(Self { states, shares })
+        let mut maintainers = BTreeMap::new();
+        for (s, _) in &shares {
+            maintainers.insert(s.repo_id.clone(), ledger.maintainers(&s.repo_id).await?);
+        }
+        let plan = Self {
+            states,
+            shares,
+            maintainers,
+        };
+        plan.opens(keys)?;
+        Ok(plan)
+    }
+
+    /// Every document opens under the key it names: checked before the identity update, so a
+    /// slot or share that can't be read never strands a move after the old key is disabled.
+    fn opens(&self, keys: &PhraseKeys) -> Result<()> {
+        for s in &self.states {
+            open_state_doc(&keys.keys[&s.key_id], s).map_err(|_| {
+                Error::InvalidInput(format!(
+                    "your synced {} settings don't open with key {}; nothing was changed",
+                    s.slot, s.key_id
+                ))
+            })?;
+        }
+        for (s, _) in &self.shares {
+            open_share_doc(&keys.keys[&s.key_id], s).map_err(|_| {
+                Error::InvalidInput(format!(
+                    "a repository's shared storage doesn't open with key {}; nothing was changed",
+                    s.key_id
+                ))
+            })?;
+        }
+        Ok(())
     }
 
     /// Whether some document is not yet under `key_id`: an interrupted move.
@@ -320,30 +394,49 @@ fn unknown_key(what: &str, key_id: u32) -> Error {
 /// phrase makes is disabled, in one update. Then: every `state` slot, read with the key its
 /// `keyId` names, is written again under the new key with the same plaintext and read back;
 /// missing [`GUARDED_SLOTS`] are created empty; every share moves to an epoch above it and every
-/// grant of it, then each grant is rewritten (a grant whose recipient key is no longer live is
-/// deleted). Returns the new key and what was written.
+/// grant of it, then each grant is rewritten (a grant whose recipient key is no longer live, or
+/// that is below the share's epoch, is deleted). Returns the new key and what was written.
 pub async fn move_key(
     store: &dyn UserStore,
     ledger: &dyn KeyLedger,
     keys: &PhraseKeys,
     held: Option<u32>,
 ) -> std::result::Result<(SyncKey, Moved), MoveError> {
+    move_key_with(store, ledger, keys, held, None).await
+}
+
+/// [`move_key`], where `pending` is the public key this device recorded before an earlier
+/// run's identity update ([`PhraseKeys::next_key`]): when it is the current key, that update
+/// landed though its answer was lost, and the move is finished under it rather than moved again.
+pub async fn move_key_with(
+    store: &dyn UserStore,
+    ledger: &dyn KeyLedger,
+    keys: &PhraseKeys,
+    held: Option<u32>,
+    pending: Option<&[u8]>,
+) -> std::result::Result<(SyncKey, Moved), MoveError> {
     let before = |error| MoveError {
         started: false,
         error,
     };
-    let plan = Plan::read(store, keys).await.map_err(before)?;
+    if let Some(rotation) = keys.next_taken {
+        return Err(before(Error::InvalidInput(next_taken_line(rotation))));
+    }
+    let plan = Plan::read(store, ledger, keys).await.map_err(before)?;
     let current = keys.current();
+    let landed_unanswered = pending
+        .is_some_and(|p| crypto::public_key(current.secret()).is_ok_and(|c| c.as_slice() == p));
     let resume = keys.current_is_newest()
-        && (plan.behind(current.key_id) || held.is_some_and(|h| h != current.key_id));
+        && (plan.behind(current.key_id)
+            || held.is_some_and(|h| h != current.key_id)
+            || landed_unanswered);
     let mut out = Moved::default();
     let target = if resume {
         current.clone()
     } else {
         let id = ledger
             .add_and_disable(&keys.identity_id, &keys.next, &keys.live)
-            .await
-            .map_err(before)?;
+            .await?;
         out.disabled.clone_from(&keys.live);
         SyncKey::new(&keys.network, &keys.identity_id, id, keys.next.clone()).map_err(|error| {
             MoveError {
@@ -378,18 +471,36 @@ async fn reseal(
         out.states.push(s.slot.clone());
     }
     for slot in GUARDED_SLOTS {
-        if plan.states.iter().any(|s| s.slot == slot)
-            || store.state(&target.identity_id, slot).await?.is_some()
-        {
+        if plan.states.iter().any(|s| s.slot == slot) {
             continue;
         }
-        let empty = SlotDoc::new(slot).to_json()?;
-        sync.write_plain(slot, &empty, None).await?;
-        out.created.push(slot.to_string());
+        // A slot an old-key client created after the listing, before the update disabled it.
+        match store.state(&target.identity_id, slot).await? {
+            Some(late) if late.key_id == target.key_id => {}
+            Some(late) => {
+                let old = keys
+                    .keys
+                    .get(&late.key_id)
+                    .ok_or_else(|| unknown_key(&format!("synced {slot} settings"), late.key_id))?;
+                reseal_state(&sync, old, &late).await?;
+                out.states.push(slot.to_string());
+            }
+            None => {
+                let empty = SlotDoc::new(slot).to_json()?;
+                sync.write_plain(slot, &empty, None).await?;
+                out.created.push(slot.to_string());
+            }
+        }
     }
     for (share, grants) in &plan.shares {
-        let (written, rewritten, dropped) =
-            move_share(&sync, &keys.keys[&share.key_id], share, grants).await?;
+        let (written, rewritten, dropped) = move_share(
+            &sync,
+            &keys.keys[&share.key_id],
+            share,
+            grants,
+            &plan.maintainers[&share.repo_id],
+        )
+        .await?;
         if written {
             out.shares.push(share.repo_id.clone());
         }
@@ -404,8 +515,8 @@ pub fn add_key(keys: &PhraseKeys) -> SyncKey {
     keys.current().clone()
 }
 
-async fn reseal_state(sync: &UserSync<'_>, old: &SyncKey, s: &StateDoc) -> Result<()> {
-    let plain = crypto::open_state(
+fn open_state_doc(old: &SyncKey, s: &StateDoc) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    crypto::open_state(
         old.secret(),
         &old.network,
         old.identity(),
@@ -414,7 +525,19 @@ async fn reseal_state(sync: &UserSync<'_>, old: &SyncKey, s: &StateDoc) -> Resul
         s.key_id,
         &s.nonce,
         &s.pieces,
-    )?;
+    )
+}
+
+/// The share's sealed (still deflated) content, opened under `old`.
+fn open_share_doc(old: &SyncKey, share: &ShareDoc) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    let repo = crate::platform::decode_identifier(&share.repo_id)?;
+    let aad = crypto::share_aad(&old.network, &repo, share.epoch, share.key_id)?;
+    let rsk = crypto::repo_storage_key(old.secret(), &repo, &old.network, share.epoch);
+    crypto::open(&rsk, &share.nonce, &share.pieces.concat(), &aad)
+}
+
+async fn reseal_state(sync: &UserSync<'_>, old: &SyncKey, s: &StateDoc) -> Result<()> {
+    let plain = open_state_doc(old, s)?;
     sync.write_plain(&s.slot, &plain, Some(s)).await
 }
 
@@ -425,15 +548,28 @@ async fn move_share(
     old: &SyncKey,
     share: &ShareDoc,
     grants: &[GrantDoc],
+    maintainers: &BTreeSet<String>,
 ) -> Result<(bool, usize, usize)> {
     let key = sync.key;
     let repo = crate::platform::decode_identifier(&share.repo_id)?;
-    let (epoch, written) = if share.key_id == key.key_id {
-        (share.epoch, false)
-    } else {
-        let aad = crypto::share_aad(&old.network, &repo, share.epoch, share.key_id)?;
-        let rsk = crypto::repo_storage_key(old.secret(), &repo, &old.network, share.epoch);
-        let sealed = crypto::open(&rsk, &share.nonce, &share.pieces.concat(), &aad)?;
+    let (mut rewritten, mut dropped) = (0, 0);
+    let moving = share.key_id != key.key_id;
+    // As a reconcile would, before the share moves: a grant to someone who is no longer a
+    // maintainer, or below the share's epoch (one a removal revoked and stopped before deleting,
+    // or had not re-granted yet), is deleted, so no retry ever lends the new share to it. The
+    // owner's next push grants the current maintainers again.
+    let mut kept = Vec::new();
+    for g in grants {
+        let current = maintainers.contains(&g.member_id) && g.member_id != key.identity_id;
+        if current && (!moving || g.epoch >= share.epoch) {
+            kept.push(g);
+        } else {
+            sync.store.delete_grant(g).await?;
+            dropped += 1;
+        }
+    }
+    let (epoch, written) = if moving {
+        let sealed = open_share_doc(old, share)?;
         let epoch = grants
             .iter()
             .map(|g| g.epoch)
@@ -461,10 +597,11 @@ async fn move_share(
             })
             .await?;
         (epoch, true)
+    } else {
+        (share.epoch, false)
     };
     let rsk = sync.rsk(&repo, epoch);
-    let (mut rewritten, mut dropped) = (0, 0);
-    for g in grants {
+    for g in kept {
         if g.sender_key_id == key.key_id && (!written || g.epoch == epoch) {
             continue;
         }
@@ -536,6 +673,7 @@ mod tests {
     const OTHER: &str = "legal winner thank year wave sausage worth useful legal winner thank \
                          yellow";
     const CONTRACT: &str = "46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU";
+    const ZETA_STORAGE: &[u8] = br#"{"entries":{},"format":"forge-user/storage","version":1}"#;
     const ZETA: &[u8] =
         br#"{"version":7,"format":"forge-user/zeta","entries":{"x":{"weird":true,"at":1,"v":{"b":2,"a":1}}},"top":"kept"}"#;
 
@@ -551,7 +689,10 @@ mod tests {
     struct Ledger<'a> {
         store: &'a MemoryStore,
         fail: AtomicBool,
+        lose_answer: AtomicBool,
         updates: AtomicU32,
+        late_prefs: std::sync::Mutex<Option<SyncKey>>,
+        maintainers_of: std::sync::Mutex<Option<BTreeSet<String>>>,
     }
 
     #[async_trait]
@@ -574,9 +715,12 @@ mod tests {
             identity: &str,
             secret: &SecretBytes,
             disable: &[u32],
-        ) -> Result<u32> {
+        ) -> std::result::Result<u32, MoveError> {
             if self.fail.swap(false, Ordering::SeqCst) {
-                return Err(Error::Platform("no answer".into()));
+                return Err(MoveError {
+                    started: false,
+                    error: Error::Platform("refused before it was sent".into()),
+                });
             }
             let next = self
                 .store
@@ -585,13 +729,44 @@ mod tests {
                 .map(|(k, _)| k.id + 1)
                 .max()
                 .unwrap_or(0);
-            self.store
-                .add_key(identity, next, crypto::public_key(secret)?.to_vec());
+            let late = self.late_prefs.lock().unwrap().take();
+            if let Some(old) = late {
+                futures::executor::block_on(UserSync::new(&old, self.store).write_plain(
+                    SLOT_PREFS,
+                    br#"{"entries":{},"format":"forge-user/prefs","version":1}"#,
+                    None,
+                ))
+                .unwrap();
+            }
+            let public = crypto::public_key(secret).map_err(|error| MoveError {
+                started: false,
+                error,
+            })?;
+            self.store.add_key(identity, next, public.to_vec());
             for id in disable {
                 self.store.disable_key(identity, *id);
             }
             self.updates.fetch_add(1, Ordering::SeqCst);
+            if self.lose_answer.swap(false, Ordering::SeqCst) {
+                return Err(MoveError {
+                    started: true,
+                    error: Error::Platform("the answer was lost".into()),
+                });
+            }
             Ok(next)
+        }
+
+        async fn maintainers(&self, repo_id: &str) -> Result<BTreeSet<String>> {
+            if let Some(set) = self.maintainers_of.lock().unwrap().clone() {
+                return Ok(set);
+            }
+            Ok(self
+                .store
+                .all_grants()
+                .into_iter()
+                .filter(|g| g.repo_id == repo_id)
+                .map(|g| g.member_id)
+                .collect())
         }
     }
 
@@ -610,7 +785,10 @@ mod tests {
             Ledger {
                 store: &self.store,
                 fail: AtomicBool::new(false),
+                lose_answer: AtomicBool::new(false),
                 updates: AtomicU32::new(0),
+                late_prefs: std::sync::Mutex::new(None),
+                maintainers_of: std::sync::Mutex::new(None),
             }
         }
 
@@ -1034,7 +1212,10 @@ mod tests {
         let legacy_ledger = Ledger {
             store: &store,
             fail: AtomicBool::new(false),
+            lose_answer: AtomicBool::new(false),
             updates: AtomicU32::new(0),
+            late_prefs: std::sync::Mutex::new(None),
+            maintainers_of: std::sync::Mutex::new(None),
         };
         let PhraseCheck::Keys(keys) =
             phrase_keys(&legacy_ledger, &seed(ABANDON), "testnet", &w.me, CONTRACT)
@@ -1097,5 +1278,445 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.started);
+    }
+
+    #[tokio::test]
+    async fn an_update_that_lands_without_an_answer_counts_as_started_and_finishes() {
+        let w = world().await;
+        let before = w.plaintexts(&w.e0);
+        let ledger = w.ledger();
+        ledger.lose_answer.store(true, Ordering::SeqCst);
+        let writes = w.store.writes();
+        let keys = ready(&w, &ledger).await;
+        let e = move_key(&w.store, &ledger, &keys, Some(3))
+            .await
+            .unwrap_err();
+        assert!(e.started, "a broadcast update may have landed");
+        assert_eq!(w.store.writes(), writes);
+        let keys = ready(&w, &ledger).await;
+        let (key, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
+        assert_eq!(key.key_id, 4);
+        assert!(moved.disabled.is_empty());
+        assert_eq!(ledger.updates.load(Ordering::SeqCst), 1);
+        assert_moved(&w, &before, 4).await;
+    }
+
+    #[tokio::test]
+    async fn a_next_key_already_on_the_identity_refuses_with_its_rotation() {
+        let me = id("crowded");
+        let identity = crate::platform::decode_identifier(&me).unwrap();
+        let contract = crate::platform::decode_identifier(CONTRACT).unwrap();
+        let public = |r| {
+            let secret = seed(ABANDON)
+                .sync_secret(false, &identity, &contract, r)
+                .unwrap();
+            crypto::public_key(&secret).unwrap().to_vec()
+        };
+        // Rotation 5 sits past the rotations derived (0 to 4), under a lower id than the current
+        // key at rotation 4: a move would add rotation 5 again.
+        let store = MemoryStore::new();
+        store.add_key(&me, 1, public(5));
+        store.add_key(&me, 2, public(4));
+        let ledger = Ledger {
+            store: &store,
+            fail: AtomicBool::new(false),
+            lose_answer: AtomicBool::new(false),
+            updates: AtomicU32::new(0),
+            late_prefs: std::sync::Mutex::new(None),
+            maintainers_of: std::sync::Mutex::new(None),
+        };
+        let PhraseCheck::Keys(keys) =
+            phrase_keys(&ledger, &seed(ABANDON), "testnet", &me, CONTRACT)
+                .await
+                .unwrap()
+        else {
+            panic!("expected keys");
+        };
+        // Adding the current key is still fine.
+        assert_eq!(add_key(&keys).key_id, 2);
+        let e = move_key(&store, &ledger, &keys, Some(2)).await.unwrap_err();
+        assert!(!e.started);
+        assert_eq!(e.error.to_string(), next_taken_line(5));
+        assert_eq!(
+            next_taken_line(5),
+            "This identity already has the sync key a move would add (rotation 5). Nothing was changed."
+        );
+        assert_eq!(store.writes(), 0);
+        assert_eq!(ledger.updates.load(Ordering::SeqCst), 0);
+    }
+
+    type Hook = std::sync::Mutex<Option<Box<dyn FnOnce(&MemoryStore) + Send>>>;
+
+    /// A [`MemoryStore`] where something happens at one call: a move landing in between.
+    struct Hooked<'a> {
+        inner: &'a MemoryStore,
+        on_share: Hook,
+        on_put_state: Hook,
+    }
+
+    impl<'a> Hooked<'a> {
+        fn new(inner: &'a MemoryStore) -> Self {
+            Self {
+                inner,
+                on_share: std::sync::Mutex::new(None),
+                on_put_state: std::sync::Mutex::new(None),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl UserStore for Hooked<'_> {
+        async fn state(&self, owner: &str, slot: &str) -> Result<Option<StateDoc>> {
+            self.inner.state(owner, slot).await
+        }
+        async fn states_of(&self, owner: &str) -> Result<Vec<StateDoc>> {
+            self.inner.states_of(owner).await
+        }
+        async fn put_state(&self, doc: &StateDoc) -> Result<()> {
+            let hook = self.on_put_state.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook(self.inner);
+                return Err(Error::Platform("the node went away".into()));
+            }
+            self.inner.put_state(doc).await
+        }
+        async fn share(&self, owner: &str, repo: &str) -> Result<Option<ShareDoc>> {
+            let hook = self.on_share.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook(self.inner);
+            }
+            self.inner.share(owner, repo).await
+        }
+        async fn shares_of(&self, owner: &str) -> Result<Vec<ShareDoc>> {
+            self.inner.shares_of(owner).await
+        }
+        async fn put_share(&self, doc: &ShareDoc) -> Result<()> {
+            self.inner.put_share(doc).await
+        }
+        async fn grants_of_repo(&self, owner: &str, repo: &str) -> Result<Vec<GrantDoc>> {
+            self.inner.grants_of_repo(owner, repo).await
+        }
+        async fn grant(&self, owner: &str, repo: &str, member: &str) -> Result<Option<GrantDoc>> {
+            self.inner.grant(owner, repo, member).await
+        }
+        async fn put_grant(&self, doc: &GrantDoc) -> Result<()> {
+            self.inner.put_grant(doc).await
+        }
+        async fn delete_grant(&self, doc: &GrantDoc) -> Result<()> {
+            self.inner.delete_grant(doc).await
+        }
+        async fn encryption_keys(&self, identity: &str) -> Result<Vec<super::super::EncKeyInfo>> {
+            self.inner.encryption_keys(identity).await
+        }
+    }
+
+    /// What a move's identity update does to the keys: key 4 (rotation 1) in, key 3 out.
+    fn land_update(w: &World) -> impl FnOnce(&MemoryStore) + Send + 'static {
+        let me = w.me.clone();
+        let rot1 = crypto::public_key(
+            &seed(ABANDON)
+                .sync_secret(
+                    false,
+                    w.e0.identity(),
+                    &crate::platform::decode_identifier(CONTRACT).unwrap(),
+                    1,
+                )
+                .unwrap(),
+        )
+        .unwrap()
+        .to_vec();
+        move |store: &MemoryStore| {
+            store.add_key(&me, 4, rot1);
+            store.disable_key(&me, 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_merge_retry_asks_again_whether_the_key_moved() {
+        let w = world().await;
+        let hooked = Hooked::new(&w.store);
+        *hooked.on_put_state.lock().unwrap() = Some(Box::new(land_update(&w)));
+        let mut change = SlotDoc::new(SLOT_PREFS);
+        change.set("theme", super::super::now_ms(), json!("dark"));
+        let writes = w.store.writes();
+        let e = UserSync::new(&w.e0, &hooked)
+            .merge_into(SLOT_PREFS, &change)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("moved to a new key"), "{e}");
+        assert_eq!(w.store.writes(), writes);
+        assert!(w.store.state(&w.me, SLOT_PREFS).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_reconcile_racing_a_move_never_overwrites_the_moved_share() {
+        let w = world().await;
+        let hooked = Hooked::new(&w.store);
+        let land = land_update(&w);
+        let (me, repo) = (w.me.clone(), w.repo.clone());
+        // The move lands and rewrites the share after the reconcile's key check, before its read.
+        *hooked.on_share.lock().unwrap() = Some(Box::new(move |store: &MemoryStore| {
+            land(store);
+            let mut moved = futures::executor::block_on(store.share(&me, &repo))
+                .unwrap()
+                .unwrap();
+            moved.key_id = 4;
+            moved.epoch += 1;
+            futures::executor::block_on(store.put_share(&moved)).unwrap();
+        }));
+        let writes = w.store.writes();
+        let maintainers: BTreeSet<String> = [w.member.clone()].into();
+        let e = UserSync::new(&w.e0, &hooked)
+            .reconcile_repo(&w.repo, Wanted::Content(&w.content), &maintainers)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("moved to a new key"), "{e}");
+        assert_eq!(w.store.writes(), writes + 1, "only the move's own write");
+        let share = w.store.share(&w.me, &w.repo).await.unwrap().unwrap();
+        assert_eq!(share.key_id, 4);
+    }
+
+    #[tokio::test]
+    async fn a_document_that_does_not_open_or_a_last_epoch_refuses_before_the_update() {
+        let w = world().await;
+        let ledger = w.ledger();
+        let mut bad = w.store.state(&w.me, SLOT_STORAGE).await.unwrap().unwrap();
+        bad.pieces[0][0] ^= 1;
+        w.store.put_state(&bad).await.unwrap();
+        let writes = w.store.writes();
+        let keys = ready(&w, &ledger).await;
+        let e = move_key(&w.store, &ledger, &keys, Some(3))
+            .await
+            .unwrap_err();
+        assert!(!e.started);
+        assert!(e.error.to_string().contains("don't open"), "{}", e.error);
+        assert_eq!(
+            (w.store.writes(), ledger.updates.load(Ordering::SeqCst)),
+            (writes, 0)
+        );
+
+        let w = world().await;
+        let ledger = w.ledger();
+        let mut g = w.store.grants_of_repo(&w.me, &w.repo).await.unwrap()[0].clone();
+        g.epoch = u32::MAX;
+        w.store.put_grant(&g).await.unwrap();
+        let writes = w.store.writes();
+        let keys = ready(&w, &ledger).await;
+        let e = move_key(&w.store, &ledger, &keys, Some(3))
+            .await
+            .unwrap_err();
+        assert!(!e.started);
+        assert_eq!(
+            (w.store.writes(), ledger.updates.load(Ordering::SeqCst)),
+            (writes, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn rotation_0_current_beside_a_live_legacy_key_moves_on_and_never_resumes() {
+        let w = world().await;
+        let contract = crate::platform::decode_identifier(CONTRACT).unwrap();
+        let legacy = SyncKey::new(
+            "testnet",
+            &w.me,
+            1,
+            seed(ABANDON)
+                .legacy_sync_secret(false, w.e0.identity(), &contract)
+                .unwrap(),
+        )
+        .unwrap();
+        let rot0 = SyncKey::new("testnet", &w.me, 2, w.e0.secret().clone()).unwrap();
+        let store = MemoryStore::new();
+        store.add_key(&w.me, 1, legacy.public_key().to_vec());
+        store.add_key(&w.me, 2, rot0.public_key().to_vec());
+        store.as_signer(&w.me);
+        UserSync::new(&legacy, &store)
+            .write_plain(SLOT_STORAGE, ZETA_STORAGE, None)
+            .await
+            .unwrap();
+        let ledger = Ledger {
+            store: &store,
+            fail: AtomicBool::new(false),
+            lose_answer: AtomicBool::new(false),
+            updates: AtomicU32::new(0),
+            late_prefs: std::sync::Mutex::new(None),
+            maintainers_of: std::sync::Mutex::new(None),
+        };
+        let PhraseCheck::Keys(keys) =
+            phrase_keys(&ledger, &seed(ABANDON), "testnet", &w.me, CONTRACT)
+                .await
+                .unwrap()
+        else {
+            panic!("expected keys");
+        };
+        assert_eq!(keys.current().key_id, 2);
+        assert!(
+            !keys.current_is_newest(),
+            "rotation 0 never finishes a move"
+        );
+        // This device holds rotation 0 and a slot is still under the legacy key: before, that
+        // finished "a move" under rotation 0 and left the legacy key live.
+        let (key, moved) = move_key(&store, &ledger, &keys, Some(2)).await.unwrap();
+        assert_eq!((key.key_id, moved.disabled), (3, vec![1, 2]));
+        let rot1 = seed(ABANDON)
+            .sync_secret(false, w.e0.identity(), &contract, 1)
+            .unwrap();
+        assert_eq!(key.secret().expose(), rot1.expose());
+        let live = store.encryption_keys(&w.me).await.unwrap();
+        assert_eq!(live.iter().map(|k| k.id).collect::<Vec<_>>(), [3]);
+        let read = UserSync::new(&key, &store).read_slot(SLOT_STORAGE).await;
+        assert!(read.unwrap().is_some());
+        assert_eq!(ledger.updates.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_guarded_slot_an_old_client_wrote_during_the_move_is_resealed() {
+        let w = world().await;
+        let ledger = w.ledger();
+        *ledger.late_prefs.lock().unwrap() = Some(w.e0.clone());
+        let keys = ready(&w, &ledger).await;
+        let (key, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
+        assert!(moved.states.contains(&SLOT_PREFS.to_string()));
+        assert!(moved.created.is_empty());
+        let prefs = w.store.state(&w.me, SLOT_PREFS).await.unwrap().unwrap();
+        assert_eq!(prefs.key_id, key.key_id);
+        assert!(UserSync::new(&key, &w.store)
+            .read_slot(SLOT_PREFS)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_grant_a_reconcile_revoked_part_way_is_never_restored_by_a_move() {
+        let w = world().await;
+        let bob = id("a removed maintainer");
+        let e_bob = SyncKey::new("testnet", &bob, 5, SecretBytes::new(h("bob E"))).unwrap();
+        w.store.add_key(&bob, 5, e_bob.public_key().to_vec());
+        let owner = UserSync::new(&w.e0, &w.store);
+        let both: BTreeSet<String> = [w.member.clone(), bob.clone()].into();
+        owner
+            .reconcile_repo(&w.repo, Wanted::Content(&w.content), &both)
+            .await
+            .unwrap();
+        // Bob's removal stops after the share (epoch 1) and Alice's grant, before Bob's delete.
+        w.store.fail_writes_after(Some(w.store.writes() + 2));
+        let alice: BTreeSet<String> = [w.member.clone()].into();
+        assert!(owner
+            .reconcile_repo(&w.repo, Wanted::Content(&w.content), &alice)
+            .await
+            .is_err());
+        w.store.fail_writes_after(None);
+        let left = w.store.grant(&w.me, &w.repo, &bob).await.unwrap().unwrap();
+        let before_move = w.store.share(&w.me, &w.repo).await.unwrap().unwrap();
+        assert!(
+            left.epoch < before_move.epoch,
+            "Bob's revoked grant is still there"
+        );
+
+        // The move stops just after deleting Bob's grant (three slots, then the delete).
+        let ledger = w.ledger();
+        *ledger.maintainers_of.lock().unwrap() = Some(alice.clone());
+        let keys = ready(&w, &ledger).await;
+        w.store.fail_writes_after(Some(w.store.writes() + 4));
+        let e = move_key(&w.store, &ledger, &keys, Some(3))
+            .await
+            .unwrap_err();
+        assert!(e.started);
+        w.store.fail_writes_after(None);
+        assert!(w.store.grant(&w.me, &w.repo, &bob).await.unwrap().is_none());
+
+        let keys = ready(&w, &ledger).await;
+        let (key, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
+        assert_eq!((key.key_id, moved.grants), (4, 1));
+        let share = w.store.share(&w.me, &w.repo).await.unwrap().unwrap();
+        assert_eq!((share.key_id, share.epoch), (4, before_move.epoch + 1));
+        assert!(w.store.grant(&w.me, &w.repo, &bob).await.unwrap().is_none());
+        assert!(UserSync::new(&e_bob, &w.store)
+            .granted_share(&w.repo, &w.me)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            UserSync::new(&w.e_member, &w.store)
+                .granted_share(&w.repo, &w.me)
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(&w.content)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_grant_to_someone_no_longer_a_maintainer_is_deleted_not_moved() {
+        let w = world().await;
+        let ledger = w.ledger();
+        *ledger.maintainers_of.lock().unwrap() = Some(BTreeSet::new());
+        let keys = ready(&w, &ledger).await;
+        let (_, moved) = move_key(&w.store, &ledger, &keys, Some(3)).await.unwrap();
+        assert_eq!((moved.grants, moved.dropped), (0, 1));
+        assert!(w
+            .store
+            .grants_of_repo(&w.me, &w.repo)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_update_whose_answer_was_lost_is_finished_under_the_recorded_key() {
+        let me = id("nothing synced yet");
+        let identity = crate::platform::decode_identifier(&me).unwrap();
+        let contract = crate::platform::decode_identifier(CONTRACT).unwrap();
+        let rot0 = seed(ABANDON)
+            .sync_secret(false, &identity, &contract, 0)
+            .unwrap();
+        let store = MemoryStore::new();
+        store.add_key(&me, 3, crypto::public_key(&rot0).unwrap().to_vec());
+        store.as_signer(&me);
+        let ledger = Ledger {
+            store: &store,
+            fail: AtomicBool::new(false),
+            lose_answer: AtomicBool::new(true),
+            updates: AtomicU32::new(0),
+            late_prefs: std::sync::Mutex::new(None),
+            maintainers_of: std::sync::Mutex::new(None),
+        };
+        let keys_now = || async {
+            match phrase_keys(&ledger, &seed(ABANDON), "testnet", &me, CONTRACT)
+                .await
+                .unwrap()
+            {
+                PhraseCheck::Keys(k) => k,
+                other => panic!("expected keys, got {other:?}"),
+            }
+        };
+        // A device that holds no key: it records the key it is about to register, then loses
+        // the answer of an update that landed.
+        let keys = keys_now().await;
+        let (expected_id, pending) = keys.next_key().unwrap();
+        assert_eq!(expected_id, 4);
+        let e = move_key_with(&store, &ledger, &keys, None, Some(&pending))
+            .await
+            .unwrap_err();
+        assert!(e.started);
+        assert_eq!(store.writes(), 0);
+        // The retry finishes under that key instead of registering another.
+        let keys = keys_now().await;
+        let (key, moved) = move_key_with(&store, &ledger, &keys, None, Some(&pending))
+            .await
+            .unwrap();
+        assert_eq!(key.key_id, 4);
+        assert!(moved.disabled.is_empty());
+        assert_eq!(moved.created, ["storage", "prefs"]);
+        assert_eq!(ledger.updates.load(Ordering::SeqCst), 1);
+        // A later move goes on to the next rotation.
+        let keys = keys_now().await;
+        let (next, moved) = move_key(&store, &ledger, &keys, Some(4)).await.unwrap();
+        assert_eq!((next.key_id, moved.disabled), (5, vec![4]));
+        let rot2 = seed(ABANDON)
+            .sync_secret(false, &identity, &contract, 2)
+            .unwrap();
+        assert_eq!(next.secret().expose(), rot2.expose());
     }
 }

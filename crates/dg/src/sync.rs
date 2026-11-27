@@ -493,9 +493,33 @@ fn held_key_id(network: &str, identity_id: &str) -> Option<u32> {
     }
 }
 
+/// What a failed move tells the user: "did not finish moving" (run it again) only once the
+/// identity update was broadcast or an earlier move is being finished; any error before that
+/// (the signing key, the store, the identity read, a refusal before sending) changed nothing.
+fn move_failure(e: &anyhow::Error) -> UserError {
+    if let Some(u) = e.downcast_ref::<UserError>() {
+        return u.clone();
+    }
+    let started = e
+        .downcast_ref::<user_sync::rotate::MoveError>()
+        .is_some_and(|m| m.started);
+    if started {
+        UserError::new(codes::PARTIAL, "your synced settings did not finish moving")
+            .cause(format!("{e:#}"))
+            .fix("run `dg storage sync move-key` again: it picks up where this one stopped")
+    } else {
+        UserError::new(codes::UNEXPECTED, "your synced settings were not moved")
+            .cause(format!("{e:#}"))
+            .note("nothing was changed")
+    }
+}
+
 /// `dg storage sync move-key`.
+#[allow(clippy::too_many_lines)] // the steps of one move, and its two outcomes
 async fn move_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
-    let run = key_run(ctx, master).await?;
+    let run = key_run(ctx, master)
+        .await
+        .map_err(|e| anyhow::Error::from(move_failure(&e)))?;
     let me = run.identity.id();
     let held = held_key_id(&run.network, &me);
     let master_wif =
@@ -511,27 +535,26 @@ async fn move_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
                 .fix("check the phrase: it is the one of the wallet that holds this identity")
                 .note("nothing was changed")
             })?;
+    let (expected_id, _) = run.keys.next_key()?;
     let ledger =
-        user_sync::platform::PlatformKeyLedger::new(&run.client, &run.contract, Some(master_wif));
+        user_sync::platform::PlatformKeyLedger::new(&run.client, &run.contract, Some(master_wif))
+            .marking_pending(expected_id);
+    let pending = user_sync::local::pending_key(&run.network, &me)
+        .and_then(|p| hex::decode(p.public_key).ok());
     let (key, moved) = Writer::new(&run.client, &run.bridge, &run.identity)
         .with_store(&run.contract, async |store| {
-            Ok(user_sync::rotate::move_key(store, &ledger, &run.keys, held).await?)
+            Ok(user_sync::rotate::move_key_with(
+                store,
+                &ledger,
+                &run.keys,
+                held,
+                pending.as_deref(),
+            )
+            .await?)
         })
         .await
-        .map_err(|e| {
-            let started = e
-                .downcast_ref::<user_sync::rotate::MoveError>()
-                .is_none_or(|m| m.started);
-            if started {
-                UserError::new(codes::PARTIAL, "your synced settings did not finish moving")
-                    .cause(format!("{e:#}"))
-                    .fix("run `dg storage sync move-key` again: it picks up where this one stopped")
-            } else {
-                UserError::new(codes::UNEXPECTED, "your synced settings were not moved")
-                    .cause(format!("{e:#}"))
-                    .note("nothing was changed")
-            }
-        })?;
+        .map_err(|e| move_failure(&e))?;
+    let _ = user_sync::local::clear_pending_key(&run.network, &me);
     if moved.nothing_done() {
         let stale = held.is_some_and(|h| h != key.key_id);
         ctx.emit(
@@ -616,4 +639,47 @@ async fn add_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_core::user_sync::rotate::MoveError;
+
+    #[test]
+    fn a_move_says_run_again_only_once_the_update_was_sent() {
+        let sent = anyhow::Error::from(MoveError {
+            started: true,
+            error: forge_core::Error::Platform("the answer was lost".into()),
+        });
+        let u = move_failure(&sent);
+        assert_eq!(u.message, "your synced settings did not finish moving");
+        assert!(u
+            .fix
+            .iter()
+            .any(|f| f.contains("picks up where this one stopped")));
+
+        // Before anything was sent: a refused update, the signing key, the store, a read.
+        let refused = anyhow::Error::from(MoveError {
+            started: false,
+            error: forge_core::Error::Platform("refused".into()),
+        });
+        let no_key = anyhow::anyhow!("this identity file has no key that writes documents");
+        for e in [refused, no_key] {
+            let u = move_failure(&e);
+            assert_eq!(u.message, "your synced settings were not moved");
+            assert!(u.fix.iter().all(|f| !f.contains("picks up")));
+            assert_eq!(u.note.as_deref(), Some("nothing was changed"));
+        }
+
+        // A refusal of its own (wrong phrase) keeps its own words.
+        let own = anyhow::Error::from(
+            UserError::new(codes::KEY_MISMATCH, user_sync::rotate::NOT_THIS_PHRASE)
+                .note("nothing was changed"),
+        );
+        assert_eq!(
+            move_failure(&own).message,
+            user_sync::rotate::NOT_THIS_PHRASE
+        );
+    }
 }

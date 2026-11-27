@@ -870,10 +870,12 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 id: contract.clone(),
                 document_type: None,
             });
-            identity
-                .public_keys()
-                .iter()
-                .any(|k| !k.disabled && k.purpose == "ENCRYPTION" && k.bounds == bound)
+            identity.public_keys().iter().any(|k| {
+                !k.disabled
+                    && k.purpose == "ENCRYPTION"
+                    && k.key_type == "ECDSA_SECP256K1"
+                    && k.bounds == bound
+            })
         });
     let balance = identity.balance();
     ctx.emit(
