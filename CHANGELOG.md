@@ -18,6 +18,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Fixed
 
+- **The wallet sign-in's Details** say that an approval can also give the settings-sync key, which disabling keys doesn't take back, and link to moving sync to a new key ([#752](https://github.com/PastaPastaPasta/dash-forge/pull/752)).
 - **`git clone dash://…` of a name on the other network** now names both fixes: `dg … --network` and, for plain git, `git clone -c dash.network=<testnet|mainnet> dash://…`. On a fresh install, `dg doctor` and `dg storage list` no longer say "sign in with your wallet again" to someone who never has ([#765](https://github.com/PastaPastaPasta/dash-forge/pull/765)).
 - **A wallet renewal no longer asks about a master key it does not touch.** After a `--full-key` sign-in on a computer with a keychain, every wallet renewal asked about the master-key file and refused under `--yes`, though the wallet's key goes to the keychain. dg now asks only about what the store overwrites, says where the master key stays (`masterKeyKeptAt` in `--json`), and, when the keychain refuses the key, never falls back over a key file holding a master key or one it cannot open ([#764](https://github.com/PastaPastaPasta/dash-forge/pull/764)).
 
