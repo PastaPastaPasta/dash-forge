@@ -35,6 +35,7 @@ export const DOCS = {
   revokeKeys: '/docs/revoke-keys/',
   /** After removing a maintainer who could use your storage: roll its keys and tokens. */
   rotateStorage: '/docs/rotate-storage-credentials/',
+  moveSyncKey: '/docs/rotate-storage-credentials/#if-a-site-may-have-your-settings-sync-key',
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
 } as const
