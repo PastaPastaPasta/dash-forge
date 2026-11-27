@@ -9,7 +9,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [archite
 | [Mirror a GitLab project](mirror-a-gitlab-project.md) | the same for a project on gitlab.com or your own GitLab, with a GitLab CI template |
 | [Moving from GitHub or GitLab](moving-from-github.md) | move a project over end to end: storage, identity, import, the Mirror Action, cut-over, collaborators, CI and costs |
 | [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own S3-compatible bucket or IPFS node instead of on Platform, from the CLI or the browser |
-| [Rotate storage credentials](rotate-storage-credentials.md) | after removing a maintainer you shared a repository's storage with, or if your settings-sync key may have leaked (testnet): roll the S3 key, kubo auth or pinning token, update the profile, and the share follows |
+| [Rotate storage credentials](rotate-storage-credentials.md) | after removing a maintainer you shared a repository's storage with, or if your settings-sync key may have leaked (move sync to a new key first): roll the S3 key, kubo auth or pinning token, update the profile, and the share follows |
 | [Storage on your home NAS](home-nas-storage.md) | run RustFS or Garage in Docker on a NAS or Linux box, give it a public https address, and keep a second copy |
 | [Run your own IPFS node](run-your-own-ipfs-node.md) | set up a node with one command (`dg ipfs up`), connect it to the web app, push to it, and keep a copy of someone else's repository with `dg ipfs pin` |
 | [Run your own backend](self-host-backend.md) | turn a Linux server, PC or NAS with Docker into storage your repositories push to, with one command (`backend.sh`) |
