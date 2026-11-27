@@ -231,12 +231,10 @@ function ScaffoldBody({
       <ViewAsPublicButton home={home} />
       {rail ? (
         <PhoneCloneProvider>
-          {(railClone) => (
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
-              <div className="min-w-0">{children(home, reload)}</div>
-              <RepoRail home={home} addr={addr} selected={selected} clone={railClone} />
-            </div>
-          )}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
+            <div className="min-w-0">{children(home, reload)}</div>
+            <RepoRail home={home} addr={addr} selected={selected} />
+          </div>
         </PhoneCloneProvider>
       ) : (
         <div className="min-w-0 space-y-4">

@@ -32,6 +32,7 @@ import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
+import { useRailClone } from '@/components/repo/phone-clone'
 import { SecurityPolicyLink } from '@/components/repo/security-policy'
 import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
 import { readAboutTotals, repoFactsLoading, repoSizeOf, subscribeRepoFacts, wantRepoFacts, type AboutTotals } from '@/lib/view/repo-facts'
@@ -43,19 +44,18 @@ export function RepoRail({
   home,
   addr,
   selected,
-  clone = true,
 }: {
   home: RepoHome
   addr: RepoAddress
   /** The ref the page is showing: the Verification card attests its tip. */
   selected: SelectedRef
-  /** False when the page shows Clone itself (the repo home on a phone, `PhoneCloneBox`). */
-  clone?: boolean
 }): JSX.Element {
   // Here, not in the page frame: each content check re-renders the rail, not the whole page.
   const report = useRepoTrust(home, selected)
   const { role } = useViewerRole(home.repo)
   const isPrivate = home.repo.visibility === 'private'
+  // The repo home shows Clone itself on a phone (`PhoneCloneBox`).
+  const clone = useRailClone()
 
   return (
     <aside className="min-w-0 space-y-4" aria-label="About this repository">

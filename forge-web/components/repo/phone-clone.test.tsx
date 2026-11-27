@@ -16,7 +16,7 @@ vi.mock('@/hooks/use-prefs', () => ({ useMinWidth: () => env.wide }))
 vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role: env.role }) }))
 vi.mock('@/components/repo/clone-box', () => ({ CloneBox: () => <div data-testid="clone-box" /> }))
 
-import { PhoneCloneBox, PhoneCloneProvider } from './phone-clone'
+import { PhoneCloneBox, PhoneCloneProvider, useRailClone } from './phone-clone'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -38,16 +38,18 @@ afterEach(() => {
   host.remove()
 })
 
+function Rail(): JSX.Element | null {
+  return useRailClone() ? <div data-testid="rail-clone" /> : null
+}
+
 function page(visibility: 'public' | 'private', withHome = true): void {
   act(() =>
     root.render(
       <PhoneCloneProvider>
-        {(railClone) => (
-          <>
-            <main>{withHome ? <PhoneCloneBox home={home(visibility)} addr={addr} selected={selected} /> : null}</main>
-            <aside>{railClone ? <div data-testid="rail-clone" /> : null}</aside>
-          </>
-        )}
+        <main>{withHome ? <PhoneCloneBox home={home(visibility)} addr={addr} selected={selected} /> : null}</main>
+        <aside>
+          <Rail />
+        </aside>
       </PhoneCloneProvider>,
     ),
   )
@@ -74,6 +76,23 @@ describe('PhoneCloneBox', () => {
     expect(where()).toEqual(['main'])
     page('public', false)
     expect(where()).toEqual(['rail'])
+  })
+
+  it('crossing the breakpoint moves Clone, and a role arriving claims it', () => {
+    page('public')
+    expect(where()).toEqual(['main'])
+    env.wide = true
+    page('public')
+    expect(where()).toEqual(['rail'])
+    env.wide = false
+    page('public')
+    expect(where()).toEqual(['main'])
+    env.role = null
+    page('private')
+    expect(where()).toEqual(['rail'])
+    env.role = 'reader'
+    page('private')
+    expect(where()).toEqual(['main'])
   })
 
   it('a private repo with no role for the viewer: the home shows none either', () => {
