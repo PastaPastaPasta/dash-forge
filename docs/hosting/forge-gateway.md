@@ -161,8 +161,8 @@ The fetch runs with `HOME` set to `<data>/home` and without `DASH_FORGE_KEY`: no
 
 **Through a Cloudflare tunnel** (no inbound port, for example on a home network):
 
-1. In the Cloudflare dashboard (Zero Trust → Networks → Tunnels), add a public hostname to the tunnel that runs on the gateway's host: `git-forge.dashhq.org` → `http://localhost:8080`. Cloudflare creates the proxied `CNAME git-forge.dashhq.org → <tunnel-id>.cfargotunnel.com` and terminates TLS.
-   - **Use a hostname one level under the zone.** Cloudflare's free certificate covers `dashhq.org` and `*.dashhq.org` only, so a deeper name such as `git.forge.dashhq.org` fails the TLS handshake (alert 40) unless the zone buys Advanced Certificate Manager. That is why dashhq's gateway is `git-forge.dashhq.org`.
+1. In the Cloudflare dashboard (Zero Trust → Networks → Tunnels), add a public hostname to the tunnel that runs on the gateway's host: `git.example.org` → `http://localhost:8080`. Cloudflare creates the proxied `CNAME git.example.org → <tunnel-id>.cfargotunnel.com` and terminates TLS.
+   - **Use a hostname one level under the zone.** Cloudflare's free certificate covers `dashhq.org` and `*.dashhq.org` only, so a deeper name such as `git.forge.dashhq.org` fails the TLS handshake (alert 40) unless the zone buys Advanced Certificate Manager. That is why dashhq's gateways are `git-forge.dashhq.org` and `testnet-git-forge.dashhq.org`.
    - When `cloudflared` runs as a container next to the gateway (a `cloudflared` service in a `docker-compose.override.yml`, its token in a `0600` env file), point the hostname at `http://forge-gateway:8080` instead of `localhost`.
 2. Keep `GATEWAY_TRUST_PROXY=cloudflare`. Behind a tunnel only Cloudflare reaches the gateway.
 3. Cache rules: let Cloudflare cache `/badge/*`, `/feed/*` and `/og/*` (they send `Cache-Control: public, max-age=300`; a share page is the same for every client, so caching it is safe). Do **not** cache `*/info/refs`, `*/git-upload-pack` or `*/forge-manifest.json` (they say `no-cache` or `max-age=30`; the default rules already respect that).
