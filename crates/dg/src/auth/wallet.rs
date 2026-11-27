@@ -861,6 +861,20 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             "on"
         }
     };
+    // Off although the identity syncs: its current sync key is one the wallet no longer hands
+    // out (sync moved to a new key), so this computer adds it from the recovery phrase.
+    let syncs_elsewhere = sync_label == "off"
+        && !args.no_sync
+        && forge.user.as_ref().is_some_and(|contract| {
+            let bound = Some(forge_core::platform::KeyBounds::Contract {
+                id: contract.clone(),
+                document_type: None,
+            });
+            identity
+                .public_keys()
+                .iter()
+                .any(|k| !k.disabled && k.purpose == "ENCRYPTION" && k.bounds == bound)
+        });
     let balance = identity.balance();
     ctx.emit(
         super::group::with_group_fields(
@@ -902,6 +916,7 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             }
             match sync_label {
                 "on" => println!("  storage settings sync with your identity across devices"),
+                "off" if syncs_elsewhere => println!("  {}", crate::sync::ADD_KEY_NOTE),
                 "off" => println!("  {}", crate::sync::OFF_HINT),
                 _ => {}
             }

@@ -11,8 +11,13 @@ import type { SyncOutcome } from './service'
 export type UserSyncStatus =
   /** No forge-user on this network, or nobody signed in. */
   | { readonly kind: 'off' }
-  /** Signed in without the sync key (not a wallet sign-in, or the wallet did not send it, or locked). */
-  | { readonly kind: 'local'; readonly syncedAt: number | null }
+  /**
+   * Signed in without the sync key (not a wallet sign-in, or the wallet did not send it, or locked).
+   * `addKey`: unlocked, and the identity has a sync key this browser lacks (the recovery phrase adds it).
+   */
+  | { readonly kind: 'local'; readonly syncedAt: number | null; readonly addKey?: boolean }
+  /** This browser holds a sync key the identity moved away from: the recovery phrase adds the new one. */
+  | { readonly kind: 'moved'; readonly syncedAt: number | null }
   | { readonly kind: 'syncing'; readonly syncedAt: number | null }
   | { readonly kind: 'synced'; readonly syncedAt: number }
   | { readonly kind: 'error'; readonly syncedAt: number | null; readonly message: string }
@@ -75,8 +80,13 @@ export function syncedRemovedKeys(identityId: string): readonly string[] | null 
 /** Who sync is for now, and whether it can run (it holds the key); drops the last outcome on a change. */
 export function setSyncSubject(identityId: string | null, status: UserSyncStatus): void {
   if (identityId !== state.identityId) set({ identityId, status, storage: null, synced: null })
-  else if (state.status.kind !== 'syncing' && (status.kind !== state.status.kind || status.kind === 'off')) set({ ...state, status, ...(status.kind === 'off' || status.kind === 'local' ? { storage: null, synced: null } : {}) })
+  else if (state.status.kind !== 'syncing' && (status.kind !== state.status.kind || status.kind === 'off' || addKeyOf(status) !== addKeyOf(state.status))) set({ ...state, status, ...(status.kind === 'off' || status.kind === 'local' ? { storage: null, synced: null } : {}) })
 }
+
+/** `SyncKeyMovedError`, by name: `./service` is not loaded with this module (it brings the slot readers). */
+const isMoved = (e: unknown): boolean => e instanceof Error && e.name === 'SyncKeyMovedError'
+
+const addKeyOf = (s: UserSyncStatus): boolean => s.kind === 'local' && s.addKey === true
 
 let running: Promise<void> | null = null
 interface Request {
@@ -115,7 +125,7 @@ export function requestUserSync(identityId: string, exec: () => Promise<SyncOutc
             else set({ identityId, status: { kind: 'synced', syncedAt: outcome.syncedAt }, storage: localSaves !== saves ? state.storage : (outcome.storage ?? state.storage), synced: outcome.synced ?? state.synced ?? null, syncedRemoved: outcome.synced ? (outcome.syncedRemoved ?? []) : (state.syncedRemoved ?? null) })
           }
         } catch (e) {
-          if (state.identityId === identityId) set({ ...state, status: { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
+          if (state.identityId === identityId) set({ ...state, status: isMoved(e) ? { kind: 'moved', syncedAt } : { kind: 'error', syncedAt, message: e instanceof Error ? e.message : String(e) } })
         }
         next = again
       }

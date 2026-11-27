@@ -12,6 +12,7 @@ pub mod key;
 pub mod local;
 pub mod platform;
 pub mod repo;
+pub mod rotate;
 pub mod storage;
 pub mod store;
 
@@ -101,6 +102,10 @@ impl<'a> UserSync<'a> {
     }
 
     async fn write_slot(&self, slot: &str, doc: &SlotDoc, over: Option<&StateDoc>) -> Result<()> {
+        self.put_plain(slot, &doc.to_json()?, over).await
+    }
+
+    async fn put_plain(&self, slot: &str, plain: &[u8], over: Option<&StateDoc>) -> Result<()> {
         let nonce = crypto::fresh_nonce()?;
         let pieces = crypto::seal_state(
             self.key.secret(),
@@ -109,7 +114,7 @@ impl<'a> UserSync<'a> {
             slot,
             self.key.key_id,
             &nonce,
-            &doc.to_json()?,
+            plain,
         )?;
         self.store
             .put_state(&StateDoc {
@@ -123,6 +128,40 @@ impl<'a> UserSync<'a> {
                 pieces,
             })
             .await
+    }
+
+    /// Write `plain` as the slot, exactly these bytes, over `over`, then read it back under this
+    /// key until it opens to the same bytes (a node may be a block behind).
+    async fn write_plain(&self, slot: &str, plain: &[u8], over: Option<&StateDoc>) -> Result<()> {
+        self.put_plain(slot, plain, over).await?;
+        for attempt in 0..4u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1500 * attempt)).await;
+            }
+            let Some(back) = self.store.state(&self.key.identity_id, slot).await? else {
+                continue;
+            };
+            if back.key_id != self.key.key_id {
+                continue;
+            }
+            let opened = crypto::open_state(
+                self.key.secret(),
+                &self.key.network,
+                self.key.identity(),
+                slot,
+                back.v,
+                back.key_id,
+                &back.nonce,
+                &back.pieces,
+            )?;
+            if opened.as_slice() == plain {
+                return Ok(());
+            }
+            return Err(Error::Integrity);
+        }
+        Err(Error::Platform(format!(
+            "the synced {slot} settings did not read back under the new key yet; run the same command again"
+        )))
     }
 
     /// The slot as read back after writing `written`, once it holds every entry of it (a node may
@@ -185,6 +224,9 @@ impl<'a> UserSync<'a> {
             merged.merge(&changes);
             if merged.to_json()? == before && current.is_some() {
                 return Ok(merged);
+            }
+            if last.is_none() {
+                rotate::require_current(self.store, self.key).await?;
             }
             if let Err(e) = self
                 .write_slot(slot, &merged, current.as_ref().map(|r| &r.stored))
@@ -983,6 +1025,7 @@ impl UserSync<'_> {
     ) -> Result<Reconciled> {
         let me = &self.key.identity_id;
         let repo = crate::platform::decode_identifier(repo_id)?;
+        rotate::require_current(self.store, self.key).await?;
         let existing = self.store.share(me, repo_id).await?;
         let all = self.store.grants_of_repo(me, repo_id).await?;
         let current = self.current_share(existing.as_ref(), &repo)?;

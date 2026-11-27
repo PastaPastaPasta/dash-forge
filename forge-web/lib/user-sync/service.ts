@@ -65,6 +65,27 @@ export class SyncKeyChangedError extends Error {
   }
 }
 
+/**
+ * This device's sync key is no longer the identity's current one (sync moved to a new key, or the
+ * key was disabled): nothing is read or written with it. The recovery phrase adds the new one.
+ */
+export class SyncKeyMovedError extends SyncKeyChangedError {
+  constructor(readonly currentKeyId: number | null, heldKeyId: number) {
+    super(currentKeyId ?? -1, heldKeyId)
+    this.message = 'your synced settings moved to a new key'
+    this.name = 'SyncKeyMovedError'
+  }
+}
+
+/**
+ * Refuse ({@link SyncKeyMovedError}) unless `keyId` is `identityId`'s current forge-user key (its
+ * newest live one): a key the owner moved away from never seals settings or shares again.
+ */
+export async function assertCurrentSyncKey(port: UserSyncPort, identityId: string, keyId: number): Promise<void> {
+  const current = await port.syncKey(identityId)
+  if (current?.keyId !== keyId) throw new SyncKeyMovedError(current?.keyId ?? null, keyId)
+}
+
 /** The synced copy did not read back as written: nothing was recorded, the next run tries again. */
 export class SyncReadBackError extends Error {
   constructor(slot: string) {
@@ -86,7 +107,10 @@ function stateCtx(ctx: SyncContext): StateContext {
 async function readSlot(ctx: SyncContext, slot: string): Promise<{ stored: Stored<StateFields> | null; doc: LwwDoc | null }> {
   const stored = await ctx.port.readState(ctx.identityId, slot)
   if (stored === null) return { stored, doc: null }
-  if (stored.fields.keyId !== ctx.keyId) throw new SyncKeyChangedError(stored.fields.keyId, ctx.keyId)
+  if (stored.fields.keyId !== ctx.keyId) {
+    await assertCurrentSyncKey(ctx.port, ctx.identityId, ctx.keyId)
+    throw new SyncKeyChangedError(stored.fields.keyId, ctx.keyId)
+  }
   return { stored, doc: parseDoc(await openState(stateCtx(ctx), stored.fields), slot) }
 }
 
@@ -106,6 +130,7 @@ async function mergeSlot(
     if (!plan.upload) return plan
     // Never written by this build: a newer format's document is read only.
     if (plan.next.version > LWW_VERSION) throw new NewerSyncFormatError(slot, plan.next.version)
+    await assertCurrentSyncKey(ctx.port, ctx.identityId, ctx.keyId)
     try {
       await ctx.port.writeState(await sealState(stateCtx(ctx), slot, plan.next), stored)
     } catch (e) {

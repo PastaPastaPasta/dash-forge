@@ -361,6 +361,15 @@ impl FreshKey {
         wif(&self.secret, &self.network)
     }
 
+    /// A key derived elsewhere (the sync key of a rotation), not drawn at random.
+    pub fn from_secret_bytes(secret: &[u8; 32], network: &Network) -> Result<Self> {
+        Ok(Self {
+            secret: SecretKey::from_bytes(secret)
+                .map_err(|_| Error::Config("not a valid secp256k1 private key".into()))?,
+            network: network.clone(),
+        })
+    }
+
     fn public(&self) -> PublicKey {
         public_of(&self.secret)
     }
@@ -920,6 +929,16 @@ impl PlatformClient {
                     SecurityLevel::MEDIUM,
                     &key.public(),
                 ),
+                KeySpec::SyncEncryption { contract } => key_v0(
+                    next,
+                    Purpose::ENCRYPTION,
+                    SecurityLevel::MEDIUM,
+                    &key.public(),
+                    Some(ContractBounds::SingleContract {
+                        id: parse_id(contract, "contract id")?,
+                    }),
+                )
+                .into(),
             };
             signer.add(&key.secret, self.network());
             new_keys.push(pk);
@@ -1339,6 +1358,12 @@ pub enum KeySpec {
     DocumentType(DocTypeKeySpec),
     /// An ENCRYPTION / MEDIUM key (private repositories).
     Encryption,
+    /// An ENCRYPTION / MEDIUM key bound to one contract (`ContractBounds::SingleContract`):
+    /// forge-user's settings-sync key.
+    SyncEncryption {
+        /// The contract (base58).
+        contract: String,
+    },
 }
 
 /// Whether `label` is a valid DPNS label, and whether it is contested (short names that go to

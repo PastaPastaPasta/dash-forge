@@ -2383,6 +2383,32 @@ pub enum StorageCommand {
     /// fail.
     #[command(subcommand)]
     Mirror(StorageMirrorCommand),
+    /// The key your synced settings are sealed under: move them to a new one, or add it here.
+    #[command(subcommand)]
+    Sync(StorageSyncCommand),
+}
+
+/// `dg storage sync` subcommands. Both ask for your recovery phrase (hidden), or read it from
+/// the identity file given with `--master`; it is never stored.
+#[derive(Debug, Subcommand)]
+pub enum StorageSyncCommand {
+    /// Move your synced settings to a new key, after a sign-in you didn't mean to approve.
+    ///
+    /// Adds a new sync key to your identity and disables the one in use, in one update signed
+    /// with your recovery phrase, then seals your synced settings and the storage you share
+    /// with maintainers under the new key. Nothing is lost; if it stops part-way, run it again
+    /// to finish. Other devices then need `dg storage sync add-key` once.
+    MoveKey {
+        /// Read the recovery phrase from this identity file instead of asking for it.
+        #[arg(long, value_name = "FILE")]
+        master: Option<PathBuf>,
+    },
+    /// Add your identity's current sync key to this computer, after a move on another device.
+    AddKey {
+        /// Read the recovery phrase from this identity file instead of asking for it.
+        #[arg(long, value_name = "FILE")]
+        master: Option<PathBuf>,
+    },
 }
 
 /// `dg storage mirror` subcommands.

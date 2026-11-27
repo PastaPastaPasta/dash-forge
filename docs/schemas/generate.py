@@ -917,6 +917,17 @@ cmd('storage mirror list', 'The pack mirrors recorded for a repository, or by yo
 cmd('storage mirror remove', 'A pack mirror record deleted.', {
     'status': E('removed'), 'documentId': S, 'type': E('packMirror'),
 }, ['status', 'documentId'])
+cmd('storage sync move-key', 'Synced settings moved to a new sync key.', {
+    'status': E('moved'), 'identityId': S, 'keyId': I,
+    'disabledKeyId': D('The key this run disabled; null when an earlier run or another device already moved.', nl(I)),
+    'resealed': D('Slots sealed again under the new key.', SA),
+    'created': D('Slots created empty under the new key.', SA),
+    'shares': D('Repositories whose shared storage moved to a new epoch.', SA),
+    'grantsRewritten': I, 'grantsDropped': I, 'storedAt': S,
+}, ['status', 'identityId', 'keyId', 'storedAt'])
+cmd('storage sync add-key', 'This computer\'s sync key, added or already current.', {
+    'status': E('added', 'current'), 'identityId': S, 'keyId': I, 'storedAt': nl(S),
+}, ['status', 'identityId', 'keyId'])
 
 # -- webhooks, CI -----------------------------------------------------------------------------
 cmd('webhook add', 'A webhook registered with a relay.', {

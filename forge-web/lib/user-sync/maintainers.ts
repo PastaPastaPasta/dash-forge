@@ -12,6 +12,7 @@ import { PLATFORM_PROFILE, policySchema, validProfileName, type StoragePolicy, t
 import type { StorageConfig } from '../storage/store'
 import { WRAPPED_BYTES, canonicalJson, openShare, repoStorageKey, sealShare, unwrapGrant, wrapGrant, type GrantParams } from './crypto'
 import type { GrantFields, SyncPublicKey, UserSyncPort } from './platform'
+import { assertCurrentSyncKey } from './service'
 import { profileOf } from './storage-slot'
 
 export const SHARE_FORMAT = 'forge-user/share'
@@ -259,6 +260,9 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId && !removed.has(m)).sort()
   const grants = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
   const existing = await ctx.port.readShare(ctx.ownerId, p.repoId)
+  // Only the identity's current sync key writes: one it moved away from never shares again.
+  let checked: Promise<void> | null = null
+  const mayWrite = (): Promise<void> => (checked ??= assertCurrentSyncKey(ctx.port, ctx.ownerId, ctx.keyId))
   let opened: SharePlain | null = null
   if (existing !== null && existing.fields.keyId === ctx.keyId) {
     const rsk = await repoStorageKey(ctx.E, repo, network, existing.fields.epoch)
@@ -318,6 +322,7 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
       shareMeaning(opened) === shareMeaning(content) &&
       (shareVersion(opened) === version || (!lent(content) && !stop))
     if (!same) {
+      await mayWrite()
       await writeShare(ctx, p.repoId, repo, epoch, { ...content, version }, existing)
       written = true
     }
@@ -347,6 +352,7 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
         }
         const params: GrantParams = { network, ownerId: decodeIdentifier(ctx.ownerId), repoId: repo, memberId: decodeIdentifier(member), epoch, senderKeyId: ctx.keyId, recipientKeyId: key.keyId }
         const fields: GrantFields = { repoId: p.repoId, memberId: member, epoch, senderKeyId: ctx.keyId, recipientKeyId: key.keyId, wrapped: await wrapGrant(ctx.E, key.pub, params, rsk) }
+        await mayWrite()
         await ctx.port.writeGrant(fields, own)
         if (own !== null) replaced.add(own.id)
         granted.push(member)
@@ -358,6 +364,7 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   let deleted = 0
   for (const g of revoked) {
     if (replaced.has(g.id)) continue
+    await mayWrite()
     await ctx.port.deleteGrant(g)
     deleted++
   }

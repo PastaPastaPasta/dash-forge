@@ -123,6 +123,32 @@ fn piece_fields(
     PIECE_FIELDS[pieces.len().min(max)..max].to_vec()
 }
 
+fn state_from(doc: &FetchedDocument) -> Result<StateDoc> {
+    Ok(StateDoc {
+        id: Some(doc.id.clone()),
+        owner_id: doc.owner_id.clone(),
+        revision: doc.revision,
+        slot: doc.field_str("slot").unwrap_or_default(),
+        v: u8::try_from(doc.field_u64("v").unwrap_or(0)).unwrap_or(0),
+        key_id: u32_field(doc, "keyId")?,
+        nonce: nonce(doc)?,
+        pieces: pieces(doc),
+    })
+}
+
+fn share_from(doc: &FetchedDocument) -> Result<ShareDoc> {
+    Ok(ShareDoc {
+        id: Some(doc.id.clone()),
+        owner_id: doc.owner_id.clone(),
+        revision: doc.revision,
+        repo_id: ident(doc, "repoId")?,
+        epoch: u32_field(doc, "epoch")?,
+        key_id: u32_field(doc, "keyId")?,
+        nonce: nonce(doc)?,
+        pieces: pieces(doc),
+    })
+}
+
 fn grant_from(doc: &FetchedDocument) -> Result<GrantDoc> {
     Ok(GrantDoc {
         id: Some(doc.id.clone()),
@@ -150,19 +176,25 @@ impl UserStore for PlatformUserStore<'_> {
                 1,
             )
             .await?;
-        let Some(doc) = docs.into_iter().find(|d| d.owner_id == owner) else {
-            return Ok(None);
-        };
-        Ok(Some(StateDoc {
-            id: Some(doc.id.clone()),
-            owner_id: doc.owner_id.clone(),
-            revision: doc.revision,
-            slot: doc.field_str("slot").unwrap_or_default(),
-            v: u8::try_from(doc.field_u64("v").unwrap_or(0)).unwrap_or(0),
-            key_id: u32_field(&doc, "keyId")?,
-            nonce: nonce(&doc)?,
-            pieces: pieces(&doc),
-        }))
+        docs.into_iter()
+            .find(|d| d.owner_id == owner)
+            .map(|d| state_from(&d))
+            .transpose()
+    }
+
+    async fn states_of(&self, owner: &str) -> Result<Vec<StateDoc>> {
+        self.client
+            .query_all_documents(
+                &self.contract,
+                DOC_STATE,
+                &[QueryFilter::eq("$ownerId", id_field(owner)?)],
+                &[QueryOrder::asc("slot")],
+            )
+            .await?
+            .iter()
+            .filter(|d| d.owner_id == owner)
+            .map(state_from)
+            .collect()
     }
 
     async fn put_state(&self, doc: &StateDoc) -> Result<()> {
@@ -191,19 +223,25 @@ impl UserStore for PlatformUserStore<'_> {
                 1,
             )
             .await?;
-        let Some(doc) = docs.into_iter().find(|d| d.owner_id == owner) else {
-            return Ok(None);
-        };
-        Ok(Some(ShareDoc {
-            id: Some(doc.id.clone()),
-            owner_id: doc.owner_id.clone(),
-            revision: doc.revision,
-            repo_id: ident(&doc, "repoId")?,
-            epoch: u32_field(&doc, "epoch")?,
-            key_id: u32_field(&doc, "keyId")?,
-            nonce: nonce(&doc)?,
-            pieces: pieces(&doc),
-        }))
+        docs.into_iter()
+            .find(|d| d.owner_id == owner)
+            .map(|d| share_from(&d))
+            .transpose()
+    }
+
+    async fn shares_of(&self, owner: &str) -> Result<Vec<ShareDoc>> {
+        self.client
+            .query_all_documents(
+                &self.contract,
+                DOC_SHARE,
+                &[QueryFilter::eq("$ownerId", id_field(owner)?)],
+                &[QueryOrder::asc("repoId")],
+            )
+            .await?
+            .iter()
+            .filter(|d| d.owner_id == owner)
+            .map(share_from)
+            .collect()
     }
 
     async fn put_share(&self, doc: &ShareDoc) -> Result<()> {
@@ -319,5 +357,116 @@ impl UserStore for PlatformUserStore<'_> {
             .collect();
         keys.sort_by_key(|k| k.id);
         Ok(keys)
+    }
+}
+
+/// forge-user's keys on an identity, read from Platform; with the identity's master key, the
+/// update that moves sync to a new key ([`super::rotate`]).
+pub struct PlatformKeyLedger<'a> {
+    client: &'a PlatformClient,
+    contract_id: String,
+    master_wif: Option<crate::keystore::Secret>,
+}
+
+impl<'a> PlatformKeyLedger<'a> {
+    /// A reader of forge-user `contract_id`'s keys; with `master_wif` (the identity's MASTER
+    /// key), also the writer of the update.
+    pub fn new(
+        client: &'a PlatformClient,
+        contract_id: &str,
+        master_wif: Option<crate::keystore::Secret>,
+    ) -> Self {
+        Self {
+            client,
+            contract_id: contract_id.to_string(),
+            master_wif,
+        }
+    }
+
+    async fn live_id_of(&self, identity: &str, public: &[u8]) -> Result<Option<u32>> {
+        use super::rotate::KeyLedger as _;
+        Ok(self
+            .forge_user_keys(identity)
+            .await?
+            .into_iter()
+            .find(|k| !k.disabled && k.public_key == public)
+            .map(|k| k.id))
+    }
+}
+
+#[async_trait]
+impl super::rotate::KeyLedger for PlatformKeyLedger<'_> {
+    async fn forge_user_keys(&self, identity: &str) -> Result<Vec<super::rotate::ForgeUserKey>> {
+        let identity = match self.client.fetch_identity(identity).await {
+            Ok(i) => i,
+            Err(Error::NotFound) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        let bound = Some(KeyBounds::Contract {
+            id: self.contract_id.clone(),
+            document_type: None,
+        });
+        let mut keys: Vec<_> = identity
+            .public_keys()
+            .into_iter()
+            .filter(|k| {
+                k.purpose == "ENCRYPTION" && k.key_type == "ECDSA_SECP256K1" && k.bounds == bound
+            })
+            .map(|k| super::rotate::ForgeUserKey {
+                id: k.id,
+                public_key: k.public_key,
+                disabled: k.disabled,
+            })
+            .collect();
+        keys.sort_by_key(|k| k.id);
+        Ok(keys)
+    }
+
+    async fn add_and_disable(
+        &self,
+        identity: &str,
+        secret: &crate::app_connect::SecretBytes,
+        disable: u32,
+    ) -> Result<u32> {
+        use crate::platform::identity::{FreshKey, KeySpec};
+        let master = self.master_wif.as_ref().ok_or_else(|| {
+            Error::Config("moving sync to a new key needs the identity's master key".into())
+        })?;
+        let public = super::crypto::public_key(secret)?;
+        if let Some(id) = self.live_id_of(identity, &public).await? {
+            return Ok(id);
+        }
+        let fresh = FreshKey::from_secret_bytes(secret.expose(), self.client.network())?;
+        let sent = self
+            .client
+            .update_identity_keys(
+                identity,
+                master,
+                &[(
+                    &fresh,
+                    KeySpec::SyncEncryption {
+                        contract: self.contract_id.clone(),
+                    },
+                )],
+                &[disable],
+            )
+            .await;
+        // Whatever the broadcast said, a read of the identity decides (it may have landed).
+        for attempt in 0..5u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(2000 * attempt)).await;
+            }
+            if let Some(id) = self.live_id_of(identity, &public).await? {
+                return Ok(id);
+            }
+            if sent.is_err() && attempt >= 1 {
+                break;
+            }
+        }
+        sent?;
+        Err(Error::Platform(
+            "the identity update was accepted, but the new sync key is not on the identity yet; run the same command again in a minute"
+                .into(),
+        ))
     }
 }

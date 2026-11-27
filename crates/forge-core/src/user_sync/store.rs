@@ -107,10 +107,14 @@ pub struct EncKeyInfo {
 pub trait UserStore: Send + Sync {
     /// `owner`'s `state` document for `slot`.
     async fn state(&self, owner: &str, slot: &str) -> Result<Option<StateDoc>>;
+    /// Every `state` document of `owner`, every slot (complete, never one page).
+    async fn states_of(&self, owner: &str) -> Result<Vec<StateDoc>>;
     /// Create (no `id`) or replace (guarded by `revision`) the signer's `state`.
     async fn put_state(&self, doc: &StateDoc) -> Result<()>;
     /// `owner`'s `share` for `repo`.
     async fn share(&self, owner: &str, repo: &str) -> Result<Option<ShareDoc>>;
+    /// Every `share` of `owner` (complete, never one page).
+    async fn shares_of(&self, owner: &str) -> Result<Vec<ShareDoc>>;
     /// Create or replace the signer's `share`.
     async fn put_share(&self, doc: &ShareDoc) -> Result<()>;
     /// Every `grant` `owner` wrote for `repo`.
@@ -144,6 +148,8 @@ struct Memory {
     keys: BTreeMap<String, Vec<EncKeyInfo>>,
     writes: u64,
     fail_share_write: bool,
+    fail_after: Option<u64>,
+    disabled: BTreeMap<String, Vec<EncKeyInfo>>,
 }
 
 #[cfg(test)]
@@ -185,15 +191,44 @@ impl MemoryStore {
 
     /// Disable `identity`'s key `id` (it no longer counts as live).
     pub fn disable_key(&self, identity: &str, id: u32) {
-        if let Some(keys) = self
-            .inner
-            .lock()
-            .expect("store lock")
+        let mut m = self.inner.lock().expect("store lock");
+        let Some(keys) = m.keys.get_mut(identity) else {
+            return;
+        };
+        let (gone, live): (Vec<_>, Vec<_>) =
+            std::mem::take(keys).into_iter().partition(|k| k.id == id);
+        *keys = live;
+        m.disabled
+            .entry(identity.to_string())
+            .or_default()
+            .extend(gone);
+    }
+
+    /// Every forge-user key of `identity` ever registered here: `(key, disabled)`, by id.
+    pub fn all_keys(&self, identity: &str) -> Vec<(EncKeyInfo, bool)> {
+        let m = self.inner.lock().expect("store lock");
+        let mut all: Vec<(EncKeyInfo, bool)> = m
             .keys
-            .get_mut(identity)
-        {
-            keys.retain(|k| k.id != id);
-        }
+            .get(identity)
+            .into_iter()
+            .flatten()
+            .map(|k| (k.clone(), false))
+            .chain(
+                m.disabled
+                    .get(identity)
+                    .into_iter()
+                    .flatten()
+                    .map(|k| (k.clone(), true)),
+            )
+            .collect();
+        all.sort_by_key(|(k, _)| k.id);
+        all
+    }
+
+    /// Make every document write fail once `n` writes have been made in all (an interrupted
+    /// run); `None` lets writes through again.
+    pub fn fail_writes_after(&self, n: Option<u64>) {
+        self.inner.lock().expect("store lock").fail_after = n;
     }
 
     /// How many documents were written (created, replaced or deleted).
@@ -267,8 +302,20 @@ impl UserStore for MemoryStore {
             .cloned())
     }
 
+    async fn states_of(&self, owner: &str) -> Result<Vec<StateDoc>> {
+        let m = self.inner.lock().expect("store lock");
+        Ok(m.states
+            .values()
+            .filter(|d| d.owner_id == owner)
+            .cloned()
+            .collect())
+    }
+
     async fn put_state(&self, doc: &StateDoc) -> Result<()> {
         let mut m = self.inner.lock().expect("store lock");
+        if m.fail_after.is_some_and(|n| m.writes >= n) {
+            return Err(Error::Platform("the node went away".into()));
+        }
         let existing = m
             .states
             .values()
@@ -296,9 +343,18 @@ impl UserStore for MemoryStore {
             .cloned())
     }
 
+    async fn shares_of(&self, owner: &str) -> Result<Vec<ShareDoc>> {
+        let m = self.inner.lock().expect("store lock");
+        Ok(m.shares
+            .values()
+            .filter(|d| d.owner_id == owner)
+            .cloned()
+            .collect())
+    }
+
     async fn put_share(&self, doc: &ShareDoc) -> Result<()> {
         let mut m = self.inner.lock().expect("store lock");
-        if std::mem::take(&mut m.fail_share_write) {
+        if std::mem::take(&mut m.fail_share_write) || m.fail_after.is_some_and(|n| m.writes >= n) {
             return Err(Error::Platform("the node went away".into()));
         }
         let existing = m
@@ -339,6 +395,9 @@ impl UserStore for MemoryStore {
 
     async fn put_grant(&self, doc: &GrantDoc) -> Result<()> {
         let mut m = self.inner.lock().expect("store lock");
+        if m.fail_after.is_some_and(|n| m.writes >= n) {
+            return Err(Error::Platform("the node went away".into()));
+        }
         let existing = m
             .grants
             .values()
@@ -364,6 +423,9 @@ impl UserStore for MemoryStore {
 
     async fn delete_grant(&self, doc: &GrantDoc) -> Result<()> {
         let mut m = self.inner.lock().expect("store lock");
+        if m.fail_after.is_some_and(|n| m.writes >= n) {
+            return Err(Error::Platform("the node went away".into()));
+        }
         let id = doc.id.clone().ok_or(Error::NotFound)?;
         let owner = m
             .grants
