@@ -216,7 +216,8 @@ test.describe('repo home launch UX (moutai fixture)', () => {
       'git push -u origin main',
       `dg repo clone ${MAINTAINER}/forge-v2-empty ${DG_NETWORK} && cd forge-v2-empty`,
       "echo '# forge-v2-empty' > README.md && git add README.md && git commit -m 'First commit' && git push -u origin HEAD:main",
-      `dg auth login ${DG_NETWORK}`,
+      // Released DashPay can't sign in on testnet, so its sign-in command takes the 12 words.
+      `dg auth login ${ON_TESTNET ? '--mnemonic ' : ''}${DG_NETWORK}`,
     ])
     await expect(empty.getByTestId('empty-repo-network')).toContainText(NETWORK_KEY)
     await expect(empty.getByText(/Storage: packs go to/)).toBeVisible()

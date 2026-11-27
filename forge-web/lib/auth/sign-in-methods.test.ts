@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { signInMethods, walletSignInReady, type SignInContext } from './sign-in-methods'
 
 const order = (ctx: Partial<SignInContext>): string[] =>
-  signInMethods({ network: 'testnet', walletAvailable: true, walletV2: false, creating: false, ...ctx }).map(
+  signInMethods({ network: 'testnet', walletAvailable: true, walletV2: false, releasedWallet: true, creating: false, ...ctx }).map(
     (m) => `${m.group}:${m.id}${m.recommended ? '*' : ''}`,
   )
 
@@ -19,8 +19,8 @@ describe('signInMethods', () => {
   it('mainnet with App Connect v2: the wallet and the passkey show; Get DashPay leads Other ways; every recovery-phrase path is under Advanced', () => {
     expect(order({ network: 'mainnet', walletV2: true })).toEqual([
       'primary:wallet*',
+      'primary:get-dashpay',
       'primary:passkey',
-      'more:get-dashpay',
       'advanced:import',
       'more:dg',
       'advanced:create',
@@ -32,10 +32,14 @@ describe('signInMethods', () => {
     expect(order({ network: 'mainnet', walletV2: false })).toEqual(['primary:create*', 'primary:passkey', 'advanced:import', 'more:dg', 'more:wallet', 'advanced:raw-key'])
   })
 
-  it('at most two choices show where the wallet leads', () => {
-    for (const network of ['mainnet', 'testnet'] as const) {
-      expect(order({ network, walletV2: true }).filter((m) => m.startsWith('primary:'))).toEqual(['primary:wallet*', 'primary:passkey'])
-    }
+  it('at most two choices show where the wallet leads (mainnet adds the Get DashPay link)', () => {
+    expect(order({ network: 'testnet', walletV2: true }).filter((m) => m.startsWith('primary:'))).toEqual(['primary:wallet*', 'primary:passkey'])
+    expect(order({ network: 'mainnet', walletV2: true }).filter((m) => m.startsWith('primary:'))).toEqual(['primary:wallet*', 'primary:get-dashpay', 'primary:passkey'])
+  })
+
+  it('a protocol no released wallet reads: creating leads, the wallet is under Other ways, nothing sends newcomers to DashPay', () => {
+    expect(order({ walletV2: true, releasedWallet: false })).toEqual(['primary:create*', 'primary:passkey', 'more:import', 'more:dg', 'more:wallet', 'advanced:raw-key'])
+    expect(order({ network: 'mainnet', walletV2: true, releasedWallet: false })).toEqual(['primary:create*', 'primary:passkey', 'advanced:import', 'more:dg', 'more:wallet', 'advanced:raw-key'])
   })
 
   it('an unfinished creation comes first, and nothing is recommended meanwhile', () => {
@@ -43,8 +47,8 @@ describe('signInMethods', () => {
     expect(order({ network: 'mainnet', walletV2: true, creating: true })).toEqual([
       'primary:resume-create',
       'primary:wallet',
+      'primary:get-dashpay',
       'primary:passkey',
-      'more:get-dashpay',
       'advanced:import',
       'more:dg',
       'advanced:create',
@@ -65,7 +69,7 @@ describe('signInMethods', () => {
 
     it('mainnet', () => {
       const main = ['advanced:import', 'more:dg']
-      expect(order({ network: 'mainnet', ...offered })).toEqual(['primary:wallet*', 'primary:passkey', 'more:get-dashpay', ...main, 'advanced:create', 'advanced:raw-key'])
+      expect(order({ network: 'mainnet', ...offered })).toEqual(['primary:wallet*', 'primary:get-dashpay', 'primary:passkey', ...main, 'advanced:create', 'advanced:raw-key'])
       expect(order({ network: 'mainnet', ...notOffered })).toEqual(['primary:create*', 'primary:passkey', ...main, 'advanced:raw-key'])
       expect(order({ network: 'mainnet', ...unchecked })).toEqual(['primary:create*', 'primary:passkey', ...main, 'more:wallet', 'advanced:raw-key'])
     })
@@ -89,11 +93,13 @@ describe('signInMethods', () => {
       }
     })
 
-    it('walletSignInReady: mainnet and testnet with v2 only', () => {
-      expect(walletSignInReady('mainnet', true)).toBe(true)
-      expect(walletSignInReady('testnet', true)).toBe(true)
-      expect(walletSignInReady('devnet', true)).toBe(false)
-      expect(walletSignInReady('testnet', false)).toBe(false)
+    it('walletSignInReady: mainnet and testnet with v2, at a protocol released wallets read', () => {
+      expect(walletSignInReady('mainnet', true, true)).toBe(true)
+      expect(walletSignInReady('testnet', true, true)).toBe(true)
+      expect(walletSignInReady('devnet', true, true)).toBe(false)
+      expect(walletSignInReady('testnet', false, true)).toBe(false)
+      expect(walletSignInReady('testnet', true, false)).toBe(false)
+      expect(walletSignInReady('mainnet', true, false)).toBe(false)
     })
   })
 })

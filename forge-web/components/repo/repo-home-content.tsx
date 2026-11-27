@@ -376,11 +376,22 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
                 Install →
               </Link>
             </p>
-            <CopyRow text={cmd.authLogin} label="Copy the sign-in command" />
-            <p className={note} data-testid="empty-repo-sign-in">
-              Scan the QR code with {ACTIVE_NETWORK.network === 'testnet' ? "DashPay for Android's testnet build" : 'DashPay for Android or Dash Wallet for iOS'}, or use your 12 words with{' '}
-              <span className="font-mono">{cmd.authLoginWords}</span>. New identity: <span className="font-mono">{cmd.authNew}</span>.
-            </p>
+            {ACTIVE_NETWORK.network === 'testnet' ? (
+              <>
+                <CopyRow text={cmd.authLoginWords} label="Copy the sign-in command" />
+                <p className={note} data-testid="empty-repo-sign-in">
+                  Type your 12 words when it asks (released DashPay builds can&apos;t sign in on testnet since its latest Platform upgrade). New identity: <span className="font-mono">{cmd.authNew}</span>.
+                </p>
+              </>
+            ) : (
+              <>
+                <CopyRow text={cmd.authLogin} label="Copy the sign-in command" />
+                <p className={note} data-testid="empty-repo-sign-in">
+                  Scan the QR code with DashPay for Android or Dash Wallet for iOS, or use your 12 words with{' '}
+                  <span className="font-mono">{cmd.authLoginWords}</span>. New identity: <span className="font-mono">{cmd.authNew}</span>.
+                </p>
+              </>
+            )}
           </div>
         </details>
 

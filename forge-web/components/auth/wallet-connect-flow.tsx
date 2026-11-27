@@ -43,12 +43,12 @@ import { ScanOnlyHere, ScanSafety } from '@/components/auth/scan-warning'
 import { enrollPasskey, passkeysAvailable, type Protection } from '@/lib/auth'
 import type { UnlockKind } from '@/lib/auth/vault'
 import { shortId } from '@/lib/utils'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { creditsToDash } from '@/lib/sdk/cost'
 import {
   PollTrigger,
   RequestExpired,
-  appConnectV2Available,
+  appConnectSupport,
   awaitV2Grant,
   disposeV2Request,
   newV2LoginRequest,
@@ -157,11 +157,14 @@ export function WalletConnectFlow({
   onDone,
   mode = 'login',
   onUnlock,
+  onGetDashPay,
 }: {
   onDone: () => void
   mode?: 'login' | 'renew'
   /** Open the sheet's Unlock view (a v2 sign-in that must wait for a locked wallet key to be opened). */
   onUnlock?: () => void
+  /** Open the sheet's install step, for someone without DashPay (mainnet). */
+  onGetDashPay?: () => void
 }): JSX.Element {
   const { adoptWalletKeys, isLoading, vaults, unlockScope, controller, origin, identity } = useAuth()
   // Read when the request starts (a scope change must not restart a running request).
@@ -191,6 +194,8 @@ export function WalletConnectFlow({
   }, [])
   // What the request is waiting for before its QR can show.
   const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
+  /** Whether a released wallet reads this chain's protocol; null until checked. */
+  const [releasedWallet, setReleasedWallet] = useState<boolean | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [confirmed, setConfirmed] = useState(false)
   /** The protection picked on the protect step (after "That's me"). */
@@ -346,9 +351,10 @@ export function WalletConnectFlow({
 
     /** The group check's notice for the confirm step; throws {@link NOT_OFFERED} where v2 can't be offered. */
     async function groupNotice(sdk: Sdk): Promise<string | null> {
-      const available = await appConnectV2Available(sdk, ACTIVE_NETWORK.network)
-      if (available === null) throw new Error(UNREAD)
-      if (!available) throw new Error(NOT_OFFERED)
+      const support = await appConnectSupport(sdk, ACTIVE_NETWORK.network)
+      if (support === null) throw new Error(UNREAD)
+      if (!support.v2) throw new Error(NOT_OFFERED)
+      if (!signal.aborted) setReleasedWallet(support.releasedWallet)
       try {
         // Forge's own group check, before any code shows.
         return (await latest.current.controller.checkGroup()).notice
@@ -669,6 +675,13 @@ export function WalletConnectFlow({
         </div>
       ) : null}
       {request ? <ScanOnlyHere /> : null}
+      {request && mode === 'login' && onGetDashPay && releasedWallet === true ? (
+        <p className="text-center text-dense">
+          <button type="button" data-testid="wallet-get-dashpay" onClick={onGetDashPay} className="hit-area text-forge-700 underline dark:text-forge-400">
+            No DashPay yet? Get it first
+          </button>
+        </p>
+      ) : null}
       {status === 'incomplete-read' && request ? (
         <p className="text-center text-[12px] text-caution-700 dark:text-caution-400" data-testid="incomplete-read">
           Still checking for your wallet&apos;s answer…
@@ -688,7 +701,7 @@ export function WalletConnectFlow({
               <ApprovalTerms budget={request.terms.budget} expiresAt={request.terms.expiresAt} />
             </p>
             <ScanSafety syncs={syncBinding.current && ACTIVE_NETWORK.v2?.user !== undefined} />
-            {mode === 'login' ? <WalletSupportNote /> : null}
+            {mode === 'login' ? <WalletSupportNote releasedWallet={releasedWallet} /> : null}
           </div>
         </details>
       ) : null}
@@ -818,25 +831,28 @@ const UNREAD = "Couldn't read Platform to check what your wallet can answer. Try
 export const DASHPAY_ANDROID_RELEASES = 'https://github.com/dashpay/dash-wallet/releases/latest'
 
 /**
- * Which wallets can answer here (docs/design/wallet-primary.md, checked 2026-11-22): App Connect
- * v2 in DashPay for Android 11.9.2 and Dash Wallet for iOS 9.1.4. On testnet only Android's
- * testnet build (an APK on the GitHub release) is verified, so only it is named there.
+ * Which wallets can answer here (docs/design/wallet-primary.md): App Connect v2 in DashPay for
+ * Android 11.9.2 and Dash Wallet for iOS 9.1.4, while the chain runs a protocol they read
+ * (`releasedWalletReads`); on testnet only Android's testnet build was ever verified.
  */
-function WalletSupportNote(): JSX.Element {
+function WalletSupportNote({ releasedWallet }: { releasedWallet: boolean | null }): JSX.Element | null {
+  if (releasedWallet === null) return null
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      {ACTIVE_NETWORK.network === 'testnet' ? (
-        <>
-          Works with DashPay for Android 11.9.2 or later, which reads App Connect v2 dashpay://connect codes. On testnet, use its testnet build (More → Tools → Connections): the{' '}
-          <code>-testnet.apk</code> on the{' '}
-          <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
-            DashPay Wallet releases (opens in a new tab)
-          </a>
-          .
-        </>
-      ) : (
-        'Works with DashPay for Android 11.9.2 or later and Dash Wallet for iOS 9.1.4 or later (More → Tools → Connections), which read App Connect v2 dashpay://connect codes.'
-      )}
+      {!releasedWallet && ACTIVE_NETWORK.network !== 'devnet'
+        ? `Released DashPay builds (11.9.2, and the 12.0.2 pre-release) can't sign in on ${networkName()} since its latest Platform upgrade.`
+        : ACTIVE_NETWORK.network === 'testnet' ? (
+          <>
+            Works with DashPay for Android 11.9.2 or later, which reads App Connect v2 dashpay://connect codes. On testnet, use its testnet build (More → Tools → Connections): the{' '}
+            <code>-testnet.apk</code> on the{' '}
+            <a href={DASHPAY_ANDROID_RELEASES} target="_blank" rel="noreferrer" className="text-forge-700 underline dark:text-forge-400">
+              DashPay Wallet releases (opens in a new tab)
+            </a>
+            .
+          </>
+        ) : (
+          'Works with DashPay for Android 11.9.2 or later and Dash Wallet for iOS 9.1.4 or later (More → Tools → Connections), which read App Connect v2 dashpay://connect codes.'
+        )}
     </p>
   )
 }
