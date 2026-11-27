@@ -160,6 +160,27 @@ dig +short CAA forge.dashhq.org
 
 Expect your records and Cloudflare's. Then confirm Universal SSL still shows **Active** under SSL/TLS → Edge Certificates.
 
+### 9. Deep links answer 200
+
+GitHub Pages answers every path it has no file for with the build's `404.html` and status 404. A repo's short URL (`/alice/project`, `/alice/project/issues/7`) is such a path: the page's shim opens the app, so people never notice, but link previews, crawlers and `curl` stop at the 404 (`curl -s -o /dev/null -w '%{http_code}' https://forge.dashhq.org/<owner>/<repo>` prints `404`, 2026-11-27). Pages has no setting for rewrites or status codes, so this needs the proxy.
+
+The Worker [`infra/pages-deep-links/worker.js`](../infra/pages-deep-links/worker.js) passes every response through unchanged. The one exception is a 404 for a path the 404.html shim expands (a short repo URL, or `/github.com/<owner>/<repo>`): it sends that 404 with status 200, the same body and the same headers. It runs the shim's own source (generated from `forge-web/lib/deep-link-worker.ts`, which a unit test keeps in step), so the two can't disagree. Any other missing path keeps its 404.
+
+Workers & Pages → **Create** → **Create Worker**, paste `worker.js`, deploy. Then the Worker → Settings → **Domains & Routes** → **Add** → **Route**: `forge.dashhq.org/*`, zone `dashhq.org`. Add `testnet-forge.dashhq.org/*` too if that host is proxied. The same file serves both: it reads only the path.
+
+Run locally with `wrangler dev` (workerd) in front of the live forge.dashhq.org (2026-11-27), it returned:
+
+- 200 for `/forge/dash-forge` and `/forge/dash-forge/issues`, with the same bytes the site sends today;
+- 404 for `/nope/x/y/z` and a missing `/_next/static/` file;
+- the site's own 200 for `/` and `/explore/`.
+
+**Check it:**
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://forge.dashhq.org/forge/dash-forge   # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' https://forge.dashhq.org/nope/x/y/z         # expect 404
+```
+
 ## How a deploy runs
 
 Every merge to master that touches the web app, `docs/` or the deployment files deploys both sites. Deploys run one at a time and are never cut off. While one runs, only the newest waiting run is kept, so the last merge always deploys. A run whose commit is no longer master's head builds nothing and starts a run on master instead. Each deploy ends by reading the live `forge-manifest.json` and fails unless it is this build's: about 15 minutes for forge.dashhq.org and 25 for testnet-forge.dashhq.org, which also waits for its site repository's Pages build.
