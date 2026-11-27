@@ -16,8 +16,8 @@
 //   node scripts/snapshot-contracts.mjs [--network devnet|testnet|mainnet --devnet-name sakura]
 //   node scripts/snapshot-contracts.mjs --network testnet --record <scratch record> --out <snapshot file>
 //
-// The snapshot is taken at the protocol version the network runs, as the SDK learns it from the
-// proved answer (never below PROTOCOL_VERSION, the one deploy-v2 registers at). Re-run after a
+// The snapshot is taken at the protocol version the network's proved answer names (never below
+// PROTOCOL_VERSION, the one deploy-v2 registers at), and refused when the SDK is at another one. Re-run after a
 // network upgrade: an upgrade can bump a system contract (protocol 15 moved DPNS from version 2
 // to 3), and a stale snapshot costs every cold page a getDataContract request.
 //
@@ -92,26 +92,30 @@ export function resolveTarget(args, root = ROOT) {
   return { network, devnetName, key, depFile, out };
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const { network, devnetName, key, depFile, out } = resolveTarget(args);
-  if (!existsSync(depFile)) throw new Error(`no deployment file ${depFile}`);
-  const dep = JSON.parse(readFileSync(depFile, 'utf8'));
-  const incomplete = incompleteReason(dep);
-  if (incomplete) throw new Error(`${depFile} is a half-finished deployment (${incomplete}); finish deploy-v2 first`);
+/**
+ * The protocol version to serialize a snapshot at: the one the network's signed answer names.
+ * Refused when the SDK would serialize at another one (a seed above the network, or a pin) or
+ * the network is below PROTOCOL_VERSION. A snapshot above the network's version would raise
+ * every reader's stored SDK version for good (wasm-sdk never lowers it).
+ */
+export function snapshotVersion(sdkVersion, provedVersion, key) {
+  if (!Number.isInteger(provedVersion) || provedVersion <= 0) throw new Error(`${key}'s answer named no protocol version: nothing written`);
+  if (provedVersion < PROTOCOL_VERSION) throw new Error(`${key} runs protocol ${provedVersion}, below ${PROTOCOL_VERSION}: nothing written`);
+  if (sdkVersion !== provedVersion) throw new Error(`${key} runs protocol ${provedVersion} but the SDK is at ${sdkVersion}: nothing written`);
+  return provedVersion;
+}
+
+/** The snapshot of a complete record's contracts, read with one proved request. */
+export async function takeSnapshot({ network, devnetName, key, dep, evo }) {
   const ids = snapshotIds(dep);
   // only a devnet has no discovery: testnet and mainnet find their nodes themselves
   const addresses = network === 'devnet' ? dep.dapiAddresses ?? dep.v2?.devnet?.addresses : undefined;
-
-  const { EvoSDK } = await loadEvoSdk();
-  // Not pinned: the SDK learns the network's version from the proved answer, and the bytes are
-  // serialized at it, the version the web clients read this network with. A pinned SDK would
-  // report the pin whatever the network runs. Below PROTOCOL_VERSION the deployment cannot run.
-  const sdk = new EvoSDK({ network, trusted: true, devnetName, ...(addresses ? { addresses } : {}) });
+  // Not pinned: the SDK ratchets up to the version the proved answer names, and the bytes are
+  // serialized at it, the version the web clients read this network with.
+  const sdk = new evo.EvoSDK({ network, trusted: true, devnetName, ...(addresses ? { addresses } : {}) });
   await sdk.connect();
-  const contracts = await sdk.contracts.getMany(ids);
-  const platformVersion = sdk.version();
-  if (platformVersion < PROTOCOL_VERSION) throw new Error(`${key} answered at protocol ${platformVersion}, below ${PROTOCOL_VERSION}: nothing written`);
+  const { data: contracts, metadata } = await sdk.contracts.getManyWithProof(ids);
+  const platformVersion = snapshotVersion(sdk.version(), metadata?.protocolVersion, key);
 
   const snapshot = {};
   for (const id of ids) {
@@ -123,8 +127,19 @@ async function main() {
       bytes: Buffer.from(contract.toBytes(platformVersion)).toString('base64'),
     };
   }
+  return { snapshot, platformVersion };
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const { network, devnetName, key, depFile, out } = resolveTarget(args);
+  if (!existsSync(depFile)) throw new Error(`no deployment file ${depFile}`);
+  const dep = JSON.parse(readFileSync(depFile, 'utf8'));
+  const incomplete = incompleteReason(dep);
+  if (incomplete) throw new Error(`${depFile} is a half-finished deployment (${incomplete}); finish deploy-v2 first`);
+  const { snapshot, platformVersion } = await takeSnapshot({ network, devnetName, key, dep, evo: await loadEvoSdk() });
   writeDep(out, snapshot);
-  console.error(`wrote ${ids.length} contracts (platform version ${platformVersion}) to ${out}`);
+  console.error(`wrote ${Object.keys(snapshot).length} contracts (platform version ${platformVersion}) to ${out}`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
