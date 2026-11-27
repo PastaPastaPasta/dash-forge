@@ -37,7 +37,7 @@ export async function checkGatewayNetwork(env, fetchImpl = fetch) {
   if (network !== want) {
     return {
       level: 'error',
-      message: `the gateway ${url} serves ${network}, but this build is for ${want}: point PAGES_GATEWAY_URL at a ${want} gateway, or unset it`,
+      message: `the gateway ${url} serves ${network}, but this build is for ${want}: point the site's gateway variable (PAGES_GATEWAY_URL, or TESTNET_SITE_GATEWAY_URL for the testnet site) at a ${want} gateway, or unset it`,
     }
   }
   return { level: 'ok', message: `the gateway ${url} serves ${want}` }

@@ -1,0 +1,5 @@
+# dashhq: mounts the deny list's directory next to the stock docker-compose.yml.
+services:
+  forge-gateway:
+    volumes:
+      - ./deny:/etc/forge-gateway:ro

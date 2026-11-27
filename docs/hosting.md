@@ -160,6 +160,41 @@ dig +short CAA forge.dashhq.org
 
 Expect your records and Cloudflare's. Then confirm Universal SSL still shows **Active** under SSL/TLS → Edge Certificates.
 
+### 9. Deep links answer 200
+
+**Not active today.** This is an owner-run step: it needs the Cloudflare proxy in front of the site, and nothing in this repository deploys it.
+
+GitHub Pages answers every path it has no file for with the build's `404.html` and status 404. A repo's short URL (`/alice/project`, `/alice/project/issues/7`) is such a path. The page's shim opens the app, so people don't notice, but `curl` and link unfurlers get a 404 (`curl -s -o /dev/null -w '%{http_code}' https://forge.dashhq.org/<owner>/<repo>` prints `404`, 2026-11-27). Pages has no setting for rewrites or status codes.
+
+The Worker [`infra/pages-deep-links/worker.js`](../infra/pages-deep-links/worker.js) passes every response through unchanged, except a 404 for a path the 404.html shim expands (a short repo URL, or `/github.com/<owner>/<repo>`). It sends that one with status 200, with the same body and headers. It is generated from the shim's source (`forge-web/lib/deep-link-worker.ts`; a unit test fails when the committed file differs). Any other missing path keeps its 404.
+
+What changes with it: such a URL answers 200 with the same page, so unfurlers show the site's generic card instead of nothing. What doesn't: the page keeps its `noindex` and generic title, so search engines still don't index repo pages, and previews don't name the repo. `forge-gateway`'s `/og/` links do that ([Share links](hosting/forge-gateway.md#share-links-preview-cards)).
+
+**Set it up:**
+
+1. Workers & Pages → **Create** → **Create Worker**, paste `worker.js`, deploy.
+2. The Worker → Settings → **Domains & Routes** → **Add** → **Route**: `forge.dashhq.org/*`, zone `dashhq.org`, failure mode **Fail open (proceed)**, so a Worker over its request limit leaves the site served straight from Pages.
+3. Add routes with **no Worker** for the paths that never need it: `forge.dashhq.org/_next/*` and `forge.dashhq.org/icons/*`. That keeps the build's chunks and wasm off the Worker's request count.
+4. For testnet-forge.dashhq.org, once that host is proxied, add the same routes for it. The same file serves both, because it reads only the path.
+5. When `worker.js` changes in this repository, paste the new version. The live Worker doesn't follow the repository on its own.
+
+Running locally with `wrangler dev` (workerd) in front of the live forge.dashhq.org (2026-11-27), it returned:
+
+- 200 for `/forge/dash-forge` and `/forge/dash-forge/issues`, with the same decoded body the site sends today;
+- 404 for `/nope/x/y/z` and for a missing `/_next/static/` file;
+- the site's own 200 for `/` and `/explore/`.
+
+The rules in the sections above were not part of that run.
+
+**Check it** once it is live:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://forge.dashhq.org/forge/dash-forge   # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' https://forge.dashhq.org/nope/x/y/z         # expect 404
+curl -sD- -o /dev/null https://forge.dashhq.org/forge/dash-forge | grep -i -E 'strict-transport|x-frame|content-security'   # section 7's headers
+dg verify-app https://forge.dashhq.org
+```
+
 ## How a deploy runs
 
 Every merge to master that touches the web app, `docs/` or the deployment files deploys both sites. Deploys run one at a time and are never cut off. While one runs, only the newest waiting run is kept, so the last merge always deploys. A run whose commit is no longer master's head builds nothing and starts a run on master instead. Each deploy ends by reading the live `forge-manifest.json` and fails unless it is this build's: about 15 minutes for forge.dashhq.org and 25 for testnet-forge.dashhq.org, which also waits for its site repository's Pages build.

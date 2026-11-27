@@ -51,11 +51,13 @@ The list is [`forge-contracts/config/curation.json`](../forge-contracts/config/c
 3. The merge deploys the web app: `.github/workflows/pages.yml` runs on changes under `forge-contracts/config/`. The entry takes effect when that deploy finishes. A tab opened before the deploy keeps running the old build until it is reloaded.
 4. Removing an entry is the same pull request in reverse.
 
+A maintainer may also hide Forge's own test repositories whose code can no longer load (their storage was a temporary test host that is gone), so a first visit doesn't land on them. The note says so.
+
 Every entry carries its date and reason.
 
 ## The gateway
 
-dashhq's gateway ([`git-forge.dashhq.org`](hosting/forge-gateway.md)) reads the same file, compiled into its image. Hiding changes only its link previews: a hidden repository's (or hidden identity's) share link and card are the site's own, naming nothing of it. Its clones, badges and feeds are still served. A different, operator-only list, `GATEWAY_DENY`, makes the gateway refuse a repository or owner outright with `451 Unavailable For Legal Reasons`, delete its cached mirror, and point at `git clone dash://…`. Both are the gateway operator's choice, not protocol moderation. The file format, reload behaviour and runbook are in [Takedowns and hidden repositories](hosting/forge-gateway.md#takedowns-and-hidden-repositories).
+dashhq's gateways ([`git-forge.dashhq.org` and `testnet-git-forge.dashhq.org`](hosting/forge-gateway.md)) read the same file, compiled into their image. Hiding changes only their link previews: a hidden repository's (or hidden identity's) share link and card are the site's own, naming nothing of it. Their clones, badges and feeds are still served. A different, operator-only list, `GATEWAY_DENY`, makes the gateway refuse a repository or owner outright with `451 Unavailable For Legal Reasons`, delete its cached mirror, and point at `git clone dash://…`. Both are the gateway operator's choice, not protocol moderation. The file format, reload behaviour and runbook are in [Takedowns and hidden repositories](hosting/forge-gateway.md#takedowns-and-hidden-repositories).
 
 ## Verifying what a build hides
 

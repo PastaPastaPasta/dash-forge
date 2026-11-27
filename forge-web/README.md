@@ -24,7 +24,7 @@ Or `make dev-web` from the repository root. The first page load takes a while: t
 
 Contract ids always come from `forge-contracts/deployments/`, so a network with no file there has nothing to read.
 
-To sign in locally, use **Sign in** and scan the QR code with DashPay. On testnet, use DashPay for Android's testnet build. Test DASH comes from the [testnet faucet](https://faucet.testnet.networks.dash.org).
+To sign in locally, use **Sign in**: on mainnet, scan the QR code with DashPay; on testnet, create an identity or use your identity file (no released DashPay build signs in on testnet since protocol 15). Test DASH comes from the [testnet faucet](https://faucet.testnet.networks.dash.org).
 
 ## Build
 

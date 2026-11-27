@@ -38,7 +38,9 @@ dg init                                    # creates the repository, adds `origi
 
 Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push` (to clone from mainnet before you sign in there: `git clone -c dash.network=mainnet dash://<owner>/<repo>`). Every push prints its cost first ([costs](docs/guides/costs.md)).
 
-- **Network:** `--network mainnet` on the first sign-in makes mainnet your default for `dg` and `git`. Without it the tools use testnet (free test DASH; DashPay's testnet build).
+Without git-remote-dash, public repositories clone over plain HTTPS: `git clone https://git-forge.dashhq.org/<owner>/<repo>.git` (testnet: `testnet-git-forge.dashhq.org`). **This mirror is centralized:** one read-only server run by dashhq, an optional convenience. `dash://` with git-remote-dash is the decentralized path, and `dg verify-mirror <url>` checks the mirror against Dash Platform ([forge-gateway](docs/hosting/forge-gateway.md)).
+
+- **Network:** `--network mainnet` on the first sign-in makes mainnet your default for `dg` and `git`. Without it the tools use testnet (free test DASH; sign in there with an identity file or recovery phrase, as no released DashPay build signs in on testnet since protocol 15).
 - **Other installs:** Windows, manual downloads, attestations and building from source (Rust, `protoc` 25+ and, on Linux, a C compiler, `pkg-config` and the OpenSSL headers) are in [INSTALL.md](docs/INSTALL.md#build-from-source).
 
 <details>

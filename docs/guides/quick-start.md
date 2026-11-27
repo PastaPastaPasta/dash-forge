@@ -91,10 +91,10 @@ dg auth new
 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
-- **In the web app**: on [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org), **Sign in → Other ways to sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On [forge.dashhq.org](https://forge.dashhq.org), mainnet, **Other ways to sign in** leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under its **Advanced**.)
+- **In the web app**: on [testnet-forge.dashhq.org](https://testnet-forge.dashhq.org), **Sign in → Other ways to sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser. (On [forge.dashhq.org](https://forge.dashhq.org), mainnet, **No DashPay yet? Get it first** under the wallet tile leads newcomers to DashPay instead, to create the identity in the wallet and sign in with it; creating in the page is under **Other ways to sign in → Advanced**.)
 - **With the Dash bridge**: <https://bridge.thepasta.org>, on testnet, then **Download Key Backup**.
 
-To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with DashPay and approve once for all of Forge). On testnet that needs DashPay Wallet for Android's testnet build, 11.9.2 or later; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
+To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with DashPay and approve once for all of Forge). That works on mainnet; on testnet no released DashPay build signs in since protocol 15. [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 
 ---
 
@@ -106,7 +106,7 @@ To sign the *browser* in with an identity you already have, the web app also off
 dg auth login
 ```
 
-It prints a QR code (and the same request as a `dashpay://connect` link). Scan it in DashPay (**More → Tools → Connections → Scan QR**; on testnet, DashPay's testnet build) and approve: the wallet adds a limited key to your identity, and `dg` shows the identity and asks you to confirm it before storing the key. The recovery phrase and the master key stay on the phone. [Signing in from the terminal with DashPay](identity-and-keys.md#signing-in-from-the-terminal-with-dashpay) has the details.
+It prints a QR code (and the same request as a `dashpay://connect` link). Scan it in DashPay (**More → Tools → Connections → Scan QR**; mainnet only for now: no released DashPay build signs in on testnet since protocol 15, so use the file or words below there) and approve: the wallet adds a limited key to your identity, and `dg` shows the identity and asks you to confirm it before storing the key. The recovery phrase and the master key stay on the phone. [Signing in from the terminal with DashPay](identity-and-keys.md#signing-in-from-the-terminal-with-dashpay) has the details.
 
 No wallet? Sign in with a bridge `dash-identity-<id>.json` or the 12 words instead:
 

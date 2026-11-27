@@ -210,17 +210,21 @@ impl Storer {
         text: &Secret,
         slot: Slot,
     ) -> Result<Stored> {
+        let mut sync_keychain_failed = None;
+        let mut keychain_failed = false;
         if !self.no_keychain && keychain::available() {
             let acct = account(network, identity_id, slot);
             // An entry that can't be read is left as it is (it can't be copied first), and the
             // key goes to a file instead.
-            match keep_keychain_entry(&acct, &backup_stamp(), text.expose()) {
-                // The sync key is looked up in the keychain before the file, so a file beside an
-                // entry left in place would never be read: keep the old one and stop.
-                Err(e) if slot == Slot::Sync => return Err(e),
-                Err(e) => eprintln!(
-                    "note: the keychain entry could not be copied first ({e:#}), so it is left as it is; using a file"
-                ),
+            let failed = match keep_keychain_entry(&acct, &backup_stamp(), text.expose()) {
+                Err(e) if slot == Slot::Sync => Some(e),
+                Err(e) => {
+                    eprintln!(
+                        "note: the keychain entry could not be copied first ({e:#}), so it is left as it is; using a file"
+                    );
+                    keychain_failed = true;
+                    None
+                }
                 Ok(kept) => {
                     if let Some(kept) = kept {
                         kept_one(keychain_source(&kept), slot);
@@ -232,16 +236,47 @@ impl Storer {
                                 source: keychain_source(&acct),
                             })
                         }
-                        // The sync key's entry, which its loader reads first, may still be
-                        // there: a file beside it would never be read.
-                        Err(e) if slot == Slot::Sync => return Err(e.into()),
+                        Err(e) if slot == Slot::Sync => Some(e.into()),
                         Err(e) => {
                             eprintln!("note: the keychain refused the key ({e}); using a file");
+                            keychain_failed = true;
+                            None
                         }
                     }
                 }
+            };
+            if let Some(e) = failed {
+                // The sync key is looked up in the keychain before the file, so a file beside an
+                // entry there would never be read: the file is used only when there is none.
+                match sync_fallback(keychain::get(keychain::SERVICE, &acct), text) {
+                    SyncFallback::InKeychain => {
+                        return Ok(Stored::Keychain {
+                            source: keychain_source(&acct),
+                        })
+                    }
+                    SyncFallback::File => {
+                        sync_keychain_failed = Some(e);
+                        keychain_failed = true;
+                    }
+                    SyncFallback::Refuse => return Err(e),
+                }
             }
         }
+        let stored = self.write_file(network, identity_id, text, slot, keychain_failed)?;
+        if let Some(e) = sync_keychain_failed {
+            eprintln!("{}", sync_file_note(&e, &stored));
+        }
+        Ok(stored)
+    }
+
+    fn write_file(
+        &mut self,
+        network: &str,
+        identity_id: &str,
+        text: &Secret,
+        slot: Slot,
+        keychain_failed: bool,
+    ) -> Result<Stored> {
         let path = slot_file(network, identity_id, slot)?;
         let guarded = self.guarded_main.as_deref().filter(|_| slot == Slot::Main);
         // Refused before a passphrase is asked for, unless only that passphrase can tell (a
@@ -260,6 +295,8 @@ impl Storer {
         if self.pass.is_none() {
             let why = if self.no_keychain {
                 "a full identity (master key included) is only ever stored behind a passphrase"
+            } else if keychain_failed {
+                "the OS keychain did not take the key, so it goes to a passphrase-encrypted file"
             } else {
                 "there is no OS keychain here, so the key goes to a passphrase-encrypted file"
             };
@@ -347,6 +384,47 @@ fn unguarded_overwrite(
             "or move {} somewhere safe and run it again",
             path.display()
         )),
+    )
+}
+
+/// Where the sync key goes once the keychain failed to take it (#768).
+#[derive(Debug, PartialEq, Eq)]
+enum SyncFallback {
+    /// The entry holds the key after all.
+    InKeychain,
+    /// There is no entry, so a file is read: the sealed `.key.sync` file.
+    File,
+    /// An entry that would hide a file is there, or the keychain can't say: nothing is stored.
+    Refuse,
+}
+
+/// [`SyncFallback`] from a fresh read of the sync key's entry (`entry`) after the keychain failed
+/// to take `text`.
+fn sync_fallback(entry: forge_core::error::Result<Option<Secret>>, text: &Secret) -> SyncFallback {
+    match entry {
+        Ok(None) => SyncFallback::File,
+        Ok(Some(v)) if v.expose() == text.expose() => SyncFallback::InKeychain,
+        Ok(Some(_)) | Err(_) => SyncFallback::Refuse,
+    }
+}
+
+/// The line saying the sync key went to a file because the keychain failed (`e`).
+fn sync_file_note(e: &anyhow::Error, stored: &Stored) -> String {
+    let (path, sealed) = match stored {
+        Stored::Sealed(p) => (p, true),
+        Stored::Plaintext(p) => (p, false),
+        Stored::Keychain { source } => {
+            return format!("note: the settings-sync key is kept in {source}")
+        }
+    };
+    format!(
+        "note: the OS keychain failed ({e:#}), so the settings-sync key is kept in {}{}",
+        path.display(),
+        if sealed {
+            " (dg and git read it when DASH_FORGE_PASSPHRASE is set)"
+        } else {
+            ""
+        }
     )
 }
 
@@ -467,13 +545,19 @@ fn keep_keychain_entry(acct: &str, stamp: &str, new: &str) -> Result<Option<Stri
     if value.expose() == new {
         return Ok(None);
     }
+    keep_keychain_copy(keychain::SERVICE, acct, &value, stamp).map(Some)
+}
+
+/// Copy `value` (the entry `svc`/`acct` holds) to a new account `<acct>.bak-<stamp>` of `svc`,
+/// never over an existing entry. Returns that account.
+fn keep_keychain_copy(svc: &str, acct: &str, value: &Secret, stamp: &str) -> Result<String> {
     for n in 1..=BACKUP_NAMES {
         let backup = backup_name(acct, stamp, n);
-        if keychain::get(keychain::SERVICE, &backup)?.is_some() {
+        if keychain::get(svc, &backup)?.is_some() {
             continue;
         }
-        keychain::set(keychain::SERVICE, &backup, value.expose())?;
-        return Ok(Some(backup));
+        keychain::set(svc, &backup, value.expose())?;
+        return Ok(backup);
     }
     anyhow::bail!("no free keychain account to keep a copy of {acct} (tried {BACKUP_NAMES})")
 }
@@ -552,7 +636,7 @@ impl Storer {
 }
 
 /// Whether `source` is `identity_id`'s main-slot key file on `network`, which `dg auth logout`
-/// deletes ([`remove`]).
+/// removes, after copying it when it holds a master key ([`remove`]).
 pub fn is_main_slot_file(network: &str, identity_id: &str, source: &str) -> bool {
     slot_file(network, identity_id, Slot::Main).is_ok_and(|f| {
         let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.into());
@@ -672,11 +756,58 @@ fn identity_lock(network: &str, identity_id: &str) -> Result<std::fs::File> {
     Ok(file)
 }
 
+/// What [`remove`] did.
+#[derive(Debug, Default)]
+pub struct Removed {
+    /// What was removed.
+    pub removed: Vec<String>,
+    /// The copies kept first, of keys that hold a master key or that dg could not open.
+    pub kept: Vec<KeptCopy>,
+}
+
+/// A copy [`remove`] kept of a key before removing it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct KeptCopy {
+    /// The copy, as a key source (`--identity` takes it).
+    pub at: String,
+    /// Whether the key holds a master key or recovery words (else dg could not open it).
+    pub master: bool,
+}
+
+/// Whether the stored key text `raw` holds a master key or recovery words: `Some(false)` only
+/// when it opens as a key without either. `opened` is the identity this run loaded from it.
+fn holds_master(raw: &str, opened: Option<&keystore::BridgeIdentity>) -> Option<bool> {
+    let parsed = keystore::BridgeIdentity::from_source_text(raw).ok();
+    parsed
+        .as_ref()
+        .or(opened)
+        .map(|b| b.master_key().is_some() || !b.mnemonic.expose().trim().is_empty())
+}
+
+/// A key this run opened from a file, with the file's bytes it was opened from.
+#[derive(Clone, Copy)]
+pub struct OpenedFile<'a> {
+    /// What the file opened to.
+    pub key: &'a keystore::BridgeIdentity,
+    /// The file's bytes when it was opened.
+    pub bytes: &'a [u8],
+}
+
 /// Remove what [`store`] wrote for `identity_id` on `network` (keychain entries and key files,
-/// main and pending), and the keychain entry `source` names if it is another one. Returns what
-/// was removed; fails if an entry exists but could not be removed.
-pub fn remove(network: &str, identity_id: &str, source: Option<&str>) -> Result<Vec<String>> {
-    let mut removed = Vec::new();
+/// main, pending and sync), and the keychain entry `source` names if it is another one. An
+/// identity key that holds a master key, or that dg cannot open to check (a sealed file this run
+/// did not open, or that changed since), is copied first ([`keep_file`], [`keep_keychain_copy`])
+/// and stays if that fails. Fails if an entry exists but could not be removed.
+pub fn remove(
+    network: &str,
+    identity_id: &str,
+    source: Option<&str>,
+    opened: Option<OpenedFile<'_>>,
+) -> Result<Removed> {
+    let _lock = identity_lock(network, identity_id).ok();
+    let mut done = Removed::default();
+    let stamp = backup_stamp();
+    let sync_acct = account(network, identity_id, Slot::Sync);
     let mut entries: Vec<(String, String)> = [Slot::Main, Slot::Pending, Slot::Sync]
         .iter()
         .map(|s| {
@@ -686,34 +817,106 @@ pub fn remove(network: &str, identity_id: &str, source: Option<&str>) -> Result<
             )
         })
         .collect();
-    if let Some((svc, acct)) = source.and_then(keystore::parse_keychain_source) {
+    let named = source.and_then(keystore::parse_keychain_source);
+    if let Some((svc, acct)) = named {
         if !entries.iter().any(|(s, a)| s == svc && a == acct) {
             entries.push((svc.to_string(), acct.to_string()));
         }
     }
     let mut failures = Vec::new();
     for (svc, acct) in &entries {
+        if !(svc == keychain::SERVICE && *acct == sync_acct) {
+            let kept = match keychain::get(svc, acct) {
+                Ok(Some(v)) => match holds_master(v.expose(), None) {
+                    Some(false) => Ok(None),
+                    master => keep_keychain_copy(svc, acct, &v, &stamp).map(|at| {
+                        Some(KeptCopy {
+                            at: format!("{}{svc}/{at}", keystore::KEYCHAIN_PREFIX),
+                            master: master.is_some(),
+                        })
+                    }),
+                },
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.into()),
+            };
+            match kept {
+                Ok(kept) => done.kept.extend(kept),
+                Err(e) => {
+                    failures.push(format!("{e:#} (it is left as it is)"));
+                    continue;
+                }
+            }
+        }
         // Tried even with the keychain switched off: the entry may predate the switch.
         match keychain::delete(svc, acct) {
-            Ok(true) => removed.push(format!("{} entry {svc}/{acct}", keychain::store_name())),
+            Ok(true) => done
+                .removed
+                .push(format!("{} entry {svc}/{acct}", keychain::store_name())),
             Ok(false) => {}
-            Err(e) => failures.push(format!("{svc}/{acct}: {e}")),
+            Err(e) => failures.push(format!("{e}")),
         }
     }
+    let keychain_failed = !failures.is_empty();
+    let mut file_failed = false;
     for slot in [Slot::Main, Slot::Pending, Slot::Sync] {
         let path = slot_file(network, identity_id, slot)?;
-        if path.exists() {
-            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
-            removed.push(path.display().to_string());
+        if !path.exists() {
+            continue;
+        }
+        match remove_key_file(&path, slot, opened, &stamp, &mut done.kept) {
+            Ok(()) => done.removed.push(path.display().to_string()),
+            Err(e) => {
+                failures.push(format!("{e:#}"));
+                file_failed = true;
+            }
         }
     }
     if !failures.is_empty() {
-        return Err(UserError::new(codes::IDENTITY_UNREADABLE, "the stored key was not removed")
-            .cause(failures.join("; "))
-            .fix("unlock the keychain and run `dg auth logout` again, or delete the entry in Keychain Access")
-            .into());
+        let mut u = UserError::new(codes::IDENTITY_UNREADABLE, "the stored key was not removed")
+            .cause(failures.join("; "));
+        if keychain_failed {
+            u = u.fix("unlock the keychain and run `dg auth logout` again, or delete the entry in Keychain Access");
+        }
+        if file_failed {
+            u = u.fix(
+                "check that you can read and delete the key file, and run `dg auth logout` again",
+            );
+        }
+        if !done.kept.is_empty() {
+            let at: Vec<&str> = done.kept.iter().map(|k| k.at.as_str()).collect();
+            u = u.note(format!("copies were kept at {}", at.join(", ")));
+        }
+        return Err(u.into());
     }
-    Ok(removed)
+    Ok(done)
+}
+
+/// Remove the key file `path` of `slot`, after copying it beside it ([`keep_file`]) when it is an
+/// identity key that holds a master key or that does not open (`opened`: what this run loaded,
+/// used only while the file still holds the bytes it was loaded from).
+fn remove_key_file(
+    path: &std::path::Path,
+    slot: Slot,
+    opened: Option<OpenedFile<'_>>,
+    stamp: &str,
+    kept: &mut Vec<KeptCopy>,
+) -> Result<()> {
+    if slot != Slot::Sync {
+        let raw = std::fs::read(path)
+            .map(zeroize::Zeroizing::new)
+            .with_context(|| format!("reading {} to check for a master key", path.display()))?;
+        let opened = opened.filter(|o| o.bytes == raw.as_slice()).map(|o| o.key);
+        let master = holds_master(std::str::from_utf8(&raw).unwrap_or_default(), opened);
+        if master != Some(false) {
+            let at = keep_file(path, stamp)?
+                .with_context(|| format!("{} went away while it was copied", path.display()))?;
+            kept.push(KeptCopy {
+                at: at.display().to_string(),
+                master: master.is_some(),
+            });
+        }
+    }
+    std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))
 }
 
 /// Record `source` as the default identity for the context's network (config.toml), with the
@@ -1061,6 +1264,204 @@ mod tests {
         let s = backup_stamp();
         assert_eq!(s.len(), 16, "{s}");
         assert!(s.ends_with('Z') && s.as_bytes()[8] == b'T', "{s}");
+    }
+
+    /// The testnet WIF of 0x11..11 (.gitleaks.toml lists it as a public example).
+    const WIF: &str = "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
+    const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+
+    fn master_json() -> String {
+        serde_json::json!({
+            "network": "testnet",
+            "identityId": ID,
+            "identityKeys": [{
+                "id": 0, "name": "Master", "keyType": "ECDSA_SECP256K1", "purpose": "AUTHENTICATION",
+                "securityLevel": "MASTER", "privateKeyWif": WIF,
+                "privateKeyHex": "", "publicKeyHex": "", "derivationPath": ""
+            }],
+            "mnemonic": "",
+            "assetLockKey": { "wif": "", "publicKeyHex": "", "derivationPath": "" }
+        })
+        .to_string()
+    }
+
+    fn limited_text() -> String {
+        format!("dfk1:testnet:{ID}:5:{WIF}")
+    }
+
+    /// A master key (or recovery words) counts; a limited key does not; what does not open is
+    /// unknown unless this run opened it.
+    #[test]
+    fn what_holds_a_master_key() {
+        let master = master_json();
+        let limited_key = limited_text();
+        assert_eq!(holds_master(&master, None), Some(true));
+        assert_eq!(holds_master(&limited_key, None), Some(false));
+        let mut words: serde_json::Value = serde_json::from_str(&master).unwrap();
+        words["identityKeys"][0]["privateKeyWif"] = "".into();
+        words["mnemonic"] = "abandon abandon abandon".into();
+        assert_eq!(holds_master(&words.to_string(), None), Some(true));
+        let sealed = sealed::seal(limited_key.as_bytes(), "test-passphrase").unwrap();
+        assert_eq!(holds_master(&sealed, None), None);
+        assert_eq!(holds_master("", None), None);
+        let limited = keystore::BridgeIdentity::from_source_text(&limited_key).unwrap();
+        let full = keystore::BridgeIdentity::from_source_text(&master).unwrap();
+        assert_eq!(holds_master(&sealed, Some(&limited)), Some(false));
+        assert_eq!(holds_master(&sealed, Some(&full)), Some(true));
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum Logout {
+        Removed,
+        KeptMaster,
+        KeptUnopened,
+    }
+
+    /// `dg auth logout` never loses a master key: a key file holding one, one it could not open,
+    /// or one that changed since it was opened, is copied beside it (0600, byte for byte) before
+    /// it is removed; a limited key and the sync key are just removed.
+    #[test]
+    fn logout_keeps_a_copy_of_a_master_key_file() {
+        let master = master_json();
+        let limited_key = limited_text();
+        let sealed_limited = sealed::seal(limited_key.as_bytes(), "test-passphrase").unwrap();
+        let sealed_master = sealed::seal(master.as_bytes(), "test-passphrase").unwrap();
+        let limited = keystore::BridgeIdentity::from_source_text(&limited_key).unwrap();
+        let full = keystore::BridgeIdentity::from_source_text(&master).unwrap();
+        let check = |what: &str,
+                     bytes: &str,
+                     slot: Slot,
+                     opened: Option<(&keystore::BridgeIdentity, &str)>,
+                     want: Logout| {
+            let t = tempfile::tempdir().unwrap();
+            let file = t.path().join(format!("testnet-X.key{}", slot.suffix()));
+            std::fs::write(&file, bytes).unwrap();
+            let opened = opened.map(|(key, from)| OpenedFile {
+                key,
+                bytes: from.as_bytes(),
+            });
+            let mut kept = Vec::new();
+            remove_key_file(&file, slot, opened, "20261127T120000Z", &mut kept).unwrap();
+            assert!(!file.exists(), "{what}");
+            let master = match want {
+                Logout::Removed => {
+                    assert!(kept.is_empty(), "{what}");
+                    assert!(backups_of(&file).is_empty(), "{what}");
+                    return;
+                }
+                Logout::KeptMaster => true,
+                Logout::KeptUnopened => false,
+            };
+            let copy = format!("{}.bak-20261127T120000Z", file.display());
+            assert_eq!(
+                kept,
+                [KeptCopy {
+                    at: copy.clone(),
+                    master
+                }],
+                "{what}"
+            );
+            assert_eq!(std::fs::read_to_string(&copy).unwrap(), bytes, "{what}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let mode = std::fs::metadata(&copy).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600, "{what}");
+            }
+        };
+        let main = Slot::Main;
+        check("plain master", &master, main, None, Logout::KeptMaster);
+        check("plain limited", &limited_key, main, None, Logout::Removed);
+        check(
+            "sealed, not opened",
+            &sealed_limited,
+            main,
+            None,
+            Logout::KeptUnopened,
+        );
+        let opened_limited = Some((&limited, sealed_limited.as_str()));
+        check(
+            "sealed, opened",
+            &sealed_limited,
+            main,
+            opened_limited,
+            Logout::Removed,
+        );
+        let stale = Some((&limited, sealed_limited.as_str()));
+        check(
+            "changed since opened",
+            &sealed_master,
+            main,
+            stale,
+            Logout::KeptUnopened,
+        );
+        let opened_master = Some((&full, sealed_master.as_str()));
+        check(
+            "sealed master",
+            &sealed_master,
+            main,
+            opened_master,
+            Logout::KeptMaster,
+        );
+        check(
+            "pending master",
+            &master,
+            Slot::Pending,
+            None,
+            Logout::KeptMaster,
+        );
+        check(
+            "sync key",
+            "fue1:testnet:X:1:00",
+            Slot::Sync,
+            None,
+            Logout::Removed,
+        );
+    }
+
+    /// A key file `dg auth logout` can't read to check (or copy) is not removed.
+    #[cfg(unix)]
+    #[test]
+    fn logout_leaves_a_key_file_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let t = tempfile::tempdir().unwrap();
+        let file = t.path().join("testnet-X.key");
+        std::fs::write(&file, master_json()).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&file).is_ok() {
+            return; // running as root: every file reads
+        }
+        let mut kept = Vec::new();
+        assert!(remove_key_file(&file, Slot::Main, None, "20261127T120000Z", &mut kept).is_err());
+        assert!(file.exists());
+        assert!(kept.is_empty());
+    }
+
+    /// #768: once the keychain failed to take the sync key, the sealed file is used only when no
+    /// entry is there to hide it.
+    #[test]
+    fn a_failed_keychain_falls_back_to_the_sync_file_only_without_an_entry() {
+        let key = Secret::new("fue1:testnet:X:1:00");
+        assert_eq!(sync_fallback(Ok(None), &key), SyncFallback::File);
+        assert_eq!(
+            sync_fallback(Ok(Some(Secret::new("fue1:testnet:X:1:00"))), &key),
+            SyncFallback::InKeychain
+        );
+        assert_eq!(
+            sync_fallback(Ok(Some(Secret::new("fue1:testnet:X:0:11"))), &key),
+            SyncFallback::Refuse,
+            "an older key there would hide the file"
+        );
+        assert_eq!(
+            sync_fallback(
+                Err(forge_core::Error::Config(
+                    "could not read keychain entry".into()
+                )),
+                &key
+            ),
+            SyncFallback::Refuse,
+            "an entry that can't be read may be there"
+        );
     }
 
     /// `dg auth status` with an identity JSON pasted into `DASH_FORGE_KEY` never prints it.
