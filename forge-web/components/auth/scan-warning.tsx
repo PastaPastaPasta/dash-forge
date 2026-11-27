@@ -51,16 +51,6 @@ export function ScanSafety({ syncs = ACTIVE_NETWORK.v2?.user !== undefined }: { 
         {here.ipfs ? ', and check this copy’s CID against the release (see “Verify the app” in the guides)' : ''}.
       </li>
       <li data-testid="scan-warning-limits">An approval gives this browser a key that signs as you on Forge, within the limits above.</li>
-      {syncs && (
-        <li data-testid="scan-warning-sync">
-          It can also give the key that reads the storage settings you sync, credentials included. Disabling keys
-          doesn’t take that back:{' '}
-          <Link prefetch={false} href={DOCS.moveSyncKey} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-rotate">
-            move sync to a new key
-          </Link>
-          .
-        </li>
-      )}
       <li>
         Scanned a code you didn’t trust?{' '}
         <Link href="/settings/keys/#disable" onClick={closeLogin} className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-keys">
@@ -72,6 +62,16 @@ export function ScanSafety({ syncs = ACTIVE_NETWORK.v2?.user !== undefined }: { 
         </Link>
         ).
       </li>
+      {syncs && (
+        <li data-testid="scan-warning-sync">
+          An approval can also give the key that reads the storage settings you sync, credentials included. Disabling keys
+          doesn’t take that back:{' '}
+          <Link prefetch={false} href={DOCS.moveSyncKey} target="_blank" rel="noreferrer noopener" className="text-forge-700 underline dark:text-forge-400" data-testid="scan-warning-rotate">
+            move sync to a new key
+          </Link>
+          .
+        </li>
+      )}
     </ul>
   )
 }
