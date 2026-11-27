@@ -674,7 +674,7 @@ describe('App Connect v2 in the sheet', () => {
     expect(tileOrder()).toEqual(['tile-create', 'tile-import', 'tile-dg', 'tile-wallet'])
     expect(q('[data-testid="tile-create-badge"]')!.textContent).toBe('Recommended')
     expect(q('[data-testid="tile-wallet"]')!.dataset['muted']).toBe('true')
-    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/Released DashPay builds can't sign in on testnet since it moved to Platform protocol 15/)
+    expect(q('[data-testid="tile-wallet"]')!.textContent).toMatch(/Released DashPay builds can't sign in on testnet since its latest Platform upgrade/)
     expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
   })
 

@@ -326,7 +326,7 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
                 : network === 'devnet'
                   ? `Test wallets only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps carry no devnet's settings.`
                   : walletV2 && !releasedWallet
-                    ? `Released DashPay builds can't sign in on ${networkName()} since it moved to Platform protocol 15. Use another way until a DashPay update ships.`
+                    ? `Released DashPay builds can't sign in on ${networkName()} since its latest Platform upgrade. Use another way until a DashPay update ships.`
                     : "Wallet sign-in isn't available here right now. Use another way."
             }
             muted={!walletFirst}

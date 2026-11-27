@@ -378,7 +378,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
               <>
                 <CopyRow text={cmd.authLoginWords} label="Copy the sign-in command" />
                 <p className={note} data-testid="empty-repo-sign-in">
-                  Type your 12 words when it asks (released DashPay builds can&apos;t sign in on testnet since protocol 15). New identity: <span className="font-mono">{cmd.authNew}</span>.
+                  Type your 12 words when it asks (released DashPay builds can&apos;t sign in on testnet since its latest Platform upgrade). New identity: <span className="font-mono">{cmd.authNew}</span>.
                 </p>
               </>
             ) : (

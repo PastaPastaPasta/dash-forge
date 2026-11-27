@@ -840,7 +840,7 @@ function WalletSupportNote({ releasedWallet }: { releasedWallet: boolean | null 
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
       {!releasedWallet && ACTIVE_NETWORK.network !== 'devnet'
-        ? `Released DashPay builds (11.9.2, and the 12.0.2 pre-release) can't sign in on ${networkName()} since it moved to Platform protocol 15.`
+        ? `Released DashPay builds (11.9.2, and the 12.0.2 pre-release) can't sign in on ${networkName()} since its latest Platform upgrade.`
         : ACTIVE_NETWORK.network === 'testnet' ? (
           <>
             Works with DashPay for Android 11.9.2 or later, which reads App Connect v2 dashpay://connect codes. On testnet, use its testnet build (More → Tools → Connections): the{' '}

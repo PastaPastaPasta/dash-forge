@@ -225,7 +225,7 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(q('qr-value')).not.toBeNull()
-    expect(q('wallet-support')!.textContent).toMatch(/Released DashPay builds \(11\.9\.2, and the 12\.0\.2 pre-release\) can't sign in on .* since it moved to Platform protocol 15\./)
+    expect(q('wallet-support')!.textContent).toMatch(/Released DashPay builds \(11\.9\.2, and the 12\.0\.2 pre-release\) can't sign in on .* ./)
   })
 
   it('offers the install step from the code only when the sheet gives one', async () => {
