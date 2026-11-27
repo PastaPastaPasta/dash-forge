@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/storage-sync-add-key.schema.json",
+  "title": "dg storage sync add-key --json",
+  "description": "This computer's sync key, added or already current.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "added",
+        "current"
+      ]
+    },
+    "identityId": {
+      "type": "string"
+    },
+    "keyId": {
+      "type": "integer"
+    },
+    "storedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "identityId",
+    "keyId"
+  ],
+  "additionalProperties": true
+}

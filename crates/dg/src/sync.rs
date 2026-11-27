@@ -6,6 +6,8 @@
 //! key `E` (`dg auth login --wallet`); everywhere else dg behaves exactly as before.
 
 use anyhow::Result;
+use forge_core::user_error::{codes, UserError};
+use serde_json::json;
 
 use forge_core::platform::{LoadedIdentity, PlatformClient, WriteEngine};
 use forge_core::storage::policy::{run_git_config, GitConfigRun};
@@ -193,7 +195,12 @@ pub async fn ensure_first_sync(ctx: &Ctx, writer: &Writer<'_>, key: &SyncKey, co
             }
         }
         Err(e) => {
-            if !ctx.json {
+            if ctx.json {
+                return;
+            }
+            if moved_away(writer.client, contract, key).await {
+                eprintln!("note: {ADD_KEY_NOTE}");
+            } else {
                 eprintln!("note: your storage profiles were not synced yet ({e:#}); dg tries again next time");
             }
         }
@@ -240,7 +247,16 @@ async fn record_change(ctx: &Ctx, entry: String, value: Option<serde_json::Value
             false
         }
         Err(e) => {
-            if !ctx.json {
+            if ctx.json {
+                return false;
+            }
+            let moved = match ctx.connect().await {
+                Ok(client) => moved_away(&client, &contract, &key).await,
+                Err(_) => false,
+            };
+            if moved {
+                eprintln!("note: the change was saved here only; {ADD_KEY_NOTE}");
+            } else {
                 eprintln!("note: the change was saved here but not synced to your identity ({e:#}); run the same `dg storage` command again to sync it");
             }
             false
@@ -363,5 +379,321 @@ pub async fn after_membership_change(
             }
             None
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The sync key: moving it, adding it (`dg storage sync move-key | add-key`)
+// ---------------------------------------------------------------------------------------
+
+/// The note a device that holds a key sync moved away from sees.
+pub const ADD_KEY_NOTE: &str = user_sync::rotate::ADD_KEY_NOTE;
+
+/// The line a wallet sign-in shows when the identity syncs under a key this computer doesn't
+/// hold and the wallet didn't hand out (nothing says it moved).
+pub const NOT_HELD_NOTE: &str = "your identity syncs its settings with a key this computer doesn't hold; add it with `dg storage sync add-key`";
+
+/// Whether `key` is no longer the identity's current sync key (sync moved to a new key on
+/// another device). One identity read; `false` when it can't tell.
+pub async fn moved_away(client: &PlatformClient, contract: &str, key: &SyncKey) -> bool {
+    let Ok(store) = PlatformUserStore::open(client, contract, None).await else {
+        return false;
+    };
+    matches!(
+        user_sync::rotate::standing(&store, key).await,
+        Ok(user_sync::rotate::KeyStanding::Moved)
+    )
+}
+
+/// `dg storage sync` subcommands.
+pub async fn run_key_command(ctx: &Ctx, cmd: &crate::StorageSyncCommand) -> Result<()> {
+    match cmd {
+        crate::StorageSyncCommand::MoveKey { master } => move_key(ctx, master.as_deref()).await,
+        crate::StorageSyncCommand::AddKey { master } => add_key(ctx, master.as_deref()).await,
+    }
+}
+
+/// The recovery phrase: from the identity file given, else a hidden prompt (never argv or the
+/// environment).
+fn read_phrase(file: Option<&std::path::Path>) -> Result<forge_core::keystore::Secret> {
+    let Some(file) = file else {
+        return crate::auth::read_mnemonic();
+    };
+    let bridge = forge_core::keystore::BridgeIdentity::load_from_file(file).map_err(|e| {
+        UserError::new(
+            codes::IDENTITY_UNREADABLE,
+            "the identity file could not be read",
+        )
+        .cause(e.to_string())
+    })?;
+    if bridge.mnemonic.expose().trim().is_empty() {
+        return Err(
+            UserError::new(codes::USAGE, "that identity file holds no recovery phrase")
+                .fix("run the command without --master and type the phrase when asked")
+                .into(),
+        );
+    }
+    Ok(forge_core::platform::identity::normalize_mnemonic(
+        bridge.mnemonic.expose(),
+    )?)
+}
+
+struct KeyRun {
+    contract: String,
+    network: String,
+    client: PlatformClient,
+    bridge: forge_core::keystore::BridgeIdentity,
+    identity: LoadedIdentity,
+    words: forge_core::keystore::Secret,
+    keys: user_sync::rotate::PhraseKeys,
+}
+
+/// The identity this computer signs in as, and what the phrase makes of its sync keys; refuses,
+/// before anything is written, an identity that doesn't sync yet or a phrase that is not its.
+async fn key_run(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<KeyRun> {
+    use user_sync::rotate::{self, PhraseCheck};
+    let Some(contract) = ctx.target.v2.as_ref().and_then(|f| f.user.clone()) else {
+        return Err(
+            UserError::new(codes::UNSUPPORTED, "sync isn't available on this network").into(),
+        );
+    };
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let words = read_phrase(master)?;
+    let seed = rotate::SyncSeed::from_phrase(words.expose())?;
+    let network = ctx.network_label();
+    let ledger = user_sync::platform::PlatformKeyLedger::new(&client, &contract, None);
+    let check = rotate::phrase_keys(&ledger, &seed, &network, &identity.id(), &contract).await?;
+    let keys = match check {
+        PhraseCheck::Keys(k) => k,
+        PhraseCheck::NotSyncing => {
+            return Err(UserError::new(codes::UNSUPPORTED, rotate::NOT_SYNCING)
+                .fix("sign in with your wallet (`dg auth login --wallet`) to start syncing")
+                .note("nothing was changed")
+                .into())
+        }
+        PhraseCheck::NotThisPhrase => {
+            return Err(UserError::new(codes::KEY_MISMATCH, rotate::NOT_THIS_PHRASE)
+                .fix("check the phrase: it is the one of the wallet that holds this identity")
+                .note("nothing was changed")
+                .into())
+        }
+    };
+    Ok(KeyRun {
+        contract,
+        network,
+        client,
+        bridge,
+        identity,
+        words,
+        keys,
+    })
+}
+
+/// Keep `key` as this computer's sync key (keychain first, else the sealed file).
+fn keep(key: &SyncKey) -> Result<crate::auth::store::Stored> {
+    crate::auth::store::Storer::new(false).store(
+        &key.network,
+        &key.identity_id,
+        &key.to_text(),
+        crate::auth::store::Slot::Sync,
+    )
+}
+
+fn held_key_id(network: &str, identity_id: &str) -> Option<u32> {
+    match user_sync::key::load(network, identity_id) {
+        LocalKey::Held(k) => Some(k.key_id),
+        _ => None,
+    }
+}
+
+/// What a failed move tells the user: "did not finish moving" (run it again) only once the
+/// identity update was broadcast or an earlier move is being finished; any error before that
+/// (the signing key, the store, the identity read, a refusal before sending) changed nothing.
+fn move_failure(e: &anyhow::Error) -> UserError {
+    if let Some(u) = e.downcast_ref::<UserError>() {
+        return u.clone();
+    }
+    let started = e
+        .downcast_ref::<user_sync::rotate::MoveError>()
+        .is_some_and(|m| m.started);
+    if started {
+        UserError::new(codes::PARTIAL, "your synced settings did not finish moving")
+            .cause(format!("{e:#}"))
+            .fix("run `dg storage sync move-key` again: it picks up where this one stopped")
+    } else {
+        UserError::new(codes::UNEXPECTED, "your synced settings were not moved")
+            .cause(format!("{e:#}"))
+            .note("nothing was changed")
+    }
+}
+
+/// `dg storage sync move-key`.
+#[allow(clippy::too_many_lines)] // the steps of one move, and its two outcomes
+async fn move_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
+    let run = key_run(ctx, master)
+        .await
+        .map_err(|e| anyhow::Error::from(move_failure(&e)))?;
+    let me = run.identity.id();
+    let held = held_key_id(&run.network, &me);
+    let master_wif =
+        forge_core::platform::identity::master_wif_of(&run.words, ctx.network(), &run.identity)?
+            .ok_or_else(|| {
+                UserError::new(
+                    codes::KEY_CANNOT_SIGN,
+                    "this recovery phrase doesn't make this identity's master key",
+                )
+                .cause(
+                    "moving sync needs the identity's master key, and this phrase doesn't make it",
+                )
+                .fix("check the phrase: it is the one of the wallet that holds this identity")
+                .note("nothing was changed")
+            })?;
+    let (expected_id, _) = run.keys.next_key()?;
+    let ledger =
+        user_sync::platform::PlatformKeyLedger::new(&run.client, &run.contract, Some(master_wif))
+            .marking_pending(expected_id);
+    let pending = user_sync::local::pending_key(&run.network, &me)
+        .and_then(|p| hex::decode(p.public_key).ok());
+    let (key, moved) = Writer::new(&run.client, &run.bridge, &run.identity)
+        .with_store(&run.contract, async |store| {
+            Ok(user_sync::rotate::move_key_with(
+                store,
+                &ledger,
+                &run.keys,
+                held,
+                pending.as_deref(),
+            )
+            .await?)
+        })
+        .await
+        .map_err(|e| move_failure(&e))?;
+    let _ = user_sync::local::clear_pending_key(&run.network, &me);
+    if moved.nothing_done() {
+        let stale = held.is_some_and(|h| h != key.key_id);
+        ctx.emit(
+            json!({
+                "status": "current",
+                "identityId": me,
+                "keyId": key.key_id,
+                "disabledKeyIds": moved.disabled,
+                "resealed": moved.states,
+                "created": moved.created,
+                "shares": moved.shares,
+                "grantsRewritten": 0,
+                "grantsDropped": 0,
+                "storedAt": null,
+            }),
+            || {
+                println!(
+                    "Your synced settings are already under your newest key (key #{}).",
+                    key.key_id
+                );
+                if stale {
+                    println!("  This computer holds an older key: add the newest one with `dg storage sync add-key`.");
+                }
+            },
+        );
+        return Ok(());
+    }
+    let stored = keep(&key).map_err(|e| {
+        UserError::new(
+            codes::PARTIAL,
+            format!(
+                "your synced settings moved to key #{}, but this computer could not keep it",
+                key.key_id
+            ),
+        )
+        .cause(format!("{e:#}"))
+        .fix("run `dg storage sync add-key` to add it here")
+    })?;
+    ctx.emit(
+        json!({
+            "status": "moved",
+            "identityId": me,
+            "keyId": key.key_id,
+            "disabledKeyIds": moved.disabled,
+            "resealed": moved.states,
+            "created": moved.created,
+            "shares": moved.shares,
+            "grantsRewritten": moved.grants,
+            "grantsDropped": moved.dropped,
+            "storedAt": stored.describe(),
+        }),
+        || {
+            println!("✓ Your synced settings moved to a new key (key #{}).", key.key_id);
+            println!("  Rotate your storage credentials now: the old key could read them. The new ones sync under the new key ({ROTATE_GUIDE}).");
+            println!("  Your other devices need the new key once: run `dg storage sync add-key` there.");
+            println!("  Wallet sign-ins no longer carry the sync key.");
+        },
+    );
+    Ok(())
+}
+
+/// `dg storage sync add-key`.
+async fn add_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
+    let run = key_run(ctx, master).await?;
+    let key = user_sync::rotate::add_key(&run.keys);
+    let me = run.identity.id();
+    let already = held_key_id(&run.network, &me) == Some(key.key_id);
+    let stored = if already { None } else { Some(keep(&key)?) };
+    let _ = user_sync::local::clear_pending_key(&run.network, &me);
+    ctx.emit(
+        json!({
+            "status": if already { "current" } else { "added" },
+            "identityId": me,
+            "keyId": key.key_id,
+            "storedAt": stored.as_ref().map(crate::auth::store::Stored::describe),
+        }),
+        || {
+            if already {
+                println!("This computer already holds your sync key (key #{}).", key.key_id);
+            } else {
+                println!("✓ This computer now holds your sync key (key #{}): your synced settings work here.", key.key_id);
+            }
+        },
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_core::user_sync::rotate::MoveError;
+
+    #[test]
+    fn a_move_says_run_again_only_once_the_update_was_sent() {
+        let sent = anyhow::Error::from(MoveError {
+            started: true,
+            error: forge_core::Error::Platform("the answer was lost".into()),
+        });
+        let u = move_failure(&sent);
+        assert_eq!(u.message, "your synced settings did not finish moving");
+        assert!(u
+            .fix
+            .iter()
+            .any(|f| f.contains("picks up where this one stopped")));
+
+        // Before anything was sent: a refused update, the signing key, the store, a read.
+        let refused = anyhow::Error::from(MoveError {
+            started: false,
+            error: forge_core::Error::Platform("refused".into()),
+        });
+        let no_key = anyhow::anyhow!("this identity file has no key that writes documents");
+        for e in [refused, no_key] {
+            let u = move_failure(&e);
+            assert_eq!(u.message, "your synced settings were not moved");
+            assert!(u.fix.iter().all(|f| !f.contains("picks up")));
+            assert_eq!(u.note.as_deref(), Some("nothing was changed"));
+        }
+
+        // A refusal of its own (wrong phrase) keeps its own words.
+        let own = anyhow::Error::from(
+            UserError::new(codes::KEY_MISMATCH, user_sync::rotate::NOT_THIS_PHRASE)
+                .note("nothing was changed"),
+        );
+        assert_eq!(
+            move_failure(&own).message,
+            user_sync::rotate::NOT_THIS_PHRASE
+        );
     }
 }

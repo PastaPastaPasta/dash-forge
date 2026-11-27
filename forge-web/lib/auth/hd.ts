@@ -12,6 +12,8 @@
  * mint-identity's @scure/bip32 output for the moutai fixture identities.
  */
 
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+
 import type { Network } from '../constants'
 import { loadSdkLibrary } from './connect'
 import { errorMessage } from '../utils'
@@ -57,6 +59,20 @@ export function topUpKeyPath(network: Network, index: number, identityIndex = 0)
   return `m/9'/${coin(network)}'/5'/2'/${identityIndex}'/${index}`
 }
 
+/**
+ * DIP-15's application encryption key, as the Dash wallets derive the key they hand an app
+ * (`ApplicationKeyDerivation.encryption`): `m/9'/<coin>'/5'/7'/0'/<identityId>'/<contractId>'/<purpose>'/<rotation>'`,
+ * the two ids as 256-bit hardened children (DIP-14). Purpose 1: ENCRYPTION.
+ */
+export function appEncryptionKeyPath(network: Network, identityId: Uint8Array, contractId: Uint8Array, rotation: number | 'legacy', purpose = 1): string {
+  if (identityId.length !== 32 || contractId.length !== 32) throw new Error('an id is 32 bytes')
+  const base = `m/9'/${coin(network)}'/5'/7'/0'/0x${bytesToHex(identityId)}'/0x${bytesToHex(contractId)}'/${purpose}'`
+  // The wallets' legacy path (`application_encryption_legacy_derivation_path`): no rotation level.
+  if (rotation === 'legacy') return base
+  if (!Number.isInteger(rotation) || rotation < 0 || rotation >= 0x80000000) throw new Error(`not a rotation: ${rotation}`)
+  return `${base}/${rotation}'`
+}
+
 export function assetLockKeyPath(network: Network): string {
   return `m/44'/${coin(network)}'/0'/0/0`
 }
@@ -64,6 +80,10 @@ export function assetLockKeyPath(network: Network): string {
 interface WalletFacade {
   deriveKeyFromSeedWithPath(p: { mnemonic: string; path: string; network: string }): Promise<{
     toJSON(): { privateKeyWif: string; publicKey: string; address: string }
+    free(): void
+  }>
+  deriveKeyFromSeedWithExtendedPath(p: { mnemonic: string; path: string; network: string }): Promise<{
+    toJSON(): { privateKeyHex: string; publicKey: string }
     free(): void
   }>
   generateMnemonic(p?: { wordCount?: number }): Promise<string>
@@ -83,6 +103,25 @@ export async function deriveAt(mnemonic: string, path: string, network: Network)
   const j = info.toJSON()
   info.free()
   return { wif: j.privateKeyWif, publicKeyHex: j.publicKey, address: j.address }
+}
+
+/**
+ * An application encryption key ({@link appEncryptionKeyPath}): the 32-byte private key (the caller
+ * wipes it) and the compressed public key. The WASM returns the private key as a hex string (it has
+ * no bytes form), which cannot be wiped: it stays in memory until collected.
+ */
+export async function deriveAppEncryptionKey(
+  mnemonic: string,
+  network: Network,
+  identityId: Uint8Array,
+  contractId: Uint8Array,
+  rotation: number | 'legacy',
+): Promise<{ readonly secret: Uint8Array; readonly pub: Uint8Array }> {
+  const path = appEncryptionKeyPath(network, identityId, contractId, rotation)
+  const info = await (await wallet()).deriveKeyFromSeedWithExtendedPath({ mnemonic: normalizeMnemonic(mnemonic), path, network: wasmNetwork(network) })
+  const j = info.toJSON()
+  info.free()
+  return { secret: hexToBytes(j.privateKeyHex), pub: hexToBytes(j.publicKey) }
 }
 
 /** The identity's master key (key id 0) from its mnemonic. */

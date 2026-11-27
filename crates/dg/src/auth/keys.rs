@@ -829,6 +829,7 @@ fn bounds_text(bounds: Option<&KeyBounds>, forge: Option<&ForgeIds>) -> String {
             Some(f) if id == f.collab => "forge-collab".into(),
             Some(f) if id == f.community => "forge-community".into(),
             Some(f) if f.meta.as_deref() == Some(id) => "forge-meta".into(),
+            Some(f) if f.user.as_deref() == Some(id) => "settings sync (forge-user)".into(),
             _ if is_forge_contract(forge, id) => "an older Forge contract".into(),
             _ => format!("contract {id}"),
         }
@@ -1070,7 +1071,7 @@ mod tests {
             group: "GROUP".into(),
             superseded_in_group: vec!["OLD".into()],
             group_owner: None,
-            user: None,
+            user: Some("USER".into()),
         }
     }
 
@@ -1206,6 +1207,7 @@ mod tests {
         assert_eq!(t(Some(contract("CORE"))), "forge-core only");
         assert_eq!(t(Some(contract("COLLAB"))), "forge-collab only");
         assert_eq!(t(Some(contract("OLD"))), "an older Forge contract only");
+        assert_eq!(t(Some(contract("USER"))), "settings sync (forge-user) only");
         assert_eq!(t(Some(contract("X"))), "contract X only");
         assert_eq!(
             t(Some(doc_type("COMMUNITY", "checkRun"))),

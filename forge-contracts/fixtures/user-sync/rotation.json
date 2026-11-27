@@ -1,0 +1,108 @@
+{
+ "description": "The forge-user ENCRYPTION key at rotation r, derived from the recovery phrase as DashPay derives it; see docs/design/identity-synced-state.md. Test keys only.",
+ "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+ "passphrase": "",
+ "identityId": "9oaYDFZ9n1zsuzMRdGLyUatghRj1zhTGJNi7uNQZzDjX",
+ "contractId": "46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU",
+ "purpose": 1,
+ "vectors": [
+  {
+   "network": "testnet",
+   "rotation": 0,
+   "path": "m/9'/1'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'/0'",
+   "privateKeyHex": "96e98be215bd756be67706b47cad2c7157e0d2f8882d3137f76e3b3fb855b845",
+   "publicKeyHex": "03582c70953bfaa189b4f3f60ed6c47b07cd8d281ce3497ac2e046527bbc7ede46"
+  },
+  {
+   "network": "testnet",
+   "rotation": 1,
+   "path": "m/9'/1'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'/1'",
+   "privateKeyHex": "9d0b75a7d365c8652fa8d37ddd9f6d02d0fcd96e815b4d9f1236b81b24390e97",
+   "publicKeyHex": "03de256a999a9ec7522721ea969299957161b3ab345bb1110d7fb6d5b53618b0f6"
+  },
+  {
+   "network": "testnet",
+   "rotation": 2,
+   "path": "m/9'/1'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'/2'",
+   "privateKeyHex": "495f7795c0c55faefb670be264b6d0d36b2fe00bcba67fdd6a2d28b87cb2b3ae",
+   "publicKeyHex": "02618089a80de039dd9db56dd30fd2b4f8a2c2112c767a0a701df9a7e202f27abb"
+  },
+  {
+   "network": "mainnet",
+   "rotation": 0,
+   "path": "m/9'/5'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'/0'",
+   "privateKeyHex": "22f595f3a2759fa8c8892358b3a0b3029835e153602e3c1aabb345d05c57f761",
+   "publicKeyHex": "02fec8674fd809a685adecce900b0166ff73c978a72e21a9ed55ccf6e5ee9723fe"
+  },
+  {
+   "network": "mainnet",
+   "rotation": 1,
+   "path": "m/9'/5'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'/1'",
+   "privateKeyHex": "4807c933a1b83b61d4f1bfe8a217d3d85ab6c523d321359776f7ab086b5743b7",
+   "publicKeyHex": "021f2f65ee120a679d67dff90ebd34aae4907273cb3951af775d10d05c9abd1b74"
+  },
+  {
+   "network": "mainnet",
+   "rotation": 2,
+   "path": "m/9'/5'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'/2'",
+   "privateKeyHex": "54a55ba9554973ac54ad7f519027f409f6c61ba799b339c43a46e544869ea8f0",
+   "publicKeyHex": "03f35d5651d9ba9c5ff9ee17bad5d912bb69638afd4693b3a2a2a43dc317ca887e"
+  }
+ ],
+ "legacyVectors": [
+  {
+   "network": "testnet",
+   "path": "m/9'/1'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'",
+   "privateKeyHex": "da93144c055b5c80c5e6712ef6fbf4ddaaab44a0944e578ab592c8a05e5b70e9",
+   "publicKeyHex": "02bfed2730cf7c4e3fa752aa8cac821169b9eaa7b17bf388c7d2e32360a2f0a18c"
+  },
+  {
+   "network": "mainnet",
+   "path": "m/9'/5'/5'/7'/0'/0x82cc2261ea7d87f3ab91d45e527202b9a17d8aa8e2170c3833c5291ad0fbaeda'/0x2e10e70df417b5109d843157e5c51bcc838241f2ceeddd3f975cadb75d9bb623'/1'",
+   "privateKeyHex": "3a9e84d5ccdb42320c37cbc59bd30e0e3bfdc9a564a44cb5b0cd77aa97d915df",
+   "publicKeyHex": "03cc2ef3a4222c869141d49f63ac42d4d8ba6c2e85e2dc4581a3ee1f140b682a30"
+  }
+ ],
+ "walletVectors": [
+  {
+   "network": "mainnet",
+   "identityIdHex": "3535353535353535353535353535353535353535353535353535353535353535",
+   "contractIdHex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+   "purpose": 1,
+   "rotation": 0,
+   "publicKeyHex": "031a882c119e2b1f8e0349b444d877afa2599efeef49a26930fd25518cb6e9d57a"
+  },
+  {
+   "network": "mainnet",
+   "identityIdHex": "3535353535353535353535353535353535353535353535353535353535353535",
+   "contractIdHex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+   "purpose": 1,
+   "rotation": 1,
+   "publicKeyHex": "03d0f6f0f48d968b9554d8e7fe467d7135bacf29d5c4994ca593bd10ebeed696f6"
+  },
+  {
+   "network": "mainnet",
+   "identityIdHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "contractIdHex": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0",
+   "purpose": 1,
+   "rotation": 0,
+   "publicKeyHex": "02dfed57ddaaea8c0758e8da44513520038eb8d6b0b92109953c14d6ab1087259b"
+  }
+ ],
+ "walletLegacyVectors": [
+  {
+   "network": "mainnet",
+   "identityIdHex": "3535353535353535353535353535353535353535353535353535353535353535",
+   "contractIdHex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+   "purpose": 1,
+   "publicKeyHex": "03e989de1b62f137231cc06659c810c17100becd1f5e23d5710faa7602769fe434"
+  },
+  {
+   "network": "mainnet",
+   "identityIdHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "contractIdHex": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0",
+   "purpose": 1,
+   "publicKeyHex": "03c4e462229f176595ec17e28e9096d3cfbc42496fb8ed4d48f8f58355d6105aa9"
+  }
+ ]
+}

@@ -14,6 +14,8 @@ import { forgetVault, lockVault, storageSyncId, storeInVault, unlockWithPassphra
 import { encodeWif } from '../auth/wif'
 import { loadStorageConfig, saveStorageConfig, updateStorageConfig, type StorageConfig } from '../storage/store'
 import { parsePrefs, PREFS_KEY } from '../view/prefs'
+import * as secp from '@noble/secp256k1'
+
 import { fakePlatform, memoryStorage } from './fake-port'
 import { notePrefWrite, noteStorageDeletes, readPref, recordKey, setActive } from './overlay'
 import { openState } from './crypto'
@@ -98,6 +100,8 @@ describe('first sync from master-format state', () => {
 
   beforeEach(async () => {
     platform = fakePlatform()
+    // The key the sessions hold is each identity's current sync key (sync writes with no other).
+    for (const id of [ID, 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH']) platform.keys.set(id, { keyId: KEY_ID, pub: secp.getPublicKey(E, true) })
     a = { vault: [], local: memoryStorage(), pass: 'correct horse battery' }
     b = { vault: [], local: memoryStorage(), pass: 'another passphrase!' }
     // Device A, as master left it: the vault, its sealed storage blob, and the preference keys.
