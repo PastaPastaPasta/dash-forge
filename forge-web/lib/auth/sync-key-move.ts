@@ -154,6 +154,7 @@ export async function addSyncKeyWithPhrase(p: PhraseSyncInput): Promise<number> 
     derive: phraseSyncKeys(mnemonic, p.network, p.identityId, p.contractId),
     store: (keyId, secret) => keepSyncKey(p.network, p.identityId, keyId, secret),
   })
+  pendingMove(p.networkKey, p.identityId).set(null)
   return keyId
 }
 

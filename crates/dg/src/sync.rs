@@ -623,6 +623,7 @@ async fn add_key(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
     let me = run.identity.id();
     let already = held_key_id(&run.network, &me) == Some(key.key_id);
     let stored = if already { None } else { Some(keep(&key)?) };
+    let _ = user_sync::local::clear_pending_key(&run.network, &me);
     ctx.emit(
         json!({
             "status": if already { "current" } else { "added" },
