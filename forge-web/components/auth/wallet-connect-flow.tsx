@@ -675,7 +675,7 @@ export function WalletConnectFlow({
         </div>
       ) : null}
       {request ? <ScanOnlyHere /> : null}
-      {request && mode === 'login' && onGetDashPay ? (
+      {request && mode === 'login' && onGetDashPay && releasedWallet === true ? (
         <p className="text-center text-dense">
           <button type="button" data-testid="wallet-get-dashpay" onClick={onGetDashPay} className="hit-area text-forge-700 underline dark:text-forge-400">
             No DashPay yet? Get it first
@@ -839,7 +839,7 @@ function WalletSupportNote({ releasedWallet }: { releasedWallet: boolean | null 
   if (releasedWallet === null) return null
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      {!releasedWallet
+      {!releasedWallet && ACTIVE_NETWORK.network !== 'devnet'
         ? `Released DashPay builds (11.9.2, and the 12.0.2 pre-release) can't sign in on ${networkName()} since it moved to Platform protocol 15.`
         : ACTIVE_NETWORK.network === 'testnet' ? (
           <>

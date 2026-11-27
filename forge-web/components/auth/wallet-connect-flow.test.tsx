@@ -235,6 +235,12 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     await flush()
     act(() => (q('wallet-get-dashpay') as HTMLButtonElement).click())
     expect(onGetDashPay).toHaveBeenCalledOnce()
+    // Not where no released wallet reads the chain: the install step would lead to a wallet that can't sign in.
+    v2.released = false
+    act(() => root.render(<WalletConnectFlow key="unreleased" onDone={vi.fn()} onGetDashPay={onGetDashPay} />))
+    await flush()
+    expect(q('qr-value')).not.toBeNull()
+    expect(q('wallet-get-dashpay')).toBeNull()
     act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
     await flush()
     expect(q('wallet-get-dashpay')).toBeNull()

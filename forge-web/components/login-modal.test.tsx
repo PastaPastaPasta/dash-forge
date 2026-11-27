@@ -66,6 +66,12 @@ let platformUp = false
 let v2Available: boolean | null = false
 /** Whether a released wallet reads the chain's protocol. */
 let releasedWallet = true
+/** The operator's pause (writesPausedReason), or null. */
+let paused: string | null = null
+vi.mock('@/lib/devnet-notice', async (orig) => ({
+  ...(await orig<typeof import('@/lib/devnet-notice')>()),
+  writesPausedReason: () => paused,
+}))
 vi.mock('@/lib/auth/connect', async (orig) => ({
   ...(await orig<typeof import('@/lib/auth/connect')>()),
   connectPlatform: () => (platformUp ? Promise.resolve({}) : Promise.reject(new Error('offline in tests'))),
@@ -188,6 +194,7 @@ beforeEach(() => {
   platformUp = false
   v2Available = false
   releasedWallet = true
+  paused = null
   network.override = null
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
@@ -643,6 +650,18 @@ describe('App Connect v2 in the sheet', () => {
     await click(q('[data-testid="get-dashpay-continue"]'))
     expect(q('[data-testid="get-dashpay"]')).toBeNull()
     expect(q('[data-testid="wallet-request"]')).not.toBeNull()
+  })
+
+  it('on mainnet with writes paused, the Get DashPay link is not offered (its last step would open the wallet code)', async () => {
+    network.override = 'mainnet'
+    paused = 'Writes are paused for maintenance.'
+    auth.vaults = []
+    platformUp = true
+    v2Available = true
+    act(() => useUiStore.getState().openLogin())
+    for (let i = 0; i < 20 && q('[data-testid="tile-wallet"]') === null; i++) await flush()
+    expect(q('[data-testid="tile-wallet"]')).not.toBeNull()
+    expect(q('[data-testid="tile-get-dashpay"]')).toBeNull()
   })
 
   it('at a protocol no released wallet reads (testnet at 15), creating leads and the wallet tile says why, under Other ways', async () => {

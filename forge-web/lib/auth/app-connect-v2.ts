@@ -263,7 +263,8 @@ export async function appConnectV2Available(sdk: EvoSDK, network: Network): Prom
 /**
  * The newest protocol a released DashPay build reads. DashPay for Android 11.9.2 and the 12.0.2
  * pre-release fail on testnet's protocol 15 (`UnexpectedVariant … found 2`, 2026-11-27); mainnet
- * runs 14. Raise it once a released build signs in at a newer protocol.
+ * runs 14. Raise it (and the sheet's "protocol 15" copy) once a released build signs in at a newer
+ * protocol: until then the sheet keeps the wallet under Other ways there.
  */
 export const RELEASED_WALLET_MAX_PROTOCOL = 14
 

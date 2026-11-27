@@ -13,10 +13,9 @@
  *   Already have one: a passkey from another device; Import an identity file (or mnemonic) — the
  *      master key signs one IdentityUpdate that registers a limited key for this browser, and is
  *      not stored; dg; and Use my Dash wallet — App Connect v2 (one approval covers all of Forge,
- *      with a budget and an expiry), shown where the chain supports it. The wallet leads where a
- *      released wallet can answer (`walletSignInReady`: mainnet or testnet), and is the one
- *      recommended except on testnet, where creating stays recommended for newcomers
- *      (`lib/auth/sign-in-methods.ts`); elsewhere it is last, badged "Not available yet".
+ *      with a budget and an expiry), shown where the chain supports it. The wallet leads, recommended,
+ *      where a released wallet can answer (`walletSignInReady`: mainnet or testnet, at a protocol
+ *      released wallets read; `lib/auth/sign-in-methods.ts`); elsewhere it is last, saying why.
  *   Advanced: paste a raw key (developer path; this tab only; red warning).
  *
  * When this device already holds an encrypted key, the sheet opens on "Unlock" instead
@@ -338,7 +337,8 @@ function ChooseView({ onPick, onDone }: { onPick: (v: View) => void; onDone: () 
           />
         )
       case 'get-dashpay':
-        return (
+        // Its last step opens the wallet's code, which broadcasts a key-adding update: paused with the wallet tile.
+        return pausedReason ? null : (
           <button
             key={id}
             type="button"
@@ -642,7 +642,7 @@ function GetDashPayView({ onHaveIt }: { onHaveIt: () => void }): JSX.Element {
           <p className="mt-1 text-anvil-600 dark:text-anvil-300">That is your Dash identity. Its recovery phrase stays on the phone.</p>
         </li>
         <li>
-          <p className="font-medium">3. Scan Forge&apos;s code with DashPay</p>
+          <p className="font-medium">3. Approve Forge&apos;s request in DashPay</p>
         </li>
       </ol>
       <Button variant="primary" className="w-full" data-testid="get-dashpay-continue" onClick={onHaveIt}>
