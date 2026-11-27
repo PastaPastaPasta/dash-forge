@@ -22,7 +22,7 @@ Then **New → Repository**, and **Settings → Storage** to choose where code i
 
 ## Use it from the terminal
 
-`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Install both from the latest release ([v0.3.1](docs/releases/v0.3.1.md); the script checks each binary's SHA-256 and installs into `~/.local/bin`):
+`dg` is a `gh`-style CLI, and `git-remote-dash` lets plain git use `dash://` URLs. Install both from the latest release ([v0.3.1](docs/releases/v0.3.1.md); the script checks the release archive's SHA-256 and installs into `~/.local/bin`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
