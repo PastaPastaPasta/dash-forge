@@ -129,6 +129,13 @@
         "type": "string"
       },
       "description": "Where the keys this sign-in replaced were kept, as key sources `--identity` takes: a `.bak-<UTC time>` copy of the key file, or a `keychain:` entry of that name. Empty when nothing was replaced."
+    },
+    "masterKeyKeptAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "With `--wallet`: the key source that still holds this identity's master key, which the wallet's key only replaced as the default; else null."
     }
   },
   "required": [

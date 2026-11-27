@@ -19,3 +19,8 @@ cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wi
 cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:174
 cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:175
 cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:184
+
+# A test fixture in an intermediate commit of #764: the public 0x11..11 testnet WIF (listed in
+# .gitleaks.toml) in a privateKeyWif field, which the generic-api-key rule matches. The tree
+# names it through a variable instead.
+61ee60c9124818be1c7df102e1e88b037d5f1661:crates/dg/src/auth/store.rs:generic-api-key:718
