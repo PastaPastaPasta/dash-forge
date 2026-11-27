@@ -34,6 +34,10 @@ paths = [
     # fixed labels by their generator, replayed by both clients, guarding nothing.
     '''forge-contracts/fixtures/user-sync/vectors\.json''',
     '''tools/user-sync-vectors/gen\.py''',
+    # Sync-key rotation vectors (docs/design/identity-synced-state.md §12): keys derived from the
+    # public BIP-39 test phrase "abandon … about", plus DashPay's own published vectors.
+    '''forge-contracts/fixtures/user-sync/rotation\.json''',
+    '''tools/user-sync-vectors/rotation\.py''',
     # Interop vectors vendored from platform-auth (App Connect, passkey vault): keys derived from
     # fixed seeds and published upstream so every app reproduces the same bytes.
     '''forge-web/lib/vendor/platform-auth/[^/]+/(vectors\.json|__vectors__/[^/]+\.json)''',
