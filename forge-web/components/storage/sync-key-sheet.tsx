@@ -28,6 +28,9 @@ export const ADD_ACTION = 'Add the new key'
 /** The same action where nothing moved: this browser lacks the identity's sync key. */
 export const ADD_SYNC_KEY = 'Add the sync key'
 export const MOVED_LINE = 'Your synced settings moved to a new key.'
+export const BEHIND_LINE = 'Some of your synced settings are still on an older key.'
+export const FINISH_ACTION = 'Finish the move'
+export const FINISH_WHY = 'A move to a new key stopped part-way. Enter your recovery phrase to finish it; no second key is registered.'
 export const MOVE_WHY = 'A site you approved in your wallet may have kept your sync key. A new key, made from your recovery phrase, shuts the old one out of your synced settings and shared storage.'
 export const ADD_WHY = 'Your settings sync with a key made from your recovery phrase. Enter it once to add that key to this browser.'
 export const ADDED = 'Done. Your settings sync in this browser.'
@@ -39,7 +42,7 @@ export const ALREADY_NEWEST = 'Your synced settings already use your newest key.
 
 const BUTTON: Record<SyncKeyMode, string> = { move: 'Move to a new key', add: 'Add the key' }
 
-export function SyncKeySheet({ mode, open, onClose, title }: { readonly mode: SyncKeyMode; readonly open: boolean; readonly onClose: () => void; readonly title?: string }): JSX.Element | null {
+export function SyncKeySheet({ mode, open, onClose, title, why }: { readonly mode: SyncKeyMode; readonly open: boolean; readonly onClose: () => void; readonly title?: string; readonly why?: string }): JSX.Element | null {
   const { identity, signer, controller } = useAuth()
   const { sdk, ready } = useSdk()
   const contractId = ACTIVE_NETWORK.v2?.user
@@ -131,7 +134,7 @@ export function SyncKeySheet({ mode, open, onClose, title }: { readonly mode: Sy
         </div>
       ) : (
         <div className="space-y-2">
-          <p className="text-dense text-anvil-600 dark:text-anvil-300">{mode === 'move' ? MOVE_WHY : ADD_WHY}</p>
+          <p className="text-dense text-anvil-600 dark:text-anvil-300">{why ?? (mode === 'move' ? MOVE_WHY : ADD_WHY)}</p>
           <PhraseWarning />
           <Field label="Recovery phrase (12 or 24 words)" htmlFor="sync-key-phrase">
             <Textarea id="sync-key-phrase" ref={phrase} autoFocus className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />

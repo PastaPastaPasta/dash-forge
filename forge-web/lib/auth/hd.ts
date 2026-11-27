@@ -105,7 +105,11 @@ export async function deriveAt(mnemonic: string, path: string, network: Network)
   return { wif: j.privateKeyWif, publicKeyHex: j.publicKey, address: j.address }
 }
 
-/** An application encryption key ({@link appEncryptionKeyPath}): the 32-byte private key (the caller wipes it) and the compressed public key. */
+/**
+ * An application encryption key ({@link appEncryptionKeyPath}): the 32-byte private key (the caller
+ * wipes it) and the compressed public key. The WASM returns the private key as a hex string (it has
+ * no bytes form), which cannot be wiped: it stays in memory until collected.
+ */
 export async function deriveAppEncryptionKey(
   mnemonic: string,
   network: Network,

@@ -6,15 +6,18 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
-import type { Network } from '../constants'
+import { NETWORKS, type Network } from '../constants'
+import { readMaintainers } from '../repo/members'
+import { readRepoById } from '../repo/resolveRepo'
 import { authSdk } from '../sdk/facade'
 import { decodeIdentifier } from './base58'
 import { deriveAppEncryptionKey, deriveAt, identityKeyPath, invalidMnemonicMessage, isValidMnemonic, normalizeMnemonic, wasmNetwork } from './hd'
 import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate } from './limited-key'
 import { VaultLockedError, heldSyncKeyId, storeSyncKey, unlockedSecret } from './vault'
 import type { WriteAuth } from '../sdk/write'
-import { addSyncKey, moveSyncKey, type DeriveSyncKey, type MoveOutcome, type ReplaceSyncKey } from '../user-sync/move-key'
+import { addSyncKey, moveSyncKey, type DeriveSyncKey, type MoveContext, type MoveOutcome, type ReplaceSyncKey } from '../user-sync/move-key'
 import { forgeUserPort } from '../user-sync/platform'
 
 /** Identity indexes whose master key a phrase is tried at (a wallet's first identities). */
@@ -98,6 +101,38 @@ export function phraseReplaceSyncKey(sdk: EvoSDK, network: Network, identityId: 
   }
 }
 
+/** The key a move from this browser registered and has not finished: an id and a public key (no secret), in localStorage. */
+function pendingMove(networkKey: string, identityId: string): NonNullable<MoveContext['pending']> {
+  const key = `forge.syncMovePending:${networkKey}:${identityId}`
+  return {
+    get() {
+      try {
+        const v = JSON.parse(localStorage.getItem(key) ?? 'null') as { keyId?: unknown; pub?: unknown } | null
+        return v !== null && typeof v.keyId === 'number' && typeof v.pub === 'string' ? { keyId: v.keyId, pub: hexToBytes(v.pub) } : null
+      } catch {
+        return null
+      }
+    },
+    set(v) {
+      try {
+        if (v === null) localStorage.removeItem(key)
+        else localStorage.setItem(key, JSON.stringify({ keyId: v.keyId, pub: bytesToHex(v.pub) }))
+      } catch {
+        /* storage refused: a retry from here reads the identity alone */
+      }
+    },
+  }
+}
+
+/** A repository's current maintainers; none when it no longer exists (or is not this identity's). */
+async function repoMaintainers(sdk: EvoSDK, network: Network, ownerId: string, repoId: string): Promise<readonly string[]> {
+  const forge = NETWORKS[network].v2
+  if (forge === null) return []
+  const doc = await readRepoById(sdk, forge, repoId)
+  if (doc === null || doc.ownerId !== ownerId) return []
+  return readMaintainers(sdk, { forge, repoId, ownerId: doc.ownerId, name: doc.name, visibility: doc.visibility })
+}
+
 export interface PhraseSyncInput {
   readonly sdk: EvoSDK
   readonly network: Network
@@ -136,6 +171,8 @@ export async function moveSyncKeyWithPhrase(p: PhraseSyncInput & { readonly auth
     derive: phraseSyncKeys(mnemonic, p.network, p.identityId, p.contractId),
     replace: (add, disable) => p.charged(() => replace(add, disable)),
     held: await heldSyncKeyId(p.network, p.identityId),
+    pending: pendingMove(p.networkKey, p.identityId),
+    maintainers: (repoId) => repoMaintainers(p.sdk, p.network, p.identityId, repoId),
     store: (keyId, secret) => keepSyncKey(p.network, p.identityId, keyId, secret),
   })
 }

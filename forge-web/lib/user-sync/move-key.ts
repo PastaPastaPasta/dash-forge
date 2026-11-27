@@ -5,14 +5,16 @@
  * and leave the old one behind:
  *
  * 1. The identity's current forge-user key (its newest live one) must be one the phrase makes.
- * 2. Unless an earlier move was cut short (the current key is the newest rotation the phrase makes,
- *    and some `state`, `share` or `grant` still names an older key, or this device holds an older
- *    one), one master-key IdentityUpdate adds the next rotation and disables every live key the
+ * 2. Unless an earlier move was cut short (the current key is rotation 1 or above and the newest
+ *    rotation the phrase makes, and some `state`, `share` or `grant` still names an older key, this
+ *    device holds an older one, or this device registered it), one master-key IdentityUpdate adds the next rotation and disables every live key the
  *    phrase makes. A legacy key (the wallets' path with no rotation level) counts as below rotation 0.
  * 3. Every `state` slot is sealed again under the new key, its plaintext byte for byte.
- *    A `storage` or `prefs` slot the identity lacks is started empty under the new key.
+ *    A `storage` or `prefs` slot the identity lacks is started empty under the new key (one an old
+ *    client started meanwhile, under the old key, is sealed again instead).
  * 4. Every `share` moves to a new epoch under the new key, content unchanged; then its grants are
- *    written again from the new key (a grant to a key no longer live goes, as in a reconcile).
+ *    written again from the new key (a grant to a key no longer live, to someone no longer a
+ *    maintainer, or behind the share's epoch goes, as in a reconcile).
  * 5. The new key becomes this device's sync key.
  *
  * Any step that fails leaves a state the same move carries on from. {@link addSyncKey} gives
@@ -70,8 +72,15 @@ export interface KeyPhraseContext {
 
 export interface MoveContext extends KeyPhraseContext {
   readonly replace: ReplaceSyncKey
+  /** The repository's current maintainers (none for a repository that no longer exists): who its grants may go to. */
+  readonly maintainers: (repoId: string) => Promise<readonly string[]>
   /** The sync key id this device holds, if any: one that is not the current key means a move here stopped part-way. */
   readonly held?: number | null
+  /**
+   * The key a move from this device registered and has not finished (kept outside the vault: an
+   * id and a public key only), so a retry after a lost answer finishes it instead of adding another.
+   */
+  readonly pending?: { get(): { readonly keyId: number; readonly pub: Uint8Array } | null; set(key: { readonly keyId: number; readonly pub: Uint8Array } | null): void }
   /** Waits between reads of the identity while a node catches up with the update. */
   readonly sleep?: (ms: number) => Promise<void>
 }
@@ -191,10 +200,34 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
       states.some((s) => s.fields.keyId !== current.keyId) || shares.some((s) => s.share.fields.keyId !== current.keyId) || [...grants.values()].flat().some((g) => g.fields.senderKeyId !== current.keyId)
     // A resume only when the current key is the newest rotation the phrase makes: a key added back
     // later under an older rotation (one a site may have kept) is never what sync moves to.
+    // Never onto rotation 0 (what wallets hand out at sign-in) or a legacy key: a move never registers those.
     const highest = Math.max(...[...held.values()].map((h) => h.rotation))
-    const newest = held.get(current.keyId)!.rotation === highest
+    const currentRotation = held.get(current.keyId)!.rotation
+    const newest = currentRotation >= 1 && currentRotation === highest
     const heldOther = ctx.held !== undefined && ctx.held !== null && ctx.held !== current.keyId
-    const interrupted = newest && (behind || heldOther)
+    const pending = ctx.pending?.get() ?? null
+    const registeredHere = pending !== null && same(pending.pub, current.pub)
+    const interrupted = newest && (behind || heldOther || registeredHere)
+    // Everything that moves must open, and every share's epoch must be able to advance, before the
+    // old keys are disabled: a run that would stop on them never starts.
+    const moving = (keyId: number): boolean => !interrupted || keyId !== current.keyId
+    const plains = new Map<string, Uint8Array>()
+    for (const s of states) {
+      if (!moving(s.fields.keyId)) continue
+      plains.set(`state/${s.fields.slot}`, await openStateBytes({ E: held.get(s.fields.keyId)!.secret, keyId: s.fields.keyId, identityId: identity, network }, s.fields))
+    }
+    for (const { repoId, share } of shares) {
+      if (!moving(share.fields.keyId)) continue
+      const rsk = await repoStorageKey(held.get(share.fields.keyId)!.secret, decodeIdentifier(repoId), network, share.fields.epoch)
+      try {
+        plains.set(`share/${repoId}`, await openShareBytes(rsk, { network, repoId: decodeIdentifier(repoId) }, share.fields))
+      } finally {
+        rsk.fill(0)
+      }
+      if (Math.max(share.fields.epoch, ...(grants.get(repoId) ?? []).map((g) => g.fields.epoch)) >= 0xffffffff) throw new Error('this repository changed its storage maintainers too often to share again')
+    }
+    const maintainers = new Map<string, ReadonlySet<string>>()
+    for (const { repoId } of shares) maintainers.set(repoId, new Set(await ctx.maintainers(repoId)))
     let target: { readonly keyId: number; readonly secret: Uint8Array } = { keyId: current.keyId, secret: held.get(current.keyId)!.secret }
     if (!interrupted) {
       const rotation = Math.max(highest, 0) + 1
@@ -206,6 +239,7 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
       const keyId = read.maxKeyId + 1
       held.set(keyId, { rotation, secret: next.secret })
       const disable = read.keys.filter((k) => !k.disabled && held.has(k.keyId)).map((k) => k.keyId)
+      ctx.pending?.set({ keyId, pub: next.pub })
       await ctx.replace({ keyId, secret: next.secret, pub: next.pub }, disable)
       await awaitKey(ctx, keyId, next.pub)
       target = { keyId, secret: next.secret }
@@ -215,7 +249,7 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
       if (s.fields.keyId === target.keyId) continue
       const from = { E: held.get(s.fields.keyId)!.secret, keyId: s.fields.keyId, identityId: identity, network }
       const to = { E: target.secret, keyId: target.keyId, identityId: identity, network }
-      const plain = await openStateBytes(from, s.fields)
+      const plain = plains.get(`state/${s.fields.slot}`) ?? (await openStateBytes(from, s.fields))
       await ctx.port.writeState(await sealStateBytes(to, s.fields.slot, plain), s)
       const back = await ctx.port.readState(ctx.identityId, s.fields.slot)
       if (back === null || back.fields.keyId !== target.keyId || !same(await openStateBytes(to, back.fields), plain)) throw new SyncReadBackError(s.fields.slot)
@@ -225,8 +259,21 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
     // finds it sealed under another key and never starts it under the old one (forge-core `GUARDED_SLOTS`).
     const created: string[] = []
     for (const slot of GUARDED_SLOTS) {
-      if (states.some((s) => s.fields.slot === slot) || (await ctx.port.readState(ctx.identityId, slot)) !== null) continue
+      if (states.some((s) => s.fields.slot === slot)) continue
       const to = { E: target.secret, keyId: target.keyId, identityId: identity, network }
+      // One an old-key client started after the listing, before the update disabled its key: sealed again.
+      const late = await ctx.port.readState(ctx.identityId, slot)
+      if (late !== null) {
+        if (late.fields.keyId === target.keyId) continue
+        const from = held.get(late.fields.keyId)
+        if (from === undefined) throw new Error(`Some of your synced settings are sealed with key ${late.fields.keyId}, which this recovery phrase doesn't make.`)
+        const plain = await openStateBytes({ E: from.secret, keyId: late.fields.keyId, identityId: identity, network }, late.fields)
+        await ctx.port.writeState(await sealStateBytes(to, slot, plain), late)
+        const back = await ctx.port.readState(ctx.identityId, slot)
+        if (back === null || back.fields.keyId !== target.keyId || !same(await openStateBytes(to, back.fields), plain)) throw new SyncReadBackError(slot)
+        written++
+        continue
+      }
       const empty = emptyDoc(slot)
       await ctx.port.writeState(await sealState(to, slot, empty), null)
       const back = await ctx.port.readState(ctx.identityId, slot)
@@ -234,8 +281,9 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
       created.push(slot)
       written++
     }
-    for (const { repoId, share } of shares) written += await moveShare(ctx, repoId, share, grants.get(repoId) ?? [], target, held)
+    for (const { repoId, share } of shares) written += await moveShare(ctx, repoId, share, grants.get(repoId) ?? [], target, held, maintainers.get(repoId)!, plains.get(`share/${repoId}`))
     await ctx.store(target.keyId, target.secret.slice())
+    ctx.pending?.set(null)
     return { keyId: target.keyId, created: !interrupted, slots: states.length, shares: shares.length, startedSlots: created, written }
   } finally {
     wipe(held)
@@ -245,6 +293,9 @@ export async function moveSyncKey(ctx: MoveContext): Promise<MoveOutcome> {
 /**
  * One share: at a new epoch past every grant's (unless an earlier run already moved it), under the
  * new key, content unchanged; then its grants from the new key; a grant to a key no longer live last.
+ * A grant to someone no longer a maintainer, or behind the share's epoch (one a removal that stopped
+ * part-way left: it no longer opens the share), is deleted first, before the share moves, so a retry
+ * never mistakes it for a current one.
  * Returns how many writes it made.
  */
 async function moveShare(
@@ -254,18 +305,30 @@ async function moveShare(
   grants: readonly Stored<GrantFields>[],
   target: { readonly keyId: number; readonly secret: Uint8Array },
   held: ReadonlyMap<number, Held>,
+  maintainers: ReadonlySet<string>,
+  opened?: Uint8Array,
 ): Promise<number> {
   let written = 0
   const network = ctx.networkKey
   const repo = decodeIdentifier(repoId)
   let epoch = share.fields.epoch
-  if (share.fields.keyId !== target.keyId) {
-    const from = await repoStorageKey(held.get(share.fields.keyId)!.secret, repo, network, share.fields.epoch)
+  const moving = share.fields.keyId !== target.keyId
+  // As a reconcile would, before the share moves (and on a resume): a grant to someone no longer a
+  // maintainer, or below the share's epoch, is deleted, so no retry lends the new share to it.
+  const stale = grants.filter((g) => !maintainers.has(g.fields.memberId) || g.fields.memberId === ctx.identityId || (moving && g.fields.epoch < share.fields.epoch))
+  for (const g of stale) await ctx.port.deleteGrant(g)
+  written += stale.length
+  grants = grants.filter((g) => !stale.includes(g))
+  if (moving) {
     let plain: Uint8Array
-    try {
-      plain = await openShareBytes(from, { network, repoId: repo }, share.fields)
-    } finally {
-      from.fill(0)
+    if (opened !== undefined) plain = opened
+    else {
+      const from = await repoStorageKey(held.get(share.fields.keyId)!.secret, repo, network, share.fields.epoch)
+      try {
+        plain = await openShareBytes(from, { network, repoId: repo }, share.fields)
+      } finally {
+        from.fill(0)
+      }
     }
     epoch = Math.max(share.fields.epoch, ...grants.map((g) => g.fields.epoch)) + 1
     if (epoch > 0xffffffff) throw new Error('this repository changed its storage maintainers too often to share again')

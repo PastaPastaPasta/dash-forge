@@ -5,6 +5,7 @@
  * then records the sync. Local settings gain what they lack; nothing local is changed or removed.
  */
 
+import * as secp from '@noble/secp256k1'
 import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -14,7 +15,7 @@ import type { StorageConfig } from '../storage/store'
 import { canonicalJson, hkdf32, openState, sealState, type StateContext, type StateFields } from './crypto'
 import { LWW_VERSION, NewerSyncFormatError, baseOf, parseDoc, planSlot, sameDoc, type LwwDoc, type PlanOptions, type SlotBase, type SlotPlan, type Tagger } from './lww'
 import { prefsOwner, readRecord, store, updateRecord, type PrefsMeta, type SlotMeta, type SyncRecord } from './overlay'
-import type { Stored, UserSyncPort } from './platform'
+import type { IdentitySyncKey, Stored, UserSyncPort } from './platform'
 import { PREFS_PLAN, prefKeys, prefSlotEdits, prefsEntries, prefsViewRaw } from './prefs-slot'
 import { carryProfileExtras, storageEntries, storageView, withAdditions } from './storage-slot'
 
@@ -70,29 +71,54 @@ export class SyncKeyChangedError extends Error {
  * key was disabled): nothing is read or written with it. The recovery phrase adds the new one.
  */
 export class SyncKeyMovedError extends SyncKeyChangedError {
-  constructor(readonly currentKeyId: number | null, heldKeyId: number) {
-    super(currentKeyId ?? -1, heldKeyId)
+  constructor(readonly currentKeyId: number, heldKeyId: number) {
+    super(currentKeyId, heldKeyId)
     this.message = 'your synced settings moved to a new key'
     this.name = 'SyncKeyMovedError'
   }
 }
 
 /**
+ * This device holds the identity's current sync key, but a slot is still sealed under an older key
+ * of it: a move stopped part-way. Nothing is merged or written; running the move again finishes it.
+ */
+export class SyncKeyBehindError extends SyncKeyChangedError {
+  constructor(storedKeyId: number, heldKeyId: number) {
+    super(storedKeyId, heldKeyId)
+    this.message = 'some of your synced settings are still sealed with an older key'
+    this.name = 'SyncKeyBehindError'
+  }
+}
+
+/**
  * Refuse ({@link SyncKeyMovedError}) when a read of the identity shows that `keyId` is not its
  * current forge-user key (its newest live one): a key the owner moved away from never seals
- * settings or shares again. A read that fails, or finds no identity, can't tell: the write goes
- * ahead as it did before moves existed, so nobody who never moves is held up by it.
+ * settings or shares again (with `E`, the current key must also be its public key). A read that
+ * fails, finds no identity, or finds no live forge-user key at all (disabled in Devices & keys)
+ * can't tell: the write goes ahead as it did before moves existed (forge-core `standing`).
+ * Resolves true when the read showed `keyId` is the current key, false when it can't tell.
  */
-export async function assertCurrentSyncKey(port: UserSyncPort, identityId: string, keyId: number): Promise<void> {
+export async function assertCurrentSyncKey(port: UserSyncPort, identityId: string, keyId: number, E?: Uint8Array): Promise<boolean> {
   let read: Awaited<ReturnType<UserSyncPort['identitySyncKeys']>>
   try {
     read = await port.identitySyncKeys(identityId)
   } catch {
-    return
+    return false
   }
-  if (read === null) return
-  const current = read.keys.filter((k) => !k.disabled).reduce<number | null>((a, k) => (a === null || k.keyId > a ? k.keyId : a), null)
-  if (current !== keyId) throw new SyncKeyMovedError(current, keyId)
+  if (read === null) return false
+  const current = read.keys.filter((k) => !k.disabled).reduce<IdentitySyncKey | null>((a, k) => (a === null || k.keyId > a.keyId ? k : a), null)
+  if (current === null) return false
+  if (current.keyId !== keyId || (E !== undefined && !samePub(current.pub, E))) throw new SyncKeyMovedError(current.keyId, keyId)
+  return true
+}
+
+function samePub(pub: Uint8Array, E: Uint8Array): boolean {
+  try {
+    const mine = secp.getPublicKey(E, true)
+    return mine.length === pub.length && mine.every((b, i) => b === pub[i])
+  } catch {
+    return false
+  }
 }
 
 /** The synced copy did not read back as written: nothing was recorded, the next run tries again. */
@@ -117,8 +143,8 @@ async function readSlot(ctx: SyncContext, slot: string): Promise<{ stored: Store
   const stored = await ctx.port.readState(ctx.identityId, slot)
   if (stored === null) return { stored, doc: null }
   if (stored.fields.keyId !== ctx.keyId) {
-    await assertCurrentSyncKey(ctx.port, ctx.identityId, ctx.keyId)
-    throw new SyncKeyChangedError(stored.fields.keyId, ctx.keyId)
+    const current = await assertCurrentSyncKey(ctx.port, ctx.identityId, ctx.keyId, ctx.E)
+    throw current ? new SyncKeyBehindError(stored.fields.keyId, ctx.keyId) : new SyncKeyChangedError(stored.fields.keyId, ctx.keyId)
   }
   return { stored, doc: parseDoc(await openState(stateCtx(ctx), stored.fields), slot) }
 }
@@ -139,7 +165,7 @@ async function mergeSlot(
     if (!plan.upload) return plan
     // Never written by this build: a newer format's document is read only.
     if (plan.next.version > LWW_VERSION) throw new NewerSyncFormatError(slot, plan.next.version)
-    await assertCurrentSyncKey(ctx.port, ctx.identityId, ctx.keyId)
+    await assertCurrentSyncKey(ctx.port, ctx.identityId, ctx.keyId, ctx.E)
     try {
       await ctx.port.writeState(await sealState(stateCtx(ctx), slot, plan.next), stored)
     } catch (e) {

@@ -5,11 +5,13 @@
  * (docs/design/identity-synced-state.md §5), collapsed. Nothing where forge-user is not deployed.
  * Synced: it also holds "Move sync to a new key". Moved (this browser holds a key the identity left):
  * one action, "Add the new key"; a browser that lacks the identity's sync key: "Add the sync key".
+ * A move that stopped part-way (this browser holds the current key, a slot is still on an older one):
+ * "Finish the move", the same sheet as a move, which carries on from where it stopped.
  */
 
 import { useState } from 'react'
 
-import { ADD_ACTION, ADD_SYNC_KEY, MOVED_LINE, MOVE_ACTION, SyncKeySheet, type SyncKeyMode } from '@/components/storage/sync-key-sheet'
+import { ADD_ACTION, ADD_SYNC_KEY, BEHIND_LINE, FINISH_ACTION, FINISH_WHY, MOVED_LINE, MOVE_ACTION, SyncKeySheet, type SyncKeyMode } from '@/components/storage/sync-key-sheet'
 import { useUserSyncStatus } from '@/hooks/use-user-sync'
 import type { UserSyncStatus } from '@/lib/user-sync/session'
 import { formatDate } from '@/lib/view/format'
@@ -30,10 +32,23 @@ const ACTION = 'text-forge-700 underline hover:no-underline dark:text-forge-400 
 
 export function SyncNote(): JSX.Element | null {
   const status = useUserSyncStatus()
-  const [sheet, setSheet] = useState<{ readonly mode: SyncKeyMode; readonly title: string } | null>(null)
+  const [sheet, setSheet] = useState<{ readonly mode: SyncKeyMode; readonly title: string; readonly why?: string } | null>(null)
   if (status.kind === 'off') return null
   const synced = status.kind === 'synced' || (status.kind === 'syncing' && status.syncedAt !== null)
-  const sheetEl = sheet === null ? null : <SyncKeySheet mode={sheet.mode} title={sheet.title} open onClose={() => setSheet(null)} />
+  const sheetEl = sheet === null ? null : <SyncKeySheet mode={sheet.mode} title={sheet.title} why={sheet.why} open onClose={() => setSheet(null)} />
+  if (status.kind === 'behind') {
+    return (
+      <>
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="sync-note">
+          {BEHIND_LINE}{' '}
+          <button type="button" className={ACTION} onClick={() => setSheet({ mode: 'move', title: FINISH_ACTION, why: FINISH_WHY })} data-testid="sync-finish-move">
+            {FINISH_ACTION}
+          </button>
+        </p>
+        {sheetEl}
+      </>
+    )
+  }
   if (status.kind === 'moved') {
     return (
       <>

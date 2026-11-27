@@ -260,9 +260,12 @@ async function reconcileOnce(ctx: OwnerContext, p: ReconcileInput): Promise<Reco
   const members = [...new Set(p.maintainers)].filter((m) => m !== ctx.ownerId && !removed.has(m)).sort()
   const grants = (await ctx.port.grantsOf(ctx.ownerId, p.repoId)).filter((g) => g.ownerId === ctx.ownerId)
   const existing = await ctx.port.readShare(ctx.ownerId, p.repoId)
-  // Only the identity's current sync key writes: one it moved away from never shares again.
-  let checked: Promise<void> | null = null
-  const mayWrite = (): Promise<void> => (checked ??= assertCurrentSyncKey(ctx.port, ctx.ownerId, ctx.keyId))
+  // Only the identity's current sync key writes: one it moved away from never shares again. A
+  // share under another key may be one a move just wrote: the key is asked about after that read,
+  // so this older key never writes over it.
+  let checked: Promise<boolean> | null = existing !== null && existing.fields.keyId !== ctx.keyId ? assertCurrentSyncKey(ctx.port, ctx.ownerId, ctx.keyId, ctx.E) : null
+  if (checked !== null) await checked
+  const mayWrite = (): Promise<boolean> => (checked ??= assertCurrentSyncKey(ctx.port, ctx.ownerId, ctx.keyId, ctx.E))
   let opened: SharePlain | null = null
   if (existing !== null && existing.fields.keyId === ctx.keyId) {
     const rsk = await repoStorageKey(ctx.E, repo, network, existing.fields.epoch)

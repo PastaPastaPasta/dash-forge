@@ -22,7 +22,7 @@ vi.mock('@/lib/constants', async (orig) => {
   return { ...real, ACTIVE_NETWORK: { ...real.ACTIVE_NETWORK, key: 'testnet', v2: { ...real.ACTIVE_NETWORK.v2, user: 'User111111111111111111111111111111111111111' } } }
 })
 
-import { ADD_ACTION, ADD_SYNC_KEY, ADD_WHY, ADDED, ALREADY_NEWEST, MOVE_ACTION, MOVE_WHY, MOVED_DONE, MOVED_LINE, OTHER_DEVICES, ROTATE_NOW, WALLET_NOTE } from './sync-key-sheet'
+import { ADD_ACTION, ADD_SYNC_KEY, ADD_WHY, BEHIND_LINE, FINISH_ACTION, FINISH_WHY, ADDED, ALREADY_NEWEST, MOVE_ACTION, MOVE_WHY, MOVED_DONE, MOVED_LINE, OTHER_DEVICES, ROTATE_NOW, WALLET_NOTE } from './sync-key-sheet'
 import { ADD_KEY_LINE, SyncNote } from './sync-note'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -98,6 +98,20 @@ describe('the sync line', () => {
       show(s)
       expect(buttons()).not.toContain(MOVE_ACTION)
     }
+  })
+
+  it('a move that stopped part-way: one line and "Finish the move", which opens the move sheet', async () => {
+    show({ kind: 'behind', syncedAt: 1 })
+    expect(byTestId('sync-note')?.textContent).toBe(`${BEHIND_LINE} ${FINISH_ACTION}`)
+    expect(buttons()).toEqual([FINISH_ACTION])
+    expect(document.querySelector('[role="alert"]')).toBeNull()
+    click(byTestId('sync-finish-move'))
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.querySelector('h2')?.textContent).toBe(FINISH_ACTION)
+    expect(dialog.textContent).toContain(FINISH_WHY)
+    await submit('words')
+    expect(calls.move).toHaveBeenCalledTimes(1)
+    expect(calls.add).not.toHaveBeenCalled()
   })
 
   it('nothing where sync is off', () => {

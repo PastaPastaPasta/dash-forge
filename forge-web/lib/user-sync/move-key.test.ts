@@ -16,7 +16,7 @@ import { fakePlatform, fakeReplaceKey, memoryStorage, type FakePlatform } from '
 import { readGrantedStorage, reconcileRepoShare } from './maintainers'
 import { SyncNotSetUpError, WrongSyncPhraseError, addSyncKey, moveSyncKey, type DeriveSyncKey, type MoveContext } from './move-key'
 import type { UserSyncPort } from './platform'
-import { SyncKeyChangedError, SyncKeyMovedError, syncUserSettings } from './service'
+import { SyncKeyBehindError, SyncKeyChangedError, SyncKeyMovedError, syncUserSettings } from './service'
 import { storageEntries } from './storage-slot'
 
 const OWNER = '9oaYDFZ9n1zsuzMRdGLyUatghRj1zhTGJNi7uNQZzDjX'
@@ -95,6 +95,7 @@ function moveCtx(platform: FakePlatform, over: Partial<MoveContext> = {}): MoveC
     replace: fakeReplaceKey(platform, OWNER),
     store: async (keyId, secret) => void stored.push({ keyId, secret: secret.slice() }),
     sleep: async () => {},
+    maintainers: async () => [ALICE, BOB],
     stored,
     ...over,
   }
@@ -296,6 +297,172 @@ describe('which key a move goes to', () => {
   })
 })
 
+describe('review fixes (#766)', () => {
+  const memoryPending = () => {
+    let v: { keyId: number; pub: Uint8Array } | null = null
+    return { get: () => v, set: (k: { keyId: number; pub: Uint8Array } | null) => void (v = k ? { ...k } : null) }
+  }
+
+  it('a slot or share that does not open stops the move before any key is disabled', async () => {
+    for (const what of ['state', 'share'] as const) {
+      const w = await world()
+      if (what === 'state') {
+        const doc = w.platform.states.get(`${OWNER}/prefs`)!
+        const d0 = doc.fields.d0.slice()
+        d0[0]! ^= 1
+        w.platform.states.set(`${OWNER}/prefs`, { ...doc, fields: { ...doc.fields, d0 } })
+      } else {
+        const doc = w.platform.shares.get(`${OWNER}/${REPO}`)!
+        const d0 = doc.fields.d0.slice()
+        d0[0]! ^= 1
+        w.platform.shares.set(`${OWNER}/${REPO}`, { ...doc, fields: { ...doc.fields, d0 } })
+      }
+      const writes = w.platform.writes
+      const replace = vi.fn()
+      await expect(moveSyncKey(moveCtx(w.platform, { replace }))).rejects.toThrow('does not open')
+      expect(replace).not.toHaveBeenCalled()
+      expect(w.platform.writes).toBe(writes)
+      expect(w.platform.keys.get(OWNER)?.keyId).toBe(OLD_ID)
+    }
+  })
+
+  it('a device with no key and nothing synced finishes the move it registered when the answer was lost', async () => {
+    const platform = fakePlatform()
+    platform.keys.set(OWNER, { keyId: OLD_ID, pub: secp.getPublicKey(await E('owner', 0), true) })
+    platform.maxKeyIds.set(OWNER, OLD_ID)
+    const pending = memoryPending()
+    const land = fakeReplaceKey(platform, OWNER)
+    await expect(moveSyncKey(moveCtx(platform, { pending, replace: async (a, d) => { await land(a, d); throw new Error('no answer') } }))).rejects.toThrow('no answer')
+    const out = await moveSyncKey(moveCtx(platform, { pending }))
+    expect(out).toMatchObject({ keyId: OLD_ID + 1, created: false, startedSlots: ['storage', 'prefs'] })
+    expect(pending.get()).toBeNull()
+    expect(platform.disabledKeys.get(OWNER)?.map((k) => k.keyId)).toEqual([OLD_ID])
+    // Finished: the next move is a move of its own, to the next rotation.
+    expect(await moveSyncKey(moveCtx(platform, { pending }))).toMatchObject({ keyId: OLD_ID + 2, created: true })
+  })
+
+  it('a grant a removal left behind (its epoch below the share’s) is deleted, never rewritten for the new epoch', async () => {
+    const w = await world()
+    const e0 = await E('owner', 0)
+    const port = w.platform.port(OWNER)
+    // A removal of Bob that stopped before his grant went: the share moved on, his grant did not.
+    await expect(reconcileRepoShare({ port: { ...port, deleteGrant: async () => { throw new Error('the connection dropped') } }, networkKey: NET, ownerId: OWNER, keyId: OLD_ID, E: e0 }, { repoId: REPO, view: VIEW, maintainers: [ALICE], removed: [BOB] })).rejects.toThrow('the connection dropped')
+    const shareEpoch = w.platform.shares.get(`${OWNER}/${REPO}`)!.fields.epoch
+    expect(w.platform.grants.get(`${OWNER}/${REPO}/${BOB}`)!.fields.epoch).toBeLessThan(shareEpoch)
+    // Interrupted again right after the stale grant goes: the retry still never brings it back.
+    await expect(moveSyncKey(moveCtx(w.platform, { port: failingAt(w.platform.port(OWNER), 4) }))).rejects.toThrow('the connection dropped')
+    await moveSyncKey(moveCtx(w.platform))
+    expect(w.platform.grants.has(`${OWNER}/${REPO}/${BOB}`)).toBe(false)
+    const alice = w.platform.grants.get(`${OWNER}/${REPO}/${ALICE}`)!
+    expect(alice.fields.epoch).toBe(w.platform.shares.get(`${OWNER}/${REPO}`)!.fields.epoch)
+    expect(alice.fields.senderKeyId).toBe(OLD_ID + 1)
+    expect((await readGrantedStorage({ port: w.platform.port(ALICE), networkKey: NET, memberId: ALICE, keyId: 9, E: w.aliceE }, { repoId: REPO, repoOwnerId: OWNER }))?.profiles.map((p) => p.name)).toEqual(['r2-main'])
+  })
+
+  it('a device holding the current key with a slot still on the older one reads as behind, and the move finishes it', async () => {
+    const w = await world()
+    w.platform.keys.delete(BOB)
+    await expect(moveSyncKey(moveCtx(w.platform, { port: failingAt(w.platform.port(OWNER), 1) }))).rejects.toThrow('the connection dropped')
+    const e1 = await E('owner', 1)
+    const sync = () => syncUserSettings({ port: w.platform.port(OWNER), networkKey: NET, network: NET, identityId: OWNER, keyId: OLD_ID + 1, E: e1, deviceId: 'aaaa', storage: null, localStore: memoryStorage() })
+    await expect(sync()).rejects.toBeInstanceOf(SyncKeyBehindError)
+    const { requestUserSync, setSyncSubject, userSyncStatus } = await import('./session')
+    setSyncSubject(OWNER, { kind: 'local', syncedAt: 1 })
+    await requestUserSync(OWNER, async () => sync())
+    expect(userSyncStatus()).toEqual({ kind: 'behind', syncedAt: 1 })
+    expect(await moveSyncKey(moveCtx(w.platform, { held: OLD_ID + 1 }))).toMatchObject({ keyId: OLD_ID + 1, created: false })
+    await expectMoved(w)
+    await expect(sync()).resolves.toBeDefined()
+  })
+})
+
+describe('parity with forge-core (#766)', () => {
+  it('rotation 0 current beside a live legacy key moves on to rotation 1 and never resumes onto rotation 0', async () => {
+    const platform = fakePlatform()
+    const legacy = await E('owner', 'legacy')
+    const e0 = await E('owner', 0)
+    platform.olderKeys.set(OWNER, [{ keyId: 3, pub: secp.getPublicKey(legacy, true) }])
+    platform.keys.set(OWNER, { keyId: OLD_ID, pub: secp.getPublicKey(e0, true) })
+    platform.maxKeyIds.set(OWNER, OLD_ID)
+    const plain = encodePlain(SLOTS['storage'])
+    await platform.port(OWNER).writeState(await sealStateBytes(ctxOf(legacy, 3), 'storage', plain), null)
+    // This device holds rotation 0 and a slot is still under the legacy key: never "finished" under rotation 0.
+    const out = await moveSyncKey(moveCtx(platform, { held: OLD_ID }))
+    expect(out).toMatchObject({ keyId: OLD_ID + 1, created: true })
+    expect(platform.keys.get(OWNER)?.pub).toEqual(secp.getPublicKey(await E('owner', 1), true))
+    expect(platform.olderKeys.get(OWNER)).toEqual([])
+    expect(platform.disabledKeys.get(OWNER)?.map((k) => k.keyId).sort()).toEqual([3, OLD_ID])
+    for (const doc of platform.states.values()) expect(doc.fields.keyId).toBe(OLD_ID + 1)
+  })
+
+  it('deletes grants to anyone no longer a maintainer before the share moves, and on a resume; a repo gone has none', async () => {
+    const w = await world()
+    const out = await moveSyncKey(moveCtx(w.platform, { maintainers: async () => [ALICE] }))
+    expect(out.created).toBe(true)
+    expect([...w.platform.grants.values()].map((g) => [g.fields.memberId, g.fields.senderKeyId])).toEqual([[ALICE, OLD_ID + 1]])
+
+    const r = await world()
+    // Cut short after the share moved (3 slots, the share), before any grant was rewritten.
+    await expect(moveSyncKey(moveCtx(r.platform, { port: failingAt(r.platform.port(OWNER), 4) }))).rejects.toThrow('the connection dropped')
+    expect(r.platform.shares.get(`${OWNER}/${REPO}`)!.fields.keyId).toBe(OLD_ID + 1)
+    // The repo is gone by the retry: every grant goes, none is lent the moved share.
+    expect(await moveSyncKey(moveCtx(r.platform, { maintainers: async () => [] }))).toMatchObject({ created: false })
+    expect(r.platform.grants.size).toBe(0)
+  })
+
+  it('a pending marker matches by public key, whatever id the update gave the key', async () => {
+    const platform = fakePlatform()
+    platform.keys.set(OWNER, { keyId: OLD_ID, pub: secp.getPublicKey(await E('owner', 0), true) })
+    platform.maxKeyIds.set(OWNER, OLD_ID)
+    let marker: { keyId: number; pub: Uint8Array } | null = null
+    const pending = { get: () => marker, set: (k: { keyId: number; pub: Uint8Array } | null) => void (marker = k === null ? null : { keyId: 999, pub: k.pub }) }
+    const land = fakeReplaceKey(platform, OWNER)
+    await expect(moveSyncKey(moveCtx(platform, { pending, replace: async (a, d) => { await land(a, d); throw new Error('no answer') } }))).rejects.toThrow('no answer')
+    expect(await moveSyncKey(moveCtx(platform, { pending }))).toMatchObject({ keyId: OLD_ID + 1, created: false })
+  })
+
+  it('a guarded slot an old client wrote during the move is sealed again, not skipped', async () => {
+    const w = await world()
+    w.platform.states.delete(`${OWNER}/storage`)
+    const e0 = await E('owner', 0)
+    const late = encodePlain({ format: 'forge-user/storage', version: 1, entries: { 'profile:late': { at: 9, v: { settings: R2.settings, secrets: R2.secrets } } } })
+    const land = fakeReplaceKey(w.platform, OWNER)
+    const replace = async (a: { keyId: number; pub: Uint8Array }, d: readonly number[]): Promise<void> => {
+      await land(a, d)
+      await w.platform.port(OWNER).writeState(await sealStateBytes(ctxOf(e0, OLD_ID), 'storage', late), null)
+    }
+    const out = await moveSyncKey(moveCtx(w.platform, { replace }))
+    expect(out.startedSlots).toEqual([])
+    const doc = w.platform.states.get(`${OWNER}/storage`)!
+    expect(doc.fields.keyId).toBe(OLD_ID + 1)
+    expect(await openStateBytes(ctxOf(await E('owner', 1), OLD_ID + 1), doc.fields)).toEqual(late)
+  })
+
+  it('a reconcile racing a move never overwrites the moved share', async () => {
+    const w = await world()
+    const e0 = await E('owner', 0)
+    const port = w.platform.port(OWNER)
+    let landed = false
+    const racing: UserSyncPort = {
+      ...port,
+      readShare: async (owner, repo) => {
+        if (!landed) {
+          landed = true
+          // The move lands and writes the share between the reconcile's start and its read.
+          await fakeReplaceKey(w.platform, OWNER)({ keyId: OLD_ID + 1, pub: secp.getPublicKey(await E('owner', 1), true) }, [OLD_ID])
+          const share = w.platform.shares.get(`${OWNER}/${REPO}`)!
+          await port.writeShare(REPO, { ...share.fields, keyId: OLD_ID + 1, epoch: share.fields.epoch + 1 }, share)
+        }
+        return port.readShare(owner, repo)
+      },
+    }
+    const writes = w.platform.writes
+    await expect(reconcileRepoShare({ port: racing, networkKey: NET, ownerId: OWNER, keyId: OLD_ID, E: e0 }, { repoId: REPO, view: VIEW, maintainers: [ALICE] })).rejects.toThrow('moved to a new key')
+    expect(w.platform.writes).toBe(writes + 1)
+    expect(w.platform.shares.get(`${OWNER}/${REPO}`)!.fields.keyId).toBe(OLD_ID + 1)
+  })
+})
+
 describe('slots the identity lacks', () => {
   const EMPTY = (slot: string): string => `{"entries":{},"format":"forge-user/${slot}","version":1}`
 
@@ -343,10 +510,11 @@ describe('slots the identity lacks', () => {
       expect([...platform.states.keys()].sort()).toEqual([`${OWNER}/later-slot`, `${OWNER}/prefs`, `${OWNER}/storage`])
       for (const doc of platform.states.values()) expect(doc.fields.keyId).toBe(OLD_ID + 1)
       expect(platform.keys.get(OWNER)?.keyId).toBe(OLD_ID + 1)
-      // Done: a resume writes nothing more.
+      // Done: one more resume (a device still holding the old key) writes nothing and makes no key.
       const writes = platform.writes
-      platform.keys.set(OWNER, platform.keys.get(OWNER)!)
+      expect(await moveSyncKey(moveCtx(platform, { held: OLD_ID }))).toMatchObject({ keyId: OLD_ID + 1, created: false, written: 0 })
       expect(platform.writes).toBe(writes)
+      expect(platform.keys.get(OWNER)?.keyId).toBe(OLD_ID + 1)
     }
   })
 })
@@ -404,6 +572,27 @@ describe('a failed identity read', () => {
     const before = w.platform.writes
     await reconcileRepoShare({ port: blind, networkKey: NET, ownerId: OWNER, keyId: OLD_ID, E: e0 }, { repoId: REPO, view: VIEW, maintainers: [ALICE], removed: [BOB] })
     expect(w.platform.writes).toBeGreaterThan(before)
+  })
+
+  it('no live sync key at all (disabled in Devices & keys) is not a move: writes go ahead, a mismatch is the old error', async () => {
+    const w = await world()
+    const e0 = await E('owner', 0)
+    w.platform.disabledKeys.set(OWNER, [w.platform.keys.get(OWNER)!])
+    w.platform.keys.delete(OWNER)
+    const local = memoryStorage()
+    local.setItem('forge:fiat:v1', JSON.stringify({ v: 1, enabled: true, currency: 'EUR' }))
+    const writes = w.platform.writes
+    await syncUserSettings({ port: w.platform.port(OWNER), networkKey: NET, network: NET, identityId: OWNER, keyId: OLD_ID, E: e0, deviceId: 'aaaa', storage: null, localStore: local })
+    expect(w.platform.writes).toBeGreaterThan(writes)
+    const other = syncUserSettings({ port: w.platform.port(OWNER), networkKey: NET, network: NET, identityId: OWNER, keyId: OLD_ID + 4, E: e0, deviceId: 'aaaa', storage: null, localStore: memoryStorage() })
+    await expect(other).rejects.toBeInstanceOf(SyncKeyChangedError)
+    await expect(other).rejects.not.toBeInstanceOf(SyncKeyMovedError)
+  })
+
+  it('the current key id with another public key is a move', async () => {
+    const w = await world()
+    w.platform.keys.set(OWNER, { keyId: OLD_ID, pub: secp.getPublicKey(await E('owner', 1), true) })
+    await expect(reconcileRepoShare({ port: w.platform.port(OWNER), networkKey: NET, ownerId: OWNER, keyId: OLD_ID, E: await E('owner', 0) }, { repoId: REPO, view: VIEW, maintainers: [ALICE], removed: [BOB] })).rejects.toBeInstanceOf(SyncKeyMovedError)
   })
 
   it('a read that shows another current key refuses', async () => {
