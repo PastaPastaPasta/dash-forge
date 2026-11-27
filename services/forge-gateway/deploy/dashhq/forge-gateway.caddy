@@ -12,7 +12,7 @@
 
 (forge_gateway) {
 	import forge_gateway_client
-	reverse_proxy 127.0.0.1:{args[0]} {
+	reverse_proxy 127.0.0.1:{args.0} {
 		flush_interval -1
 	}
 }
@@ -23,10 +23,11 @@
 	import forge_gateway_client
 	@git path_regexp repo ^/([^/]+/[^/]+\.git)/
 	handle @git {
-		reverse_proxy 127.0.0.1:{args[0]} {
+		reverse_proxy 127.0.0.1:{args.0} {
 			flush_interval -1
 			@absent status 404
 			handle_response @absent {
+				header X-Content-Type-Options nosniff
 				respond 404 {
 					body "no public repository {re.repo.1} on mainnet. Testnet repositories moved to https://testnet-git-forge.dashhq.org/{re.repo.1}"
 				}
@@ -34,7 +35,7 @@
 		}
 	}
 	handle {
-		reverse_proxy 127.0.0.1:{args[0]} {
+		reverse_proxy 127.0.0.1:{args.0} {
 			flush_interval -1
 		}
 	}

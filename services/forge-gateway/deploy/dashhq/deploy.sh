@@ -74,13 +74,20 @@ caddy_step() {
   sudo rm -f "$CADDY_INCLUDE.prev"
   if sudo test -f "$CADDY_INCLUDE"; then sudo cp "$CADDY_INCLUDE" "$CADDY_INCLUDE.prev"; fi
   sudo mv "$CADDY_INCLUDE.new" "$CADDY_INCLUDE"
-  if ! sudo caddy validate --adapter caddyfile --config "$CADDYFILE" >/dev/null; then
-    sudo caddy validate --adapter caddyfile --config "$CADDYFILE" || true
+  restore() {
     if sudo test -f "$CADDY_INCLUDE.prev"; then sudo mv "$CADDY_INCLUDE.prev" "$CADDY_INCLUDE"; else sudo rm -f "$CADDY_INCLUDE"; fi
     if [[ $added_import == 1 ]]; then sudo mv "$CADDYFILE.prev" "$CADDYFILE"; fi
+  }
+  if ! sudo caddy validate --adapter caddyfile --config "$CADDYFILE" >/dev/null; then
+    sudo caddy validate --adapter caddyfile --config "$CADDYFILE" || true
+    restore
     die "Caddy rejected the config; restored the previous one, nothing reloaded"
   fi
-  sudo systemctl reload caddy
+  if ! sudo systemctl reload caddy; then
+    restore
+    sudo systemctl reload caddy || true
+    die "Caddy failed to reload; restored the previous config and reloaded it"
+  fi
   echo "Caddy reloaded; serving: $(sudo grep -E '^[a-z0-9.-]+ \{' "$CADDY_INCLUDE" | tr -d '{' | xargs)"
 }
 
