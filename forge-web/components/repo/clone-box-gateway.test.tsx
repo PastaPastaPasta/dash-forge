@@ -96,7 +96,7 @@ describe('CloneBox with a gateway', () => {
     expect(codes()).toContain(cmd.remote)
     expect(codes()).toContain(cmd.dgClone)
     expect(morePanel()?.textContent).toContain('git clone https://gw.invalid/alice/proj.git')
-    expect(morePanel()?.textContent).toContain('HTTPS via dashhq gateway')
+    expect(morePanel()?.textContent).toContain('Centralized mirror run by dashhq gateway')
   })
 
   it('copies the git clone command whole and says so', async () => {

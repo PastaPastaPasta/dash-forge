@@ -191,17 +191,17 @@ export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; ho
     <div data-testid="gateway-clone">
       <CommandBox text={`git clone ${url}`} what="HTTPS clone command" />
       <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">
-        HTTPS via {gateway.label}: plain git, nothing to install, read only ·{' '}
+        Centralized mirror run by {gateway.label}: plain git, read only, optional. The Dash remote above needs no server ·{' '}
         <button type="button" onClick={() => void verify()} disabled={state.kind === 'checking'} className={HELP_LINK} data-testid="gateway-verify">
           Verify
         </button>
       </p>
-      <GatewayVerdict state={state} />
+      <GatewayVerdict state={state} url={url} />
     </div>
   )
 }
 
-function GatewayVerdict({ state }: { state: VerifyState }): JSX.Element | null {
+function GatewayVerdict({ state, url }: { state: VerifyState; url: string }): JSX.Element | null {
   if (state.kind === 'idle') return null
   const base = 'mt-1.5 text-[12px] leading-snug'
   if (state.kind === 'checking') {
@@ -253,7 +253,7 @@ function GatewayVerdict({ state }: { state: VerifyState }): JSX.Element | null {
         </ul>
       ) : null}
       <p className="text-anvil-500 dark:text-anvil-400">
-        Full check: <span className="font-mono">dg verify-mirror {'<url>'}</span>
+        Full check: <span className="font-mono">dg verify-mirror {url}</span>
       </p>
     </div>
   )

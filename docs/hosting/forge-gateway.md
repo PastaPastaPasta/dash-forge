@@ -2,7 +2,16 @@
 
 `forge-gateway` is an **optional** read-only mirror of the **public** repositories of one network. With it, a plain `git clone https://<gateway>/<owner>/<name>.git` works without `git-remote-dash`, which helps GitHub Actions `checkout`, Go modules, Cargo and npm git dependencies, Nix, Renovate, IDEs and locked-down machines. The same binary serves README badges, Atom feeds and link-preview cards.
 
-dashhq runs one for the testnet site, testnet-forge.dashhq.org, at `git-forge.dashhq.org`. The mainnet site, forge.dashhq.org, has no gateway yet. Anyone can run their own from the same image with the same settings. This page covers both.
+dashhq runs one per network:
+
+| Network | Gateway | Web app |
+|---|---|---|
+| Mainnet | `https://git-forge.dashhq.org` | forge.dashhq.org |
+| Testnet | `https://testnet-git-forge.dashhq.org` | testnet-forge.dashhq.org |
+
+**This part is centralized.** Each gateway is one server, run by dashhq. It is an optional convenience: `git clone dash://<owner>/<name>` with `git-remote-dash` is the decentralized path, which reads Dash Platform and storage directly and never touches a gateway. `dg verify-mirror https://<gateway>/<owner>/<name>.git` checks what a gateway serves against Platform.
+
+Anyone can run their own from the same image with the same settings. This page covers both.
 
 1. [What a gateway is trusted for](#what-a-gateway-is-trusted-for)
 2. [What you need](#what-you-need)
@@ -78,7 +87,7 @@ Then, in `services/forge-gateway/`, write a `.env` and start it:
 ```sh
 cat > .env <<'EOF'
 DASH_FORGE_NETWORK=testnet
-GATEWAY_PUBLIC_URL=https://git-forge.dashhq.org
+GATEWAY_PUBLIC_URL=https://testnet-git-forge.dashhq.org
 GATEWAY_WEB_URL=https://testnet-forge.dashhq.org
 GATEWAY_ALL_PUBLIC=true
 GATEWAY_TRUST_PROXY=cloudflare
@@ -195,7 +204,7 @@ GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake
 | `GET /healthz`, `/readyz`, `/metrics` | Liveness, readiness (with the gateway's `version`), Prometheus metrics. |
 | `GET /.well-known/security.txt` | How to report a vulnerability ([RFC 9116](https://www.rfc-editor.org/rfc/rfc9116)): the Dash Forge project's contacts and policy, with this gateway's own `Canonical` URL when `GATEWAY_PUBLIC_URL` is https. If you run your own gateway and want reports about your deployment to reach you, answer this path at your proxy. |
 
-`<owner>` is an identity id or a DPNS name. A README badge for a testnet repository on dashhq's gateway: `[![checks](https://git-forge.dashhq.org/badge/alice/project/ci.svg)](https://testnet-forge.dashhq.org/alice/project)`.
+`<owner>` is an identity id or a DPNS name. A README badge for a mainnet repository on dashhq's gateway: `[![checks](https://git-forge.dashhq.org/badge/alice/project/ci.svg)](https://forge.dashhq.org/alice/project)` (for testnet, `testnet-git-forge.dashhq.org` and `testnet-forge.dashhq.org`).
 
 ### Share links (preview cards)
 
@@ -203,10 +212,10 @@ forge.dashhq.org is a static site: a short URL such as `https://forge.dashhq.org
 
 | Share link | Opens |
 |---|---|
-| `https://git-forge.dashhq.org/og/alice/project` | `https://testnet-forge.dashhq.org/alice/project` |
-| `https://git-forge.dashhq.org/og/alice/project/issues/7` | `https://testnet-forge.dashhq.org/alice/project/issues/7` |
-| `https://git-forge.dashhq.org/og/alice/project/pull/7/files` | `https://testnet-forge.dashhq.org/alice/project/pull/7/files` |
-| `https://git-forge.dashhq.org/og/alice/project/tree/feature%2Fx/src?repo=<id>` | `https://testnet-forge.dashhq.org/alice/project/tree/feature%2Fx/src?repo=<id>` |
+| `https://git-forge.dashhq.org/og/alice/project` | `https://forge.dashhq.org/alice/project` |
+| `https://git-forge.dashhq.org/og/alice/project/issues/7` | `https://forge.dashhq.org/alice/project/issues/7` |
+| `https://git-forge.dashhq.org/og/alice/project/pull/7/files` | `https://forge.dashhq.org/alice/project/pull/7/files` |
+| `https://git-forge.dashhq.org/og/alice/project/tree/feature%2Fx/src?repo=<id>` | `https://forge.dashhq.org/alice/project/tree/feature%2Fx/src?repo=<id>` |
 
 This scheme is stable: everything after `/og` is the web app's short path (`forge-web/lib/short-url.ts`), owner by DPNS name or identity id, kept exactly as written (a `%2F` in a ref stays one segment). Only a `?repo=<id>` pin is carried along; any other query string is dropped. The page always opens `GATEWAY_WEB_URL` plus that path, never a host taken from the request, so a share link cannot send anyone elsewhere. A path that is not a short URL (a bad `%` escape, a `.` or `..` segment, plain or escaped as `%2e`, characters a short URL never has) answers `404`.
 
@@ -350,13 +359,13 @@ The clone box shows the HTTPS URL only when the web build names a gateway:
 NEXT_PUBLIC_GATEWAY_URL=https://git-forge.dashhq.org NEXT_PUBLIC_GATEWAY_LABEL="dashhq gateway" pnpm build
 ```
 
-`dash://` stays first; the HTTPS line reads "HTTPS via dashhq gateway · plain git, read only, an optional mirror · verify". Without the variable there is no HTTPS line.
+`dash://` stays first. The HTTPS line sits under **More options** and reads "Centralized mirror run by dashhq gateway: plain git, read only, optional. The Dash remote above needs no server · Verify". Without the variable there is no HTTPS line.
 
 The same variable turns **Copy link** on a public repository's pages into a [share link](#share-links-preview-cards) (`https://git-forge.dashhq.org/og/alice/project/issues/7`), which unfurls with a preview card and opens the page. The gateway sends people to its own `GATEWAY_WEB_URL`, so point a build at a gateway whose `GATEWAY_WEB_URL` is that build's site.
 
-For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads the URL and the label from repository variables, so turning the gateway on or off needs no code change. The testnet site's workflow (`pages-testnet.yml`) reads `TESTNET_SITE_GATEWAY_URL` and `TESTNET_SITE_GATEWAY_LABEL` the same way; dashhq's gateway is set there, and `PAGES_GATEWAY_URL` is unset, so the mainnet site shows no HTTPS line.
+For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads the URL and the label from repository variables, so turning the gateway on or off needs no code change. The testnet site's workflow (`pages-testnet.yml`) reads `TESTNET_SITE_GATEWAY_URL` and `TESTNET_SITE_GATEWAY_LABEL` the same way. dashhq sets `PAGES_GATEWAY_URL=https://git-forge.dashhq.org` and `TESTNET_SITE_GATEWAY_URL=https://testnet-git-forge.dashhq.org`.
 
-1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` (forge.dashhq.org) or `TESTNET_SITE_GATEWAY_URL` (testnet-forge.dashhq.org) to a gateway of that site's network (for mainnet, one such as `https://git.example.org`), and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
+1. Repository **Settings → Secrets and variables → Actions → Variables**: set `PAGES_GATEWAY_URL` (forge.dashhq.org) or `TESTNET_SITE_GATEWAY_URL` (testnet-forge.dashhq.org) to a gateway of that site's network, and `PAGES_GATEWAY_LABEL` if the default "dashhq gateway" is wrong. Use `https://`: the site's content policy blocks the browser's "verify" check on a plain `http://` gateway.
 2. Deploy: **Actions → Deploy forge-web to Pages → Run workflow** on master (or push to master). Don't re-run an older run: that deploys its older commit.
 
 Delete the variable and deploy again to hide the HTTPS line. A value that is not an `https://` or `http://` URL, or that carries a query, a fragment or credentials, is ignored, and the row stays hidden. Set it only once the gateway answers: the clone box doesn't check that the gateway is up before it shows the row. The deploy fails when the gateway's `/readyz` names a different network from the build's (`PAGES_NETWORK`), so moving the site to another network means moving or unsetting the gateway too; a gateway it cannot reach only warns.
@@ -377,7 +386,7 @@ The MVP is free with rate limits. A paid tier is a later spike, and needs no con
 
 > **Dash Forge gateway: privacy notice**
 >
-> The gateway at `git-forge.dashhq.org` is run by dashhq. It serves read-only copies of **public** Dash Forge repositories, which anyone can already read on Dash Platform.
+> The gateways at `git-forge.dashhq.org` (mainnet) and `testnet-git-forge.dashhq.org` (testnet) are run by dashhq. It serves read-only copies of **public** Dash Forge repositories, which anyone can already read on Dash Platform.
 >
 > **What we process.** To answer a request we see your IP address, the URL you request and your client's request headers. We use your IP address only to apply rate limits, in memory, for at most two hours after your last request. We do not log IP addresses, user agents or request headers. Our logs record the requested path, the response status and its duration, and are kept for 14 days.
 >
