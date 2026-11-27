@@ -8,13 +8,16 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-27
+
 ### Added
 
-- **Settings that follow your identity, on mainnet.** forge-user is registered on mainnet (`hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK`, 2026-11-26, in contract group `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ`), so on mainnet as on testnet a wallet sign-in keeps your storage profiles (and in the web app your preferences) encrypted on Platform, and an owner can share a repository's storage with its maintainers. forge.dashhq.org has it from this change; `dg` from the first release after v0.3.1, which compiles the record in ([#750](https://github.com/PastaPastaPasta/dash-forge/pull/750)).
+- **Settings that follow your identity, on mainnet.** forge-user is registered on mainnet (`hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK`, 2026-11-26, in contract group `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ`), so on mainnet as on testnet a wallet sign-in keeps your storage profiles (and in the web app your preferences) encrypted on Platform, and an owner can share a repository's storage with its maintainers. forge.dashhq.org has had it since [#750](https://github.com/PastaPastaPasta/dash-forge/pull/750); `dg` has it from this release, which compiles the record in. `--strict-group` on mainnet accepts the group again: v0.3.1 doesn't know forge-user and refuses it as an unknown member.
 - **`dg auth login --wallet --any-identity`.** A wallet renewal's code now says which identity it renews ("This code renews alice.dash …"), because only that identity's answer is read. `--any-identity` lets any identity in the wallet answer instead ([#764](https://github.com/PastaPastaPasta/dash-forge/pull/764)).
 
 ### Fixed
 
+- **`git clone dash://…` of a name on the other network** now names both fixes: `dg … --network` and, for plain git, `git clone -c dash.network=<testnet|mainnet> dash://…`. On a fresh install, `dg doctor` and `dg storage list` no longer say "sign in with your wallet again" to someone who never has ([#765](https://github.com/PastaPastaPasta/dash-forge/pull/765)).
 - **A wallet renewal no longer asks about a master key it does not touch.** After a `--full-key` sign-in on a computer with a keychain, every wallet renewal asked about the master-key file and refused under `--yes`, though the wallet's key goes to the keychain. dg now asks only about what the store overwrites, says where the master key stays (`masterKeyKeptAt` in `--json`), and, when the keychain refuses the key, never falls back over a key file holding a master key or one it cannot open ([#764](https://github.com/PastaPastaPasta/dash-forge/pull/764)).
 
 ## [0.3.1] - 2026-11-26

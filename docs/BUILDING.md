@@ -1,6 +1,6 @@
 # Building Dash Forge
 
-You do not have to build Dash Forge to use it: the latest release, v0.3.1, ships prebuilt
+You do not have to build Dash Forge to use it: the latest release, v0.3.2, ships prebuilt
 binaries for Linux and macOS that work on mainnet and testnet ([INSTALL.md](INSTALL.md)). The
 rest of this page is for contributors.
 

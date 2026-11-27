@@ -261,7 +261,7 @@ jobs:
     timeout-minutes: 60
     permissions: { contents: read, issues: read, pull-requests: read }
     steps:
-      # A commit you have reviewed, built from source. Or pin a release (`action@v0.3.1`)
+      # A commit you have reviewed, built from source. Or pin a release (`action@v0.3.2`)
       # and drop `install`: it installs that release's checksum-verified binaries.
       - uses: PastaPastaPasta/dash-forge/action@<40-character commit>
         with:

@@ -43,14 +43,14 @@ inputs:
     description: "No longer has any effect: a private repository's check run cannot carry a log, so none is uploaded there."
     default: "false"
   network:
-    description: "mainnet, testnet or devnet. The default is testnet. Mainnet needs v0.3.0 or later (this version's default is v0.3.1); v0.2.0 knows testnet only."
+    description: "mainnet, testnet or devnet. The default is testnet. Mainnet needs v0.3.0 or later (this version's default is v0.3.2); v0.2.0 knows testnet only."
     default: testnet
   devnet-name:
     description: "Devnet name, required when network is devnet and ignored otherwise: lowercase letters, digits and -."
     default: ""
   version:
     description: "Dash Forge release to install (the release this action version pins, kept equal to the workspace version). Empty: install 'true' builds dg from source."
-    default: "0.3.1"
+    default: "0.3.2"
   install:
     description: "true: install release `version`, or build dg from this action's own source (the ref in uses:) when `version` is empty. source: always build from source. false: use the dg already on PATH."
     default: "true"

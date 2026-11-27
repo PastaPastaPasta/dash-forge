@@ -768,7 +768,7 @@ export function WorkflowStep({
               <CopyBlock text={yaml.text} label="Copy the workflow file" />
             </div>
             <Hint>
-              The first run builds the tools from this site&apos;s commit, which takes a few minutes. Later runs reuse the cache. Or use prebuilt binaries: pin a release tag (<span className="font-mono">action@v0.3.1</span> or later) and remove the <span className="font-mono">install</span> line.
+              The first run builds the tools from this site&apos;s commit, which takes a few minutes. Later runs reuse the cache. Or use prebuilt binaries: pin a release tag (<span className="font-mono">action@v0.3.2</span> or later) and remove the <span className="font-mono">install</span> line.
             </Hint>
           </>
         ) : null}
