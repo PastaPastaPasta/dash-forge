@@ -9,7 +9,7 @@ This guide covers:
 1. [How it fits together](#how-it-fits-together)
    - [The quick way: `dg storage add` asks](#the-quick-way-dg-storage-add-asks)
    - [In the browser: the storage wizard](#in-the-browser-the-storage-wizard)
-   - [Storage settings that follow your identity (testnet)](#storage-settings-that-follow-your-identity-testnet)
+   - [Storage settings that follow your identity](#storage-settings-that-follow-your-identity)
    - [macOS: no dialog for what Forge stored](#macos-no-dialog-for-what-forge-stored)
 2. [An S3-compatible bucket](#an-s3-compatible-bucket) (step by step on a NAS: [Storage on your home NAS](home-nas-storage.md))
 3. [IPFS: your own kubo node](#ipfs-your-own-kubo-node)
@@ -28,7 +28,7 @@ This guide covers:
 
 | Piece | Where it lives | Who can see it |
 |---|---|---|
-| Storage **profiles** (endpoint, bucket, public URL, *references* to secrets) | `~/.config/dash-forge/storage.toml` (override with `DASH_FORGE_STORAGE_CONFIG`); on testnet, after a wallet sign-in, also an encrypted copy on Platform ([below](#storage-settings-that-follow-your-identity-testnet)) | only you |
+| Storage **profiles** (endpoint, bucket, public URL, *references* to secrets) | `~/.config/dash-forge/storage.toml` (override with `DASH_FORGE_STORAGE_CONFIG`); after a wallet sign-in, also an encrypted copy on Platform ([below](#storage-settings-that-follow-your-identity)) | only you |
 | **Secrets** (S3 secret key, kubo API token, …) | environment variables or your OS keychain | only you (and, on macOS, any program running as you: see below) |
 | A repo's **storage policy**: which profiles, how many copies | git config (`dash.storage`, `dash.replicas`) | only you |
 | Pack bytes | your bucket / IPFS node (and/or Platform chunks) | public, if you give the bucket a public URL |
@@ -40,7 +40,7 @@ This guide covers:
 >
 > It never records the endpoint or any credential. If the bucket name itself is sensitive, give the profile a `--public-url` (a CDN or custom domain that hides the bucket) and treat the bucket name as public anyway. `dg storage advertise` publishes only the https public read bases.
 
-Secrets are **never** written to `storage.toml` or to logs, and never in the clear to the chain (on testnet, the encrypted copy that follows your identity holds them; [below](#storage-settings-that-follow-your-identity-testnet)). A keychain entry is protected at rest and from other users; on macOS `dg` reads it through Apple's `security` tool, so any program running as you can read it without a prompt, like an `env:` variable in your shell. Give Forge a key scoped to the one bucket. `storage.toml` holds only references like `env:R2_SECRET_ACCESS_KEY` or `keychain:dash-forge/r2-main`. If you paste a literal secret into it, `dg` refuses to load the file.
+Secrets are **never** written to `storage.toml` or to logs, and never in the clear to the chain (the encrypted copy that follows your identity holds them; [below](#storage-settings-that-follow-your-identity)). A keychain entry is protected at rest and from other users; on macOS `dg` reads it through Apple's `security` tool, so any program running as you can read it without a prompt, like an `env:` variable in your shell. Give Forge a key scoped to the one bucket. `storage.toml` holds only references like `env:R2_SECRET_ACCESS_KEY` or `keychain:dash-forge/r2-main`. If you paste a literal secret into it, `dg` refuses to load the file.
 
 A push works like this:
 
@@ -107,22 +107,20 @@ The web app has the same setup at **Settings → Storage** (`/settings/storage`)
 
 - **Providers:** Cloudflare R2, Backblaze B2, AWS S3, Garage / RustFS / other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.39 DASH/MiB quoted; see [Costs](costs.md)). Each field has a "where to find this" hint. As in `dg`, the R2, B2 and AWS presets have not been tested end to end; RustFS and Garage have.
 - **A live test from the page**, so it checks exactly what the browser will do, CORS included. S3: signed PUT, signed GET, anonymous GET through the public URL, a ranged read, a CORS preflight for PUT, then the probe is deleted. IPFS: the kubo API, add with a CID check and pin, the gateway re-read, the public gateway, the pinning service, then unpin. A failing CORS row shows a copy-paste fix for your provider, filled in with your bucket and this app's origin; the browser needs PUT allowed from the app's origin, where the CLI needs no CORS at all.
-- **Credentials are sealed in this browser**, in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits). Lock the vault and they are unreadable. On mainnet they stay in this browser only. On testnet, after a sign-in with a Dash wallet, an encrypted copy also follows your identity ([below](#storage-settings-that-follow-your-identity-testnet)).
+- **Credentials are sealed in this browser**, in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits). Lock the vault and they are unreadable. After a sign-in with a Dash wallet, an encrypted copy also follows your identity ([below](#storage-settings-that-follow-your-identity)).
 - **Replication:** one place, every chosen place, or Platform as a costed fallback that asks first. A repository's **Settings → Your browser pushes** overrides the default for that repository.
 - **Only public https addresses are recorded on chain.** The wizard can reach a store or kubo on `localhost` for testing, but it refuses to record a loopback, private or plain-http URL, and readers skip such URLs even if a manifest names one.
 - **kubo's RPC API is its admin interface.** The fix block creates a Forge token limited to add, pin, unpin, id and version calls (after an owner token, so you do not lock yourself out) rather than opening the whole API to the page. It also prints a Caddy proxy for the preflight ([Kubo and the browser](#kubo-and-the-browser-a-proxy-in-front-of-kubo)). The simpler route is `dg ipfs up`, and the wizard shows that command first.
 
-### Storage settings that follow your identity (testnet)
+### Storage settings that follow your identity
 
-On **testnet**, your storage profiles (credentials included) and your default storage (`dg storage use --global`, or the web app's default) can follow your identity to every device where you sign in with a Dash wallet. Forge encrypts them with a key the wallet derives from your recovery phrase, and keeps them in the `forge-user` contract on Platform. Only that wallet key opens them. Platform nodes and other readers can't read them; they can see that you have synced settings, their sizes and when they changed ([what readers see](../design/identity-synced-state.md#6-threat-model)).
+On testnet and mainnet (`dg` on mainnet from the first release after v0.3.1), your storage profiles (credentials included) and your default storage (`dg storage use --global`, or the web app's default) can follow your identity to every device where you sign in with a Dash wallet. Forge encrypts them with a key the wallet derives from your recovery phrase, and keeps them in the `forge-user` contract on Platform. Only that wallet key opens them. Platform nodes and other readers can't read them; they can see that you have synced settings, their sizes and when they changed ([what readers see](../design/identity-synced-state.md#6-threat-model)).
 
 - **When it is on:** after `dg auth login --wallet` (dg says `storage settings sync with your identity across devices`) or a wallet sign-in in the web app. A passkey, an identity file or a pasted key does not turn it on. `dg auth login --wallet --no-sync` doesn't ask the wallet for the sync key, but a key kept from an earlier sign-in still syncs until `dg auth logout`.
-- **In the web app** the per-repository choice (a repository's **Settings → Your browser pushes**) follows too. On a repository you own, that choice is also what its maintainers get, and `dg storage share` sets it from the terminal ([Storage for maintainers](collaborating.md#storage-for-maintainers-testnet)). Your default storage is never shared.
+- **In the web app** the per-repository choice (a repository's **Settings → Your browser pushes**) follows too. On a repository you own, that choice is also what its maintainers get, and `dg storage share` sets it from the terminal ([Storage for maintainers](collaborating.md#storage-for-maintainers)). Your default storage is never shared.
 - **In `dg`:** `dg storage list` marks each profile `local`, `synced`, `local+synced` or `local (synced copy differs)`. Storage an owner shares with you as a maintainer isn't listed: it is used only for that repository's pushes, when your git config sets no `dash.storage` and you chose no storage of your own for that repo (**Your browser pushes**, which syncs), under a name like `share.G1SAVd3d.<name>` (the first 8 characters of the owner's id), and the push says `using the storage <owner> shares with this repository's maintainers`. Synced secrets are held in memory only, never written to `storage.toml`. A profile in `storage.toml` wins over a synced one of the same name. Git config itself does not sync: on another machine, `dash.storage` comes from that machine's git config first.
 - **Where to see it:** Settings → Storage shows a collapsed **Synced with your identity** line, or **On this device only** with how to turn it on.
 - **Nothing local is deleted.** `storage.toml` and the browser vault keep their own copies.
-
-**Mainnet: not yet.** The `forge-user` contract is registered on testnet only. On mainnet, storage settings stay on the device where you made them, exactly as before, until `forge-user` is registered there.
 
 ### macOS: no dialog for what Forge stored
 

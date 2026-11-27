@@ -172,7 +172,7 @@ dg storage test r2-main   # re-run the checks at any time
 
 **In the browser**, open **Settings → Storage** (`/settings/storage`) in the web app. The wizard has the same providers, tests them from the page (so it checks what the browser will actually do), and keeps the credentials encrypted in this browser's vault. Browser storage settings are used for everything the web app uploads: a merge's pack, a commit the browser makes to a pull request's branch (applying suggestions, "Update branch"), and release assets. `git push` uses `dg`'s profiles.
 
-On testnet, after a sign-in with your Dash wallet (web or `dg auth login --wallet`), storage profiles also [follow your identity](identity-and-keys.md#settings-that-follow-your-identity-testnet) to every browser and `dg` where you sign in with the wallet. On mainnet they stay on the device where you set them up.
+After a sign-in with your Dash wallet (web or `dg auth login --wallet`; `dg` on mainnet from the first release after v0.3.1), storage profiles also [follow your identity](identity-and-keys.md#settings-that-follow-your-identity) to every browser and `dg` where you sign in with the wallet.
 
 [Bring your own storage](bring-your-own-storage.md) has the provider-by-provider setup and the flags for scripts.
 

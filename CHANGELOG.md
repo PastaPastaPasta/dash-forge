@@ -8,6 +8,10 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Added
+
+- **Settings that follow your identity, on mainnet.** forge-user is registered on mainnet (`hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK`, 2026-11-26, in contract group `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ`), so on mainnet as on testnet a wallet sign-in keeps your storage profiles (and in the web app your preferences) encrypted on Platform, and an owner can share a repository's storage with its maintainers. forge.dashhq.org has it from this change; `dg` from the first release after v0.3.1, which compiles the record in ([#750](https://github.com/PastaPastaPasta/dash-forge/pull/750)).
+
 ## [0.3.1] - 2026-11-26
 
 `dg` and `git-remote-dash` work on testnet again. The [release notes](docs/releases/v0.3.1.md) say what broke, what changed and why mainnet is unaffected.
