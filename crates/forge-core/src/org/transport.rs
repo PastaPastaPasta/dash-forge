@@ -447,6 +447,40 @@ impl Roster {
         )
     }
 
+    /// The `org` document's properties for this roster.
+    pub fn props(&self) -> BTreeMap<String, crate::platform::FieldValue> {
+        use crate::platform::FieldValue;
+        let bytes = |h: &str| hex::decode(h).unwrap_or_default();
+        let mut out = BTreeMap::from([
+            ("room".to_string(), FieldValue::text(&self.room)),
+            ("cid".to_string(), FieldValue::Bytes(bytes(&self.cid))),
+            (
+                "keyId".to_string(),
+                FieldValue::Integer(u64::from(self.key_id)),
+            ),
+            (
+                "groupKey".to_string(),
+                FieldValue::Bytes(bytes(&self.group_key)),
+            ),
+            (
+                "threshold".to_string(),
+                FieldValue::Integer(self.threshold as u64),
+            ),
+            (
+                "members".to_string(),
+                FieldValue::Bytes(self.members_bytes()),
+            ),
+            (
+                "pubShares".to_string(),
+                FieldValue::Bytes(self.pub_shares_bytes()),
+            ),
+        ]);
+        if let Some(relay) = &self.relay {
+            out.insert("relay".into(), FieldValue::text(relay));
+        }
+        out
+    }
+
     /// The roster an `org` document's properties describe: `None` when they are not a
     /// well-formed one.
     pub fn from_props(p: &BTreeMap<String, crate::platform::FieldValue>) -> Option<Self> {

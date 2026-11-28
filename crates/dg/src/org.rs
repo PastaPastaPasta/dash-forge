@@ -91,6 +91,15 @@ pub enum OrgCommand {
         #[command(flatten)]
         phrase: PhraseArgs,
     },
+    /// Publish the organization on Platform: its roster (so members sign from Platform alone)
+    /// and the "N of M" link in its profile (other profile fields kept). A request the members
+    /// sign.
+    Publish {
+        /// The organization (its identity id or name).
+        org: String,
+        #[command(flatten)]
+        phrase: PhraseArgs,
+    },
     /// Hide a request on this computer (free; nothing is written). For a request Forge won't
     /// sign; decline a valid request you disagree with instead.
     Dismiss {
@@ -116,7 +125,12 @@ pub async fn run(ctx: &Ctx, cmd: &OrgCommand) -> Result<()> {
             phrase,
         } => connect(ctx, group, relay.as_deref(), phrase).await,
         OrgCommand::List => {
-            list(ctx);
+            let client = ctx.connect().await.ok();
+            let (orgs, stale) = match &client {
+                Some(c) => known_all(ctx, c).await,
+                None => (connected(ctx), Vec::new()),
+            };
+            list(ctx, &orgs, &stale);
             Ok(())
         }
         OrgCommand::Requests { org } => requests(ctx, org.as_deref()).await,
@@ -128,6 +142,7 @@ pub async fn run(ctx: &Ctx, cmd: &OrgCommand) -> Result<()> {
             phrase,
         } => decline(ctx, request, reason.as_deref().unwrap_or(""), phrase).await,
         OrgCommand::Finish { request, phrase } => finish(ctx, request, phrase).await,
+        OrgCommand::Publish { org, phrase } => publish(ctx, org, phrase).await,
         OrgCommand::Dismiss { request } => dismiss(ctx, request).await,
         OrgCommand::Migrate { org, phrase } => migrate(ctx, org, phrase).await,
     }
@@ -229,6 +244,54 @@ fn org_contract(ctx: &Ctx) -> Result<String> {
         )
         .into()
     })
+}
+
+/// The organizations connected here, and those the signed-in identity is bound to on Platform
+/// (its `orgMember` documents), which a fresh computer then remembers (§10.5 "Inbox by
+/// identity"). Signing still needs the phrase.
+async fn known(ctx: &Ctx, client: &PlatformClient) -> Vec<OrgRecord> {
+    known_all(ctx, client).await.0
+}
+
+/// [`known`], and the organizations the identity is bound to whose current key no longer
+/// includes its member key (connect again).
+async fn known_all(ctx: &Ctx, client: &PlatformClient) -> (Vec<OrgRecord>, Vec<String>) {
+    let mut orgs = connected(ctx);
+    let mut stale: Vec<String> = Vec::new();
+    let (Some(me), Ok(contract)) = (ctx.identity_id_hint(), org_contract(ctx)) else {
+        return (orgs, stale);
+    };
+    let Ok(found) = core_org::session::memberships(client, &contract, &me).await else {
+        return (orgs, stale);
+    };
+    for m in found {
+        if orgs.iter().any(|r| r.org_id == m.org_id) {
+            continue;
+        }
+        let (record, ceremony) = match core_org::session::discover(client, &contract, &m).await {
+            Ok(Some(found)) => found,
+            Ok(None) => {
+                if !found_any(&orgs, &stale, &m.org_id) {
+                    stale.push(m.org_id.clone());
+                }
+                continue;
+            }
+            Err(_) => continue,
+        };
+        stale.retain(|o| *o != record.org_id);
+        if !ceremony.is_empty() {
+            if let Ok(dir) = crate::config::config_dir() {
+                let _ = save_ceremony_in(&dir, &record, &ceremony);
+            }
+        }
+        let _ = remember(&record);
+        orgs.push(record);
+    }
+    (orgs, stale)
+}
+
+fn found_any(orgs: &[OrgRecord], stale: &[String], org_id: &str) -> bool {
+    orgs.iter().any(|r| r.org_id == org_id) || stale.iter().any(|o| o == org_id)
 }
 
 /// Read `record`'s organization from Platform.
@@ -401,15 +464,17 @@ async fn connect(ctx: &Ctx, group: &str, relay: Option<&str>, phrase: &PhraseArg
     Ok(())
 }
 
-fn list(ctx: &Ctx) {
-    let orgs = connected(ctx);
+fn list(ctx: &Ctx, orgs: &[OrgRecord], stale: &[String]) {
     ctx.emit(
-        json!({ "network": ctx.network_label(), "orgs": orgs }),
+        json!({ "network": ctx.network_label(), "orgs": orgs, "connectAgain": stale }),
         || {
-            if orgs.is_empty() {
+            for o in stale {
+                println!("{o}  your key is not in its current key: connect again with `dg org connect <group id>`");
+            }
+            if orgs.is_empty() && stale.is_empty() {
                 println!("No organizations connected. `dg org connect <group id>` connects one.");
             }
-            for r in &orgs {
+            for r in orgs {
                 println!(
                     "{}  {} of {}  {}",
                     line(&r.label),
@@ -524,16 +589,16 @@ impl Row {
 }
 
 async fn requests(ctx: &Ctx, which: Option<&str>) -> Result<()> {
-    let all = connected(ctx);
+    let client = ctx.connect().await?;
+    let all = known(ctx, &client).await;
     let orgs: Vec<OrgRecord> = match which {
         Some(w) => vec![pick(&all, w).cloned().ok_or_else(|| not_connected(w))?],
         None => all,
     };
     if orgs.is_empty() {
-        list(ctx);
+        list(ctx, &orgs, &[]);
         return Ok(());
     }
-    let client = ctx.connect().await?;
     let forge = ctx.target.require_v2()?.clone();
     let mut rows = Vec::new();
     for record in orgs {
@@ -594,7 +659,7 @@ fn not_connected(which: &str) -> anyhow::Error {
 
 /// The connected organization holding request `id` on this network.
 async fn find_request(ctx: &Ctx, client: &PlatformClient, id: &str) -> Result<(Org, Request)> {
-    let orgs = connected(ctx);
+    let orgs = known(ctx, client).await;
     if orgs.is_empty() {
         return Err(
             UserError::new(codes::NOT_FOUND, "no organization is connected")
@@ -821,12 +886,9 @@ async fn dismiss(ctx: &Ctx, id: &str) -> Result<()> {
 }
 
 async fn migrate(ctx: &Ctx, which: &str, phrase: &PhraseArgs) -> Result<()> {
-    let orgs = connected(ctx);
-    let record = pick(&orgs, which)
-        .cloned()
-        .ok_or_else(|| not_connected(which))?;
-    let (seed, keys) = unlock_for(ctx, phrase, &record)?;
     let client = ctx.connect().await?;
+    let record = connected_named(ctx, &client, which).await?;
+    let (seed, keys) = unlock_for(ctx, phrase, &record)?;
     let mut org = load(ctx, &client, record).await?;
     let relay = core_org::Relay::new(&org.record.relay)?;
     let room = relay.messages(&org.record.room).await?;
@@ -933,33 +995,146 @@ async fn post_request(
     Ok(())
 }
 
-/// The organization acting as owner: loaded with its identity, this member's keys, and the
-/// signed-in identity that writes the request.
-struct OwnerSession {
-    org: Org,
-    identity: LoadedIdentity,
-    seed: Seed,
-    keys: MemberKeys,
-    member: Member,
+enum Kind {
+    RunnerAdd,
+    RunnerRemove,
+    Other,
 }
 
-async fn open_owner(
+/// An owner action an organization's members sign.
+pub enum Action<'a> {
+    RepoCreate(&'a forge_core::create::CreateRepoOpts),
+    Grant(&'a forge_core::scope::RepoRef, &'a str, &'a str, Role),
+    Revoke(&'a forge_core::scope::RepoRef, &'a str, &'a str, Role),
+    RunnerAdd(&'a forge_core::scope::RepoRef, &'a str, &'a str),
+    RunnerRemove(&'a forge_core::scope::RepoRef, &'a str, &'a str),
+    Profile(&'a forge_core::rules::profile::ProfileFields),
+    Publish,
+}
+
+/// Build `action` as the organization `record`'s writes and post them as a request signed with
+/// this member's share. `label` names what it acts on; `extra` is merged into the JSON result.
+pub async fn request_action(
     ctx: &Ctx,
     client: &PlatformClient,
     record: OrgRecord,
     phrase: &PhraseArgs,
-) -> Result<OwnerSession> {
+    label: &str,
+    action: Action<'_>,
+    mut extra: Value,
+) -> Result<()> {
+    use core_org::actions;
     let (seed, keys) = unlock_for(ctx, phrase, &record)?;
     let mut org = load(ctx, client, record).await?;
     let identity = org.bind(client).await?;
     let member = Member::of(ctx, client).await?;
-    Ok(OwnerSession {
-        org,
-        identity,
-        seed,
-        keys,
-        member,
-    })
+    let writer = forge_core::platform::org::OrgWriter::new(client, &identity, org.key_id)?;
+    let mut nonces = actions::Nonces::new(&writer, org.held_nonces(client).await?);
+    let owner = actions::Owner {
+        client,
+        org: &identity,
+        writer: &writer,
+        label,
+    };
+    let action_kind = match action {
+        Action::RunnerAdd(..) => Kind::RunnerAdd,
+        Action::RunnerRemove(..) => Kind::RunnerRemove,
+        _ => Kind::Other,
+    };
+    let planned = match action {
+        Action::RepoCreate(opts) => {
+            let p = actions::repo_create(&owner, &mut nonces, opts).await?;
+            extra["repoId"] = json!(p.writes[0].document_id);
+            p
+        }
+        Action::Grant(repo, who, name, role) => {
+            actions::grant(&owner, &mut nonces, repo, who, name, role).await?
+        }
+        Action::Revoke(repo, who, name, role) => {
+            actions::revoke(&owner, &mut nonces, repo, who, name, role).await?
+        }
+        Action::RunnerAdd(repo, who, name) => {
+            actions::runner_add(&owner, &mut nonces, repo, who, name).await?
+        }
+        Action::RunnerRemove(repo, who, name) => {
+            actions::runner_remove(&owner, &mut nonces, repo, who, name).await?
+        }
+        Action::Profile(fields) => actions::profile_set(&owner, &mut nonces, fields).await?,
+        Action::Publish => {
+            let roster = org
+                .ceremony()
+                .and_then(|c| core_org::transport::Roster::of_ceremony(c, Some(&org.record.relay)))
+                .ok_or_else(|| anyhow::anyhow!("{} has no key ceremony to publish", line(label)))?;
+            actions::publish(&owner, &mut nonces, &org_contract(ctx)?, &roster).await?
+        }
+    };
+    if planned.writes.is_empty() {
+        let status = match action_kind {
+            Kind::RunnerAdd => "exists",
+            Kind::RunnerRemove => "not_a_runner",
+            Kind::Other => "unchanged",
+        };
+        extra["status"] = json!(status);
+        extra["org"] = json!(org.record.label);
+        ctx.emit(extra, || {
+            println!(
+                "Nothing to ask {}: {}.",
+                line(label),
+                match status {
+                    "exists" => "that runner is already enrolled",
+                    "not_a_runner" => "that identity is not a runner",
+                    _ => "it is already that way",
+                }
+            );
+        });
+        return Ok(());
+    }
+    let forge = ctx.target.require_v2()?.clone();
+    let problems = org.review_writes(client, &forge, &planned.writes).await?;
+    if !problems.is_empty() {
+        return Err(
+            UserError::new(codes::ORG_REFUSED, request::refused_text(&problems))
+                .note("checked before posting: nothing was written")
+                .into(),
+        );
+    }
+    let engine = member.engine(client)?;
+    post_request(ctx, client, &engine, &mut org, &seed, &keys, planned, extra).await
+}
+
+/// The organization `which` (its identity id or name), connected here or found through the
+/// signed-in identity.
+pub async fn connected_named(ctx: &Ctx, client: &PlatformClient, which: &str) -> Result<OrgRecord> {
+    pick(&known(ctx, client).await, which)
+        .cloned()
+        .ok_or_else(|| not_connected(which))
+}
+
+async fn publish(ctx: &Ctx, which: &str, phrase: &PhraseArgs) -> Result<()> {
+    let client = ctx.connect().await?;
+    let record = connected_named(ctx, &client, which).await?;
+    let label = record.label.clone();
+    request_action(
+        ctx,
+        &client,
+        record,
+        phrase,
+        &label,
+        Action::Publish,
+        json!({}),
+    )
+    .await
+}
+
+/// The connected organization that owns `handle`, when there is one (no network read when no
+/// organization is connected).
+pub fn owning_org(ctx: &Ctx, handle: &forge_core::scope::RepoRef) -> Option<OrgRecord> {
+    if !core_org::enabled(ctx.network()) {
+        return None;
+    }
+    connected(ctx)
+        .into_iter()
+        .find(|r| r.org_id == handle.owner_id())
 }
 
 /// Why `owner` cannot be used as an organization owner: it is not connected here.
@@ -1032,25 +1207,17 @@ pub async fn request_repo_create(
         protect: !o.no_protect,
         ..forge_core::create::CreateRepoOpts::public(name)
     };
-    let mut s = open_owner(ctx, &client, record, &args.phrase).await?;
-    let label = s.org.record.label.clone();
-    let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.held_nonces(&client).await?);
-    let owner = core_org::actions::Owner {
-        client: &client,
-        org: &s.identity,
-        writer: &writer,
-        label: &label,
-    };
-    let planned = core_org::actions::repo_create(&owner, &mut nonces, &opts).await?;
-    let extra = json!({
-        "repoId": planned.writes[0].document_id,
-        "ownerId": s.identity.id(),
-        "name": forge_core::resolve::repo_slug(&opts.name)?,
-    });
-    let engine = s.member.engine(&client)?;
-    post_request(
-        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
+    let label = record.label.clone();
+    let extra =
+        json!({ "ownerId": record.org_id, "name": forge_core::resolve::repo_slug(&opts.name)? });
+    request_action(
+        ctx,
+        &client,
+        record,
+        &args.phrase,
+        &label,
+        Action::RepoCreate(&opts),
+        extra,
     )
     .await
 }
@@ -1081,26 +1248,13 @@ pub async fn route_member_change(
     let member = crate::common::resolve_identity(&client, member, "member").await?;
     let member_name = forge_core::org::session::first_name(&client, &member).await;
     let label = format!("{}/{}", record.label, handle.name());
-    let mut s = open_owner(ctx, &client, record, phrase).await?;
-    let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.held_nonces(&client).await?);
-    let owner = core_org::actions::Owner {
-        client: &client,
-        org: &s.identity,
-        writer: &writer,
-        label: &label,
-    };
-    let planned = if add {
-        core_org::actions::grant(&owner, &mut nonces, &handle, &member, &member_name, role).await?
-    } else {
-        core_org::actions::revoke(&owner, &mut nonces, &handle, &member, &member_name, role).await?
-    };
     let extra = json!({ "member": member, "role": role.as_str(), "repo": label });
-    let engine = s.member.engine(&client)?;
-    post_request(
-        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
-    )
-    .await?;
+    let action = if add {
+        Action::Grant(&handle, &member, &member_name, role)
+    } else {
+        Action::Revoke(&handle, &member, &member_name, role)
+    };
+    request_action(ctx, &client, record, phrase, &label, action, extra).await?;
     Ok(Some(()))
 }
 
@@ -1136,14 +1290,23 @@ pub async fn org_owner_refusal(
 /// The `dg auth status` line: how many requests wait for this member's signature, or `None`
 /// when no organization is connected (nothing is read then).
 pub async fn waiting_count(ctx: &Ctx) -> Option<usize> {
-    let orgs = connected(ctx);
-    if orgs.is_empty() || !core_org::enabled(ctx.network()) {
+    if !core_org::enabled(ctx.network()) {
+        return None;
+    }
+    let local = connected(ctx);
+    if local.is_empty() && ctx.identity_id_hint().is_none() {
         return None;
     }
     let client = tokio::time::timeout(std::time::Duration::from_secs(8), ctx.connect())
         .await
         .ok()
         .and_then(Result::ok)?;
+    let orgs = tokio::time::timeout(std::time::Duration::from_secs(8), known(ctx, &client))
+        .await
+        .unwrap_or(local);
+    if orgs.is_empty() {
+        return None;
+    }
     let mut n = 0;
     for record in orgs {
         let read = tokio::time::timeout(

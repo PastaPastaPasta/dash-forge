@@ -163,7 +163,8 @@ def write_result(extra, req=('status',)):
 
 
 # An owner action on an organization's repository made a request instead of writing (`dg repo create
-# --owner`, `dg collab add|remove` on an organization's repository; docs/design/organizations.md).
+# --owner`, `dg collab add|remove` and `dg ci runner add|revoke` on an organization's repository,
+# `dg profile set --owner`, `dg org publish`; docs/design/organizations.md).
 ORG_REQUESTED = {
     'org': S, 'orgId': S,
     'requestId': D('The request the members sign with `dg org sign <requestId>`.', S),
@@ -666,7 +667,8 @@ cmd('profile show', 'An identity\'s public profile.', {
     'identityId': S, 'profile': nl(OBJ),
     'bot': D('The identity\'s operator when both profiles agree, else null.', nl(O({'operator': S}, ['operator']))),
 }, ['identityId', 'profile'])
-cmd('profile set', 'Your profile changed.', {'status': S, 'documentId': S, 'fields': OBJ, 'cost': COST}, ['status'])
+cmd('profile set', 'Your profile changed (with --owner: the request the organization\'s members sign for it, status `requested`).', {
+    **ORG_REQUESTED, 'status': S, 'documentId': S, 'fields': OBJ, 'cost': COST}, ['status'])
 cmd('profile delete', 'Your profile deleted.', {'status': E('deleted', 'absent'), 'documentId': S}, ['status'])
 BOT_CLAIM = D('The signer\'s bot claim as written: the identity that operates it, and the bots it operates.',
               O({'operator': S, 'operates': SA}))
@@ -739,11 +741,12 @@ cmd('org connect', 'An organization connected on this computer.', {
     'members': A(O({'index': I, 'name': S, 'authPub': S, 'you': B}, ['index', 'name', 'authPub', 'you'])),
     'network': S, 'room': S, 'relay': S,
 }, ['status', 'orgId', 'label', 'threshold', 'members'])
-cmd('org list', 'The organizations connected on this computer for the network (public values only).', {
+cmd('org list', 'The organizations connected on this computer or found through the signed-in identity\'s orgMember documents, for the network (public values only).', {
     'network': S,
     'orgs': A(O({'network': S, 'orgId': S, 'room': S, 'relay': S, 'authPub': S, 'label': S, 'threshold': I,
                  'members': A(ORG_MEMBER), 'dismissed': D('Requests dismissed on this computer.', SA)},
                 ['network', 'orgId', 'room', 'relay', 'authPub', 'label', 'threshold', 'members'])),
+    'connectAgain': D('Organizations the signed-in identity is bound to whose current key no longer includes its member key.', SA),
 }, ['network', 'orgs'])
 cmd('org requests', 'Every request in the connected organizations.', {
     'requests': A(O(ORG_REQUEST, ORG_REQUEST_REQ)),
@@ -762,6 +765,9 @@ cmd('org decline', 'A request declined.', {
 cmd('org finish', 'A fully signed request put on Platform. A request that cannot finish yet exits with an error instead.', {
     'status': E('done'), 'org': S, 'id': S, 'broadcast': I, 'collected': I, 'threshold': I,
 }, ['status', 'id'])
+cmd('org publish', 'The request that publishes the organization on Platform: its roster and the N-of-M link in its profile (`unchanged`: both are already there, nothing posted).', {
+    **ORG_REQUESTED, 'status': E('requested', 'unchanged'),
+}, ['status'])
 cmd('org dismiss', 'A request hidden on this computer (nothing is written).', {
     'status': E('dismissed'), 'org': S, 'id': S,
 }, ['status', 'id'])
@@ -959,11 +965,13 @@ cmd('ci runner new', 'A runner identity and key created, and enrolled.', {
     'status': E('created'), 'repo': S, 'runner': S, 'keyId': I, 'boundTo': OBJ, 'budgetCredits': I, 'expiresAt': nl(I),
     'path': S, 'enrolled': nl(S), 'alreadyEnrolled': nl(S), 'keyCost': COST, 'enrolCost': COST,
 }, ['status', 'runner'])
-cmd('ci runner add', 'A runner enrolled.', {
-    'status': E('enrolled', 'exists'), 'runner': S, 'documentId': S, 'id': S, 'written': B, 'cost': COST,
+cmd('ci runner add', 'A runner enrolled (on an organization\'s repository: the request for it).', {
+    **ORG_REQUESTED, 'status': E('enrolled', 'exists', 'requested'), 'runner': S, 'documentId': S, 'id': S, 'written': B,
+    'cost': COST, 'repo': S,
 }, ['status', 'runner'])
 cmd('ci runner list', 'The repository\'s runners.', {'count': I, 'runners': A(OBJ)}, ['count', 'runners'])
-cmd('ci runner revoke', 'A runner no longer trusted.', {'status': E('revoked', 'not_a_runner'), 'runner': S}, ['status', 'runner'])
+cmd('ci runner revoke', 'A runner no longer trusted (on an organization\'s repository: the request for it).', {
+    **ORG_REQUESTED, 'status': E('revoked', 'not_a_runner', 'requested'), 'runner': S, 'repo': S}, ['status', 'runner'])
 cmd('ci report', 'A check run reported on a commit.', {
     'status': S, 'documentId': S, 'id': S, 'name': S, 'checkStatus': S, 'conclusion': nl(S), 'headOid': S,
     'logUrl': nl(S), 'logSha256': nl(S), 'artifacts': ANY, 'artifactsLeftOut': ANY, 'leftOut': ANY, 'url': nl(S),

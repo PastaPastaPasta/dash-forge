@@ -668,6 +668,7 @@ mod tests {
             cid: "",
             slot: "high",
             forge,
+            roster: None,
         }
     }
 
@@ -859,8 +860,12 @@ mod tests {
         use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType;
         let doc = &intent["document"];
         let doc_type = doc["documentType"].as_str().unwrap();
-        let home = ForgeContract::of(doc_type).unwrap();
-        let mut dc = (*rc1::loaded(home).0).clone();
+        let loaded = if doc_type == "org" {
+            rc1::loaded_org()
+        } else {
+            rc1::loaded(ForgeContract::of(doc_type).unwrap())
+        };
+        let mut dc = (*loaded.0).clone();
         dc.set_id(parse_id(intent["contractId"].as_str().unwrap(), "contract").unwrap());
         let props: BTreeMap<String, FieldValue> = {
             let schema = dc.document_type_for_name(doc_type).unwrap();

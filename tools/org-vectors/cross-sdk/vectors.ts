@@ -7,7 +7,10 @@ import type { WriteSpec } from '../../../forge-web/lib/org/transition'
 
 export const FIXTURE = fileURLToPath(new URL('../../../forge-contracts/fixtures/org/cross-sdk.json', import.meta.url))
 
-export const forge = forgeV2Ids(DEPLOYMENTS['testnet']) as Required<ForgeIds>
+const testnet = forgeV2Ids(DEPLOYMENTS['testnet']) as ForgeIds
+/** forge-org on testnet. */
+export const ORG_CONTRACT = testnet.org as string
+export const forge = { ...testnet, org: ORG_CONTRACT } as Required<ForgeIds>
 export const ORG = '7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL'
 export const KEY_ID = 2
 export const SIGNER = { keyId: KEY_ID, cid: '72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964', slot: 'high' }
@@ -19,6 +22,17 @@ const org = Uint8Array.from(Buffer.from('676fead90056accbb6b46c02ed6836b234f7fcb
 const repoId = bytes(9)
 const alice = bytes(5)
 const runner = bytes(6)
+const fill = (n: number, len: number): Uint8Array => new Uint8Array(len).fill(n)
+const roster = {
+  room: 'a52b096e14d5b482f1d9462bd59c8e7b',
+  relay: 'https://multisig.dashhq.org',
+  cid: bytes(0x21),
+  keyId: 2,
+  groupKey: fill(0x22, 48),
+  threshold: 2,
+  members: fill(0x23, 96),
+  pubShares: fill(0x24, 144),
+}
 
 export interface Vector {
   readonly label: string
@@ -44,6 +58,8 @@ export const VECTORS: readonly Vector[] = [
   { label: 'runner delete', nonce: 3n, spec: { action: 'delete', contractId: forge.community, documentType: 'runner', documentId: id(0x15) } },
   { label: 'profile create', nonce: 5n, entropy: bytes(0x49), spec: { action: 'create', contractId: forge.meta, documentType: 'profile', data: { displayName: 'Acme', bio: 'We make widgets.', links: ['https://multisig.dashhq.org/'] } } },
   { label: 'profile replace', nonce: 6n, spec: { action: 'replace', contractId: forge.meta, documentType: 'profile', documentId: id(0x16), revision: 1n, data: { displayName: 'Acme Inc', bio: 'We make widgets.', links: ['https://multisig.dashhq.org/', 'https://acme.example/'] } } },
+  { label: 'org create (publish the roster)', nonce: 1n, entropy: bytes(0x4a), spec: { action: 'create', contractId: ORG_CONTRACT, documentType: 'org', data: roster } },
+  { label: 'org replace (publish again)', nonce: 2n, spec: { action: 'replace', contractId: ORG_CONTRACT, documentType: 'org', documentId: id(0x17), revision: 1n, data: { ...roster, threshold: 3 } } },
 ]
 
 export interface FixtureVector {

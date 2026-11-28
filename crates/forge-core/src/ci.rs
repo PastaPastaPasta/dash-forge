@@ -233,6 +233,17 @@ impl<'a> RunnerReader<'a> {
     }
 }
 
+/// A `runner` document enrolling `member` in `repo` (an organization's request builds the same).
+pub fn runner_props(
+    repo: &RepoRef,
+    member: &str,
+) -> Result<std::collections::BTreeMap<String, FieldValue>> {
+    Ok(repo.scope()?.props([(
+        "memberId",
+        FieldValue::identifier(platform::decode_identifier(member)?),
+    )]))
+}
+
 /// Runner membership writes, signed by the repo owner.
 pub struct RunnerService<'a> {
     client: &'a PlatformClient,
@@ -277,10 +288,7 @@ impl<'a> RunnerService<'a> {
             return Ok(existing);
         }
         let community = self.client.fetch_contract(&repo.forge().community).await?;
-        let props = repo.scope()?.props([(
-            "memberId",
-            FieldValue::identifier(platform::decode_identifier(member)?),
-        )]);
+        let props = runner_props(repo, member)?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         match engine.create_document(&community, DOC_RUNNER, props).await {
             Ok(document_id) => Ok(Runner {

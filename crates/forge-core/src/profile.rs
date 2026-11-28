@@ -227,6 +227,60 @@ fn edited_values(fields: &ProfileFields) -> BTreeMap<String, Option<FieldValue>>
     ])
 }
 
+/// A new profile's properties holding `fields`.
+pub fn created_props(fields: &ProfileFields) -> BTreeMap<String, FieldValue> {
+    edited_values(fields)
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k, v)))
+        .collect()
+}
+
+/// A stored profile's properties with the edited fields set to `fields`: every other property
+/// (`pubkeys`, `bot`) is kept, as a personal replace keeps it.
+pub fn replaced_props(
+    stored: &BTreeMap<String, FieldValue>,
+    fields: &ProfileFields,
+) -> BTreeMap<String, FieldValue> {
+    let mut out: BTreeMap<String, FieldValue> = stored
+        .iter()
+        .filter(|(k, _)| !k.starts_with('$'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (k, v) in edited_values(fields) {
+        match v {
+            Some(v) => {
+                out.insert(k, v);
+            }
+            None => {
+                out.remove(&k);
+            }
+        }
+    }
+    out
+}
+
+/// `identity_id`'s profile document as stored, if any.
+pub async fn read_profile_doc(
+    client: &PlatformClient,
+    forge: &ForgeIds,
+    identity_id: &str,
+) -> Result<Option<FetchedDocument>> {
+    let profiles = client.fetch_contract(forge.home(DOC_PROFILE)).await?;
+    let owner = platform::decode_identifier(identity_id)?;
+    Ok(client
+        .query_documents(
+            &profiles,
+            DOC_PROFILE,
+            &[QueryFilter::eq("$ownerId", FieldValue::identifier(owner))],
+            &[],
+            1,
+            None,
+        )
+        .await?
+        .into_iter()
+        .next())
+}
+
 /// Normalize `input` by the shared rule, or every field it breaks with why (nothing signed).
 pub fn normalize(input: &ProfileInput) -> std::result::Result<ProfileFields, Vec<String>> {
     match check_profile(input).normalized {
@@ -264,10 +318,7 @@ pub async fn write_profile(
     let values = edited_values(fields);
     match existing {
         None => {
-            let props: BTreeMap<String, FieldValue> = values
-                .into_iter()
-                .filter_map(|(k, v)| v.map(|v| (k, v)))
-                .collect();
+            let props = created_props(fields);
             let id = engine
                 .create_document(&profiles, DOC_PROFILE, props)
                 .await?;
@@ -330,6 +381,32 @@ mod tests {
             "a set field is written"
         );
         assert!(!values.contains_key("pubkeys"));
+    }
+
+    #[test]
+    fn an_organizations_replace_keeps_its_other_properties() {
+        let stored = BTreeMap::from([
+            ("$revision".to_string(), FieldValue::Integer(3)),
+            ("bio".to_string(), FieldValue::text("old")),
+            (
+                "pubkeys".to_string(),
+                FieldValue::text_list(vec!["ssh-ed25519 AAAA".to_string()]),
+            ),
+        ]);
+        let fields = ProfileFields {
+            display_name: Some("Acme".into()),
+            links: Some(vec!["https://acme.dev".into()]),
+            ..ProfileFields::default()
+        };
+        let props = replaced_props(&stored, &fields);
+        assert!(!props.contains_key("$revision"));
+        assert!(!props.contains_key("bio"), "a cleared field is removed");
+        assert_eq!(props["displayName"], FieldValue::text("Acme"));
+        assert_eq!(props["pubkeys"], stored["pubkeys"]);
+        assert_eq!(
+            created_props(&fields).keys().collect::<Vec<_>>(),
+            vec!["displayName", "links"]
+        );
     }
 
     #[test]

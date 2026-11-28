@@ -105,6 +105,30 @@ fn contracts() -> &'static [DataContract; 3] {
     })
 }
 
+/// forge-org (`contracts/org/forge-org.json`), fully validated, owned by [`OWNER`].
+#[cfg(test)]
+pub(crate) fn loaded_org() -> crate::platform::LoadedContract {
+    static PARSED: OnceLock<DataContract> = OnceLock::new();
+    let contract = PARSED.get_or_init(|| {
+        let path = format!("{}/contracts/org/forge-org.json", root());
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let file: Json = serde_json::from_str(&text).expect("contract JSON");
+        let owner = Identifier::from(OWNER);
+        let id = DataContract::generate_data_contract_id_v0(owner, 9);
+        let mut json = serde_json::json!({
+            "$formatVersion": "1",
+            "version": 1,
+            "config": file["config"],
+            "documentSchemas": file["documentSchemas"],
+        });
+        json["id"] = Json::String(id.to_string(Encoding::Base58));
+        json["ownerId"] = Json::String(owner.to_string(Encoding::Base58));
+        DataContract::from_json(json, true, platform_version())
+            .unwrap_or_else(|e| panic!("forge-org fails full validation: {e}"))
+    });
+    crate::platform::LoadedContract::for_tests(contract.clone())
+}
+
 /// A generated contract as the client loads it: for tests of what the client reads off a
 /// contract's shape (the RC2 build flags).
 #[cfg(test)]

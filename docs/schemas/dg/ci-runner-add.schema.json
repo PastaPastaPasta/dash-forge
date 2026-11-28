@@ -2,17 +2,40 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ci-runner-add.schema.json",
   "title": "dg ci runner add --json",
-  "description": "A runner enrolled.",
+  "description": "A runner enrolled (on an organization's repository: the request for it).",
   "type": "object",
   "properties": {
     "schemaVersion": {
       "const": 1
     },
+    "org": {
+      "type": "string"
+    },
+    "orgId": {
+      "type": "string"
+    },
+    "requestId": {
+      "type": "string",
+      "description": "The request the members sign with `dg org sign <requestId>`."
+    },
+    "title": {
+      "type": "string"
+    },
+    "collected": {
+      "type": "integer"
+    },
+    "threshold": {
+      "type": "integer"
+    },
+    "signCommand": {
+      "type": "string"
+    },
     "status": {
       "type": "string",
       "enum": [
         "enrolled",
-        "exists"
+        "exists",
+        "requested"
       ]
     },
     "runner": {
@@ -29,6 +52,9 @@
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
+    },
+    "repo": {
+      "type": "string"
     }
   },
   "required": [

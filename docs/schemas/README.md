@@ -127,6 +127,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg org finish` | [`org-finish.schema.json`](dg/org-finish.schema.json) |
 | `dg org list` | [`org-list.schema.json`](dg/org-list.schema.json) |
 | `dg org migrate` | [`org-migrate.schema.json`](dg/org-migrate.schema.json) |
+| `dg org publish` | [`org-publish.schema.json`](dg/org-publish.schema.json) |
 | `dg org requests` | [`org-requests.schema.json`](dg/org-requests.schema.json) |
 | `dg org show` | [`org-show.schema.json`](dg/org-show.schema.json) |
 | `dg org sign` | [`org-sign.schema.json`](dg/org-sign.schema.json) |

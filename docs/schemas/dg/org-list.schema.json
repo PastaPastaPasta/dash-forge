@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-list.schema.json",
   "title": "dg org list --json",
-  "description": "The organizations connected on this computer for the network (public values only).",
+  "description": "The organizations connected on this computer or found through the signed-in identity's orgMember documents, for the network (public values only).",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -78,6 +78,13 @@
           "members"
         ]
       }
+    },
+    "connectAgain": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Organizations the signed-in identity is bound to whose current key no longer includes its member key."
     }
   },
   "required": [
