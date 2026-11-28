@@ -122,7 +122,7 @@ git clone https://testnet-git-forge.dashhq.org/<owner>/<repo>.git  # testnet
 - **Read only.** Push with `dash://`.
 - **Public repositories only.** A private one answers "no public repository".
 - **The first clone of a repository it hasn't copied yet** can take a minute; until then the server says so and you can retry.
-- **Check it** against Dash Platform with **Verify** in the Clone card, or `dg verify-mirror <url>` (add `--network testnet` for the testnet gateway). Anyone can run their own: [forge-gateway](hosting/forge-gateway.md).
+- **Check it** against Dash Platform with **Verify** in the Clone card, or `dg verify-mirror <url> --network mainnet` (`--network testnet` for the testnet gateway). Anyone can run their own: [forge-gateway](hosting/forge-gateway.md).
 
 ## I lost my laptop. Is my code gone?
 
