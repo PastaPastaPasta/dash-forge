@@ -9,7 +9,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { ForgeContractKind, ForgeIds } from '../deployments'
 import { base64ToBytes, hexToBase64, queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk/query'
 import { createDocumentIdempotent, type WriteAuth } from '../sdk/write'
-import { base58Encode } from '../auth/base58'
+import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { DOC_ORG, DOC_ORG_MEMBER, DOC_ORG_MESSAGE, DOC_ORG_SHARE, FMT_DEFLATE, FMT_JSON, MAX_PARTS, PART_BYTES, SEALED_SHARE_MAX, type MemberRow, type MessagePart, type MessageRow, type RosterFields, type ShareRow } from './platform'
 import { hex } from './util'
 
@@ -203,10 +203,10 @@ export function platformOrgPort(sdk: EvoSDK, contractId: string): OrgPort {
       return row !== null && row.org === orgId && row.ownerId === ownerId && hex(row.cid) === cid ? row : null
     },
     async writeShare(auth, f, intent) {
-      await createDocumentIdempotent(sdk, auth, { contractId, documentType: DOC_ORG_SHARE, data: { ...f }, contentKey: `share:${f.org}:${hex(f.cid)}`, ...(intent ? { intent: `${intent}:share` } : {}) })
+      await createDocumentIdempotent(sdk, auth, { contractId, documentType: DOC_ORG_SHARE, data: { ...f, org: decodeIdentifier(f.org) }, contentKey: `share:${f.org}:${hex(f.cid)}`, ...(intent ? { intent: `${intent}:share` } : {}) })
     },
     async writeMember(auth, f, intent) {
-      await createDocumentIdempotent(sdk, auth, { contractId, documentType: DOC_ORG_MEMBER, data: { ...f }, contentKey: `member:${f.org}:${hex(f.authPub)}`, ...(intent ? { intent: `${intent}:member` } : {}) })
+      await createDocumentIdempotent(sdk, auth, { contractId, documentType: DOC_ORG_MEMBER, data: { ...f, org: decodeIdentifier(f.org) }, contentKey: `member:${f.org}:${hex(f.authPub)}`, ...(intent ? { intent: `${intent}:member` } : {}) })
     },
     async writeMessage(auth, orgId, parts, intent) {
       for (const p of parts) {
@@ -214,7 +214,7 @@ export function platformOrgPort(sdk: EvoSDK, contractId: string): OrgPort {
         await createDocumentIdempotent(sdk, auth, {
           contractId,
           documentType: DOC_ORG_MESSAGE,
-          data: { org: orgId, digest: p.digest, part: p.part, parts: p.parts, fmt: p.fmt, body: p.body },
+          data: { org: decodeIdentifier(orgId), digest: p.digest, part: p.part, parts: p.parts, fmt: p.fmt, body: p.body },
           contentKey: key,
           ...(intent ? { intent: `${intent}:${key}` } : {}),
         })
