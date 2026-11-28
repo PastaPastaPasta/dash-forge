@@ -11,7 +11,7 @@ use super::bls;
 use super::ceremony::receive_shares;
 use super::derive::{MemberKeys, Seed};
 use super::envelope::seal;
-use super::state::{ProposalStatus, RoomState};
+use super::state::RoomState;
 use super::OrgError;
 
 /// A member's secret shares of one ceremony, wiped on drop.
@@ -180,7 +180,7 @@ pub fn combine(
         .proposals
         .get(proposal_id)
         .ok_or_else(|| OrgError::Malformed(format!("unknown proposal {proposal_id}")))?;
-    if !matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed) {
+    if !p.status.is_signed() {
         return Err(OrgError::NotReady);
     }
     let message = p.signable();

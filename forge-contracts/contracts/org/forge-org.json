@@ -22,7 +22,7 @@
         "proof": { "type": "bytes", "size": 64, "position": 3 }
       },
       "indices": [
-        { "name": "byOrg", "properties": [{ "org": "asc" }, { "$ownerId": "asc" }], "unique": true },
+        { "name": "byOrg", "properties": [{ "org": "asc" }, { "$ownerId": "asc" }, { "authPub": "asc" }], "unique": true },
         { "name": "byKey", "properties": [{ "org": "asc" }, { "authPub": "asc" }, { "$createdAt": "asc" }] },
         { "name": "byOwner", "properties": [{ "$ownerId": "asc" }, { "org": "asc" }] }
       ],

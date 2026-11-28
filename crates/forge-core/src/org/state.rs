@@ -113,6 +113,13 @@ pub enum ProposalStatus {
     Invalid,
 }
 
+impl ProposalStatus {
+    /// Enough valid shares (ready, or reported broadcast).
+    pub fn is_signed(self) -> bool {
+        matches!(self, Self::Ready | Self::Executed)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Approval {
     pub id: String,
@@ -185,11 +192,12 @@ impl Proposal {
     /// The decoded transition's action (`create`, `replace`, `delete`, …), empty when it does
     /// not decode.
     pub fn action(&self) -> String {
-        hex::decode(self.unsigned_hex())
-            .ok()
-            .and_then(|b| crate::platform::org::decode_unsigned(&b).ok())
-            .map(|d| d.action)
-            .unwrap_or_default()
+        self.decoded().map(|d| d.action).unwrap_or_default()
+    }
+
+    /// The decoded unsigned transition, when it decodes.
+    pub fn decoded(&self) -> Option<crate::platform::org::DecodedWrite> {
+        crate::platform::org::decode_unsigned(&hex::decode(self.unsigned_hex()).ok()?).ok()
     }
 
     pub fn note(&self) -> Option<&str> {

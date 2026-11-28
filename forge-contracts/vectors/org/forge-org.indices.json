@@ -1,13 +1,14 @@
 [
  {
   "item": "ORG",
-  "name": "one binding per organization and member identity",
+  "name": "one binding per organization, member identity and participant key",
   "type": "orgMember",
   "index": "byOrg",
   "expect": "present",
   "properties": [
    "org",
-   "$ownerId"
+   "$ownerId",
+   "authPub"
   ],
   "has": {
    "unique": true
