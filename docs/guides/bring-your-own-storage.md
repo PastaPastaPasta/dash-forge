@@ -343,7 +343,7 @@ To let readers (and the web app) know where this repo's packs live, advertise th
 dg storage advertise <owner>/<repo>
 ```
 
-A **new** repository needs none of this: `dg repo create --push --storage r2-main` and `dg init --storage r2-main` write the advertised mode and read bases into the repository's first config, set `dash.storage` (and `dash.replicas` when you pass `--replicas`) in the repository's own git config, and push. Without `--storage` they use `dash.storage` from git config (this repository's, then your global one), then your only profile if you have exactly one. With none of those they stop **before creating anything** ([E508](../errors.md#e508)) and quote what Platform storage would cost for this repository; pass `--storage platform` to accept that price.
+A **new** repository needs none of this: `dg repo create --push --storage r2-main` and `dg init --storage r2-main` write the advertised mode and read bases into the repository's first config, set `dash.storage` (and `dash.replicas` when you pass `--replicas`) in the repository's own git config, and push. Without `--storage` they use `dash.storage` from git config (this repository's, then your global one), then your only profile if you have exactly one (a Dash Platform profile, `kind = "platform"`, counts when it is the only one; `dash.storage` records it as `platform`). With none of those they stop **before creating anything** ([E508](../errors.md#e508)) and quote what Platform storage would cost for this repository; pass `--storage platform` to accept that price.
 
 ## Public addresses
 

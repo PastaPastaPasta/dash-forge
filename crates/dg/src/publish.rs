@@ -4,7 +4,8 @@
 //!
 //! Everything that can refuse runs **before anything is spent** ([`plan`]): the identity,
 //! the local repository and its remote, then the storage — `--storage` > git config
-//! `dash.storage` (this repo's, then the global one) > the user's only storage profile > a
+//! `dash.storage` (this repo's, then the global one) > the user's only storage profile (one
+//! external profile, or with none, synced ones included, a saved Platform profile) > a
 //! picker (in a terminal) > stop with E508, pricing what Platform storage would cost — and,
 //! for a push, that every storage secret resolves and that `git-remote-dash` gets the key this
 //! run unlocked (a sealed key's passphrase is asked once; the key reaches the helper over an
@@ -496,7 +497,13 @@ async fn choose_storage(ctx: &Ctx, opts: &CreateOptions, size: Option<u64>) -> R
         .filter(|(_, p)| !p.is_platform())
         .map(|(n, _)| n.clone())
         .collect();
-    if let [only] = external.as_slice() {
+    // A saved Platform profile is not the only storage when sync brings external profiles
+    // (which this choice does not list): those keep the picker / E508, as before.
+    let only = match only_profile(&profiles, &external) {
+        Some(_) if external.is_empty() && synced_external(ctx, &profiles).await => None,
+        only => only,
+    };
+    if let Some(only) = only {
         return resolve(
             &profiles,
             only,
@@ -555,6 +562,30 @@ async fn choose_storage(ctx: &Ctx, opts: &CreateOptions, size: Option<u64>) -> R
         }
     };
     resolve(&profiles, &spec, replicas.as_deref(), None, Source::Prompt)
+}
+
+/// The user's only storage: their one external profile, else (with none) a Platform profile
+/// they saved (`dg storage add` → Dash Platform), which says they chose Platform's price.
+fn only_profile<'a>(profiles: &'a StorageProfiles, external: &'a [String]) -> Option<&'a str> {
+    match external {
+        [only] => Some(only),
+        [] => profiles
+            .profiles
+            .iter()
+            .find(|(_, p)| p.is_platform())
+            .map(|(n, _)| n.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether settings sync adds an external profile `storage.toml` does not have.
+async fn synced_external(ctx: &Ctx, local: &StorageProfiles) -> bool {
+    crate::sync::merged(ctx, local)
+        .await
+        .profiles
+        .profiles
+        .values()
+        .any(|p| !p.is_platform())
 }
 
 /// The storage picker's choices, in order: Platform (the default: nothing to set up), the
@@ -1807,6 +1838,40 @@ mod tests {
         // Without a size, just the rate.
         assert_eq!(platform_price(None), "~0.39 DASH/MiB");
         assert_eq!(platform_price(Some(0)), "~0.39 DASH/MiB");
+    }
+
+    #[test]
+    fn a_saved_platform_profile_is_the_only_storage_when_there_is_no_other() {
+        let external = |p: &StorageProfiles| -> Vec<String> {
+            p.profiles
+                .iter()
+                .filter(|(_, p)| !p.is_platform())
+                .map(|(n, _)| n.clone())
+                .collect()
+        };
+        let chain = StorageProfiles::parse("[profiles.chain]\nkind = \"platform\"\n").unwrap();
+        let chain_external = external(&chain);
+        let only = only_profile(&chain, &chain_external).unwrap();
+        assert_eq!(only, "chain");
+        let r = StoragePolicy::from_git_values(Some(only), None, None)
+            .unwrap()
+            .resolve(&chain)
+            .unwrap();
+        assert!(r.platform && r.external.is_empty());
+        assert_eq!(r.target_names(), vec!["platform".to_string()]);
+        let none = StorageProfiles::default();
+        assert_eq!(only_profile(&none, &[]), None);
+        // One external profile beside it is still the one used, as before.
+        let both = StorageProfiles::parse(
+            "[profiles.chain]\nkind = \"platform\"\n[profiles.r2]\nkind = \"s3\"\nendpoint = \"https://a.r2.cloudflarestorage.com\"\nbucket = \"b\"\n",
+        )
+        .unwrap();
+        assert_eq!(only_profile(&both, &external(&both)), Some("r2"));
+        let two = StorageProfiles::parse(
+            "[profiles.chain]\nkind = \"platform\"\n[profiles.r2]\nkind = \"s3\"\nendpoint = \"https://a.r2.cloudflarestorage.com\"\nbucket = \"b\"\n[profiles.k]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001\"\n",
+        )
+        .unwrap();
+        assert_eq!(only_profile(&two, &external(&two)), None);
     }
 
     #[test]

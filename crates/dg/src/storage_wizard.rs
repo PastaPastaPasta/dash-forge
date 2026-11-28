@@ -556,7 +556,11 @@ pub async fn run(p: &mut dyn Prompter, origin: &'static str) -> Result<Added> {
         .unwrap_or_default();
     println!("Saved {}{stored}", tilde(&path));
     println!("Equivalent: {}", equivalent_command(&args));
-    println!("Use it in a repo: dg storage use {name}");
+    if profile.is_platform() {
+        println!("Dash Platform is built in (`platform` names it too): `dg init` and `dg repo create` use it when no dash.storage is set and you have no other storage, and `dg storage use {name}` sets it for a repo");
+    } else {
+        println!("Use it in a repo: dg storage use {name}");
+    }
 
     if !profile.is_platform() && !broken && !global_storage_set() {
         // The profile is saved already: Ctrl-D here means "no", not a failed command.

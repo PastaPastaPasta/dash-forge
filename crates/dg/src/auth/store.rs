@@ -157,6 +157,9 @@ pub struct Storer {
     /// Never use the keychain (a full identity with its master key).
     pub no_keychain: bool,
     pass: Option<Secret>,
+    /// Whether this storer already said the OS keychain refused a key: a sign-in stores more
+    /// than once (the pending key, then the confirmed one), and one line says it.
+    keychain_noted: bool,
     /// Where this storer last put a pending key, and the key, so [`promote`] removes that copy
     /// only while it still holds this run's key.
     staged: Option<(Stored, Secret)>,
@@ -212,6 +215,7 @@ impl Storer {
     ) -> Result<Stored> {
         let mut sync_keychain_failed = None;
         let mut keychain_failed = false;
+        let mut keychain_refused = false;
         if !self.no_keychain && keychain::available() {
             let acct = account(network, identity_id, slot);
             // An entry that can't be read is left as it is (it can't be copied first), and the
@@ -238,8 +242,9 @@ impl Storer {
                         }
                         Err(e) if slot == Slot::Sync => Some(e.into()),
                         Err(e) => {
-                            eprintln!("note: the keychain refused the key ({e}); using a file");
+                            tracing::debug!("the keychain refused the key: {e}");
                             keychain_failed = true;
+                            keychain_refused = true;
                             None
                         }
                     }
@@ -264,7 +269,20 @@ impl Storer {
         }
         let stored = self.write_file(network, identity_id, text, slot, keychain_failed)?;
         if let Some(e) = sync_keychain_failed {
-            eprintln!("{}", sync_file_note(&e, &stored));
+            tracing::debug!("the keychain refused the settings-sync key: {e:#}");
+            eprintln!("{}", sync_file_note(&stored));
+        } else if keychain_refused && !std::mem::replace(&mut self.keychain_noted, true) {
+            if let Stored::Sealed(p) | Stored::Plaintext(p) = &stored {
+                // A pending key is named as the file it ends up in (as the passphrase prompt does).
+                let main = (slot == Slot::Pending)
+                    .then(|| slot_file(network, identity_id, Slot::Main).ok())
+                    .flatten();
+                let sealed = matches!(stored, Stored::Sealed(_));
+                eprintln!(
+                    "{}",
+                    keychain_refused_note(main.as_deref().unwrap_or(p), sealed)
+                );
+            }
         }
         Ok(stored)
     }
@@ -408,8 +426,22 @@ fn sync_fallback(entry: forge_core::error::Result<Option<Secret>>, text: &Secret
     }
 }
 
-/// The line saying the sync key went to a file because the keychain failed (`e`).
-fn sync_file_note(e: &anyhow::Error, stored: &Stored) -> String {
+/// The one line for a key the OS keychain did not take; the store's own error goes to
+/// `RUST_LOG=debug`.
+fn keychain_refused_note(path: &std::path::Path, sealed: bool) -> String {
+    format!(
+        "note: no usable OS keychain here, so the key is {} {}",
+        if sealed {
+            "sealed in"
+        } else {
+            "kept unencrypted in"
+        },
+        path.display()
+    )
+}
+
+/// The line saying the sync key went to a file because the keychain failed.
+fn sync_file_note(stored: &Stored) -> String {
     let (path, sealed) = match stored {
         Stored::Sealed(p) => (p, true),
         Stored::Plaintext(p) => (p, false),
@@ -418,7 +450,7 @@ fn sync_file_note(e: &anyhow::Error, stored: &Stored) -> String {
         }
     };
     format!(
-        "note: the OS keychain failed ({e:#}), so the settings-sync key is kept in {}{}",
+        "note: no usable OS keychain here, so the settings-sync key is kept in {}{}",
         path.display(),
         if sealed {
             " (dg and git read it when DASH_FORGE_PASSPHRASE is set)"
@@ -935,6 +967,17 @@ pub fn set_default(ctx: &Ctx, identity_id: &str, source: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_keychain_is_one_plain_line_naming_the_file() {
+        let p = std::path::Path::new("/h/.config/dash-forge/identities/testnet-ID.key");
+        assert_eq!(
+            keychain_refused_note(p, true),
+            "note: no usable OS keychain here, so the key is sealed in /h/.config/dash-forge/identities/testnet-ID.key"
+        );
+        assert!(keychain_refused_note(p, false).contains("kept unencrypted in"));
+        assert!(!Storer::default().keychain_noted);
+    }
 
     /// #664 review: the keychain refusing the key never writes over a master key (or a key that
     /// does not open) nobody was asked about; a limited key there is replaced as usual.
