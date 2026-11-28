@@ -9,7 +9,7 @@ import { DEPLOYMENTS, forgeV2Ids, type ForgeIds } from '../deployments'
 import { membershipData } from '../repo/writes'
 import type { RepoRef } from '../repo/contract'
 import { verify } from './bls'
-import { approveEnvelope, connect, createRequest, myShare, declineRequest, finishRequest, freeNonces, loadOrg, resetOrgCaches, signRequest, verifyInvite, type ConnectCandidate } from './service'
+import { approveEnvelope, connect, createRequest, myShare, declineRequest, finishRequest, freeNonces, loadOrg, openNonces, resetOrgCaches, signRequest, verifyInvite, type ConnectCandidate } from './service'
 import { fakeOrgPort, type FakeOrgPort } from './fake-port'
 import { encodeMessage } from './platform'
 import { rosterFields, rosterFromIdentity } from './roster'
@@ -323,6 +323,19 @@ describe('organization requests on Platform', () => {
     expect(freeNonces(['c'], () => 33n | (1n << 40n), held)).toEqual([35n])
     const full = new Map([['c', new Set(Array.from({ length: 24 }, (_, i) => 11n + BigInt(i)))]])
     expect(() => freeNonces(['c'], () => 10n, full)).toThrow(/hold every nonce/)
+  })
+
+  it('a part that can never land frees its nonce unless a member claimed it', () => {
+    const part = (nonce: bigint, status: string, superseded: boolean) => ({
+      request: { proposals: [{ id: `p${nonce}`, status, from: 'm1', approvals: {}, rejections: {} }] },
+      proposals: [{ decoded: { contractId: 'c', nonce, ownerId: 'org' }, superseded }],
+    })
+    const view = {
+      record: { orgId: 'org' },
+      roster: { members: ['m1', 'm2', 'm3'], threshold: 2 },
+      requests: [part(11n, 'ready', true), part(12n, 'executed', true), part(13n, 'ready', false)],
+    } as unknown as Parameters<typeof openNonces>[0]
+    expect([...(openNonces(view).get('c') ?? [])].sort()).toEqual([12n, 13n])
   })
 
   it('a phrase that is not this record\'s member cannot create a request', async () => {

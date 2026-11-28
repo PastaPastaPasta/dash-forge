@@ -277,7 +277,7 @@ export interface ProposalView {
   /** A create reported done whose document is no longer on Platform. */
   readonly gone: boolean
   readonly nonceUnread: boolean
-  /** It can never land, so it holds no nonce (§9). */
+  /** It can never land, so it holds no nonce unless a member claimed it (§9, §11.6). */
   readonly superseded: boolean
 }
 
@@ -527,16 +527,17 @@ export function requestLink(orgId: string, id: string): string {
  * that the room accepted and that writes as the organization, whatever its request's status (a
  * landed nonce is at or below the tip, below anything handed out; a later part of an overtaken
  * request keeps its nonce until the tip passes it). A request still collecting that enough
- * members declined, without approving, holds none. dg holds by the same rule (`Org::open_nonces`).
+ * members declined, without approving, holds none, and so does a part that can never land, unless a
+ * member claimed it. dg holds by the same rule (`Org::held_nonces`).
  */
-function openNonces(view: OrgView): Map<string, Set<bigint>> {
+export function openNonces(view: OrgView): Map<string, Set<bigint>> {
   const held = new Map<string, Set<bigint>>()
   const members = new Set(view.roster.members)
   for (const r of view.requests) {
     if (declinedOut(r.request, members, view.roster.threshold)) continue
     for (const [i, p] of r.request.proposals.entries()) {
       const d = r.proposals[i]?.decoded
-      if (!d || p.status === 'invalid' || r.proposals[i]?.superseded || !members.has(p.from) || d.ownerId !== view.record.orgId) continue
+      if (!d || p.status === 'invalid' || (r.proposals[i]?.superseded && p.status !== 'executed') || !members.has(p.from) || d.ownerId !== view.record.orgId) continue
       const set = held.get(d.contractId) ?? new Set<bigint>()
       set.add(d.nonce)
       held.set(d.contractId, set)
