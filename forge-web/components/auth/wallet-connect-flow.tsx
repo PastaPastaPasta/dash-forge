@@ -643,7 +643,7 @@ export function WalletConnectFlow({
   return (
     <div className="space-y-3" data-testid="wallet-request">
       {request ? (
-        <p className="text-center text-[15px] font-medium">{mode === 'renew' ? 'Approve in your wallet' : 'Scan with your Dash wallet'}</p>
+        <p className="text-center text-[15px] font-medium">{mode === 'renew' ? 'Approve in your wallet' : mobile ? 'Open your Dash wallet' : 'Scan with your Dash wallet'}</p>
       ) : null}
       {request ? (
         <>
@@ -729,7 +729,7 @@ function CopyId({ id }: { id: string }): JSX.Element {
 const MOBILE_LINK = 'flex w-full items-center justify-center gap-2 rounded-md bg-forge-700 px-4 py-3 text-dense font-medium text-white hover:bg-forge-800'
 const DESKTOP_LINK = 'inline-flex items-center gap-1.5 rounded-md border border-anvil-300 px-3 py-1.5 text-[13px] hover:bg-anvil-50 dark:border-anvil-700 dark:hover:bg-anvil-850'
 
-/** Copies the request link (for a wallet on this device that did not open from the button). */
+/** Copies the request link without its callback, to paste into a wallet on any device (DashPay Desktop, another phone). */
 function CopyLink({ uri }: { uri: string }): JSX.Element {
   const [copied, copy] = useCopy(uri)
   return (
