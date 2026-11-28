@@ -43,6 +43,15 @@ describe('which keys Forge signs with', () => {
     expect(isForgeContract(synced, synced.user)).toBe(false)
   })
 
+  it('lets a group-bound key sign on forge-org, never a key bound to one Forge contract', () => {
+    const orgs = { ...FORGE, org: 'OrgContractId11111111111111111111111111111' }
+    expect(scopeCovers(keyScope(bound({ $type: 'contractGroup', id: FORGE.group }), orgs)!, orgs, orgs.org)).toBe(true)
+    expect(scopeCovers(keyScope(bound({ $type: 'singleContract', id: FORGE.core }), orgs)!, orgs, orgs.org)).toBe(false)
+    expect(isSigningContract(orgs, orgs.org)).toBe(true)
+    expect(isSigningContract(FORGE, orgs.org)).toBe(false)
+    expect(isForgeContract(orgs, orgs.org)).toBe(false)
+  })
+
   it('scopes keys over three contracts: a forge-community key covers forge-community only', () => {
     const three = { ...FORGE, community: 'CommunityContractId1111111111111111111111111' }
     expect(keyScope(bound({ $type: 'singleContract', id: three.community }), three)).toEqual({ core: false, collab: false, community: true, meta: true, unbounded: false })

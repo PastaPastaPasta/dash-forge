@@ -1,0 +1,2406 @@
+[
+ {
+  "item": "ORG",
+  "name": "orgMember ok",
+  "type": "orgMember",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember with another property",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   },
+   "extra": 1
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare ok",
+  "type": "orgShare",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare with another property",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   },
+   "extra": 1
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org ok",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org with another property",
+  "type": "org",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   },
+   "extra": 1
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage ok",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage with another property",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   },
+   "extra": 1
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember.room of 64 characters",
+  "type": "orgMember",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember.room of 65 characters",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember.room empty",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "minLength",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.room of 64 characters",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.room of 65 characters",
+  "type": "org",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "room": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.room empty",
+  "type": "org",
+  "expect": "refused",
+  "why": "minLength",
+  "doc": {
+   "room": "",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember.authPub of the wrong size",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     31
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember.proof of the wrong size",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     2,
+     31
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember without org",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember without room",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember without authPub",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember without proof",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember with a sealed share (orgShare holds it)",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
+   },
+   "sealedShare": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.cid of 31 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     31
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.cid of 33 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     33
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 1 bytes",
+  "type": "orgShare",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     1
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 128 bytes",
+  "type": "orgShare",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     128
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 0 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     0
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 129 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     129
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare without org",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare without cid",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare without sealed",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without relay",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.relay of 200 characters",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.relay of 201 characters",
+  "type": "org",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.cid of 31 bytes",
+  "type": "org",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     31
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.groupKey of 47 bytes",
+  "type": "org",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     47
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.groupKey of 49 bytes",
+  "type": "org",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     49
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.keyId 0",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 0,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.keyId 4294967295",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 4294967295,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.keyId -1",
+  "type": "org",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": -1,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.keyId 4294967296",
+  "type": "org",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 4294967296,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.threshold 2",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.threshold 64",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 64,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.threshold 1",
+  "type": "org",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 1,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.threshold 65",
+  "type": "org",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 65,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.members of 64 bytes",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     64
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.members of 2048 bytes",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     2048
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.members of 63 bytes",
+  "type": "org",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     63
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.members of 2049 bytes",
+  "type": "org",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     2049
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.pubShares of 96 bytes",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     96
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.pubShares of 3072 bytes",
+  "type": "org",
+  "expect": "ok",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     3072
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.pubShares of 95 bytes",
+  "type": "org",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     95
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org.pubShares of 3073 bytes",
+  "type": "org",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     3073
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without room",
+  "type": "org",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without cid",
+  "type": "org",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without keyId",
+  "type": "org",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without groupKey",
+  "type": "org",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without threshold",
+  "type": "org",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without members",
+  "type": "org",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "org without pubShares",
+  "type": "org",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.digest of 31 bytes",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     31
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.part 0",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.part 15",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 15,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.part -1",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": -1,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.part 16",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 16,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.parts 1",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.parts 16",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 16,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.parts 0",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 0,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.parts 17",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 17,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.fmt 0",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.fmt 1",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 1,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.fmt -1",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": -1,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.fmt 2",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 2,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.body of 1 bytes",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     1
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.body of 5120 bytes",
+  "type": "orgMessage",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     5120
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.body of 0 bytes",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     0
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage.body of 5121 bytes",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "10417",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     5121
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage without org",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage without digest",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage without part",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "parts": 1,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage without parts",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "fmt": 0,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage without fmt",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "body": {
+    "$b": [
+     10,
+     600
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMessage without body",
+  "type": "orgMessage",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "digest": {
+    "$b": [
+     9,
+     32
+    ]
+   },
+   "part": 0,
+   "parts": 1,
+   "fmt": 0
+  }
+ }
+]

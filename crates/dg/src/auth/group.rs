@@ -388,6 +388,7 @@ mod tests {
             superseded_in_group: vec!["OLDCOLLAB".into()],
             group_owner: Some(DEPLOYER.into()),
             user: None,
+            org: None,
         }
     }
 

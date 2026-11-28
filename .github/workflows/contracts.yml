@@ -168,6 +168,15 @@ jobs:
           python3 forge-contracts/schema/vectors.py --mainnet --out "$RUNNER_TEMP/mainnet-vectors" --guards "$RUNNER_TEMP/guards"
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/guards/vectors" \
             "$RUNNER_TEMP"/guards/contracts/forge-{core,collab,community,meta}.json
+      # forge-user and forge-org: the extra contracts deploy-user.mjs and deploy-org.mjs register into the
+      # group (lib/group-contract.mjs), validated as the JSON they register, forge-org with its vectors
+      - name: Validate forge-user and forge-org
+        run: |
+          python3 forge-contracts/schema/org_vectors.py --check
+          node forge-contracts/scripts/deploy-user.mjs --emit "$RUNNER_TEMP/forge-user.json"
+          node forge-contracts/scripts/deploy-org.mjs --emit "$RUNNER_TEMP/forge-org.json"
+          "$CARGO_TARGET_DIR/release/contract-validate" "$RUNNER_TEMP/forge-user.json"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors forge-contracts/vectors/org "$RUNNER_TEMP/forge-org.json"
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
       # RC2: S1, S2, S3, C1 and MOD are build.py flags decided at registration (fee probes), so every
@@ -245,7 +254,7 @@ jobs:
       # the snapshot script's record and target rules. No SDK, no network, no key.
       - name: Deploy script offline tests
         run: |
-          node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/deploy-v2-replay.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs forge-contracts/scripts/launch-network.test.mjs forge-contracts/scripts/pages-network-guard.test.mjs
+          node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/deploy-v2-replay.test.mjs forge-contracts/scripts/lib/group-contract.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs forge-contracts/scripts/launch-network.test.mjs forge-contracts/scripts/pages-network-guard.test.mjs
       # Offline: the seed-list refresher (M-DAPI, CONT-12) against a captured /masternodes body:
       # only protocol-14 nodes, the stale-node rules, and the shape of every recorded seed list.
       # The live probe is `refresh-dapi.mjs --network testnet --check`, run by hand or nightly.

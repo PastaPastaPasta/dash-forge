@@ -31,8 +31,10 @@
 //!      validation every create and replace runs), then, as a node does on a create, the
 //!      `distinctFrom` and `encryptedFor` shape checks: each accepted case must pass and each
 //!      refused one must fail for the reason it names. `<dir>/<name>.replace.json` holds replaces
-//!      of a stored document, judged by the same property validation and then v5's `immutable`
-//!      check (a changed property listed by name, or under a condition that holds, is 40128);
+//!      of a stored document, refused outright (reason `documentsMutable`, a label of this tool,
+//!      not a consensus code) on a type that is not `documentsMutable`, else
+//!      judged by the same property validation and then v5's `immutable` check (a changed
+//!      property listed by name, or under a condition that holds, is 40128);
 //!      `<dir>/<name>.indices.json` says which indexes the parsed contract must (not) have;
 //!   6. serializes the contract and a signed-shape `DataContractCreateTransition` v1 and reports
 //!      both sizes against `max_state_transition_size` and the registration fee.
@@ -1045,6 +1047,17 @@ fn judge(
         StoredDocument, StoredSystemValues, StoredVersion,
     };
     let signer = case.owner.unwrap_or(owner);
+    if case.stored.is_some()
+        && !contract
+            .document_type_for_name(&case.doc_type)
+            .map_err(|e| anyhow!("{e}"))?
+            .documents_mutable()
+    {
+        return Ok(Some((
+            "documentsMutable".to_string(),
+            format!("{} documents are not mutable: no replace", case.doc_type),
+        )));
+    }
     // As consensus judges the write (and the JS pre-check `checkDocumentPropertyConstraints(doc,
     // stored)`, platform beta.5 #5373): a create is revision 1 with no stored version, so a rule
     // reading `$old.` or `$revision` is judged on it too; a replace is revision 2 of the stored

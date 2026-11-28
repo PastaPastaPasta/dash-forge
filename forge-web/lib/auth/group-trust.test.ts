@@ -44,6 +44,25 @@ describe('group trust: members', () => {
     expect(checkMembers(TRUST, members(['CORE', 'COLLAB', 'USER']), new Map([['USER', DEPLOYER]])).unknown).toEqual(['USER'])
   })
 
+  it('counts forge-org as a known member where the deployment records it', () => {
+    expect(checkMembers({ ...TRUST, org: 'ORG' }, members(['CORE', 'COLLAB', 'ORG']), new Map())).toEqual({ unknown: [], unchecked: [], notice: null })
+    expect(checkMembers(TRUST, members(['CORE', 'COLLAB', 'ORG']), new Map([['ORG', DEPLOYER]])).unknown).toEqual(['ORG'])
+  })
+
+  it('reads no forge-org on mainnet', () => {
+    expect(groupTrust(DEPLOYMENTS.mainnet)?.org).toBeUndefined()
+  })
+
+  it('reads forge-org only once it is registered in this group', () => {
+    const base = DEPLOYMENTS.testnet!
+    const group = groupTrust(base)!.group
+    const withOrg = (org: object) => groupTrust({ ...base, org })?.org
+    expect(withOrg({ contractId: 'ORG', contractGroupId: group, status: 'registered' })).toBe('ORG')
+    expect(withOrg({ contractId: 'ORG', contractGroupId: group, status: 'broadcasting' })).toBeUndefined()
+    expect(withOrg({ contractId: 'ORG', contractGroupId: group })).toBeUndefined()
+    expect(withOrg({ contractId: 'ORG', contractGroupId: 'OTHER', status: 'registered' })).toBeUndefined()
+  })
+
   it('reads forge-user from the testnet and mainnet deployments into the trust root', () => {
     const t = groupTrust(DEPLOYMENTS.testnet)!
     expect(t.user).toBe('46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU')

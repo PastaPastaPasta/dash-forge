@@ -1,0 +1,86 @@
+{
+  "$comment": "forge-org: organizations on Platform (docs/design/organizations.md §10). New contract, member of the dash-forge contract group. No rule or reference: readers verify every value (§10.2). Changes nothing in the other Forge contracts.",
+  "config": {
+    "$formatVersion": "2",
+    "canBeDeleted": false,
+    "readonly": false,
+    "keepsHistory": false,
+    "documentsKeepHistoryContractDefault": false,
+    "documentsMutableContractDefault": false,
+    "documentsCanBeDeletedContractDefault": false,
+    "sizedIntegerTypes": true
+  },
+  "documentSchemas": {
+    "orgMember": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "properties": {
+        "org": { "type": "identifier", "position": 0 },
+        "room": { "type": "string", "minLength": 1, "maxLength": 64, "position": 1 },
+        "authPub": { "type": "bytes", "size": 32, "position": 2 },
+        "proof": { "type": "bytes", "size": 64, "position": 3 }
+      },
+      "indices": [
+        { "name": "byOrg", "properties": [{ "org": "asc" }, { "$ownerId": "asc" }, { "authPub": "asc" }], "unique": true },
+        { "name": "byKey", "properties": [{ "org": "asc" }, { "authPub": "asc" }, { "$createdAt": "asc" }] },
+        { "name": "byOwner", "properties": [{ "$ownerId": "asc" }, { "org": "asc" }] }
+      ],
+      "required": ["$createdAt", "org", "room", "authPub", "proof"],
+      "additionalProperties": false
+    },
+    "orgShare": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "properties": {
+        "org": { "type": "identifier", "position": 0 },
+        "cid": { "type": "bytes", "size": 32, "position": 1 },
+        "sealed": { "type": "array", "byteArray": true, "minItems": 1, "maxItems": 128, "position": 2 }
+      },
+      "indices": [
+        { "name": "byCeremony", "properties": [{ "org": "asc" }, { "$ownerId": "asc" }, { "cid": "asc" }], "unique": true }
+      ],
+      "required": ["$createdAt", "org", "cid", "sealed"],
+      "additionalProperties": false
+    },
+    "org": {
+      "type": "object",
+      "documentsMutable": true,
+      "canBeDeleted": false,
+      "properties": {
+        "room": { "type": "string", "minLength": 1, "maxLength": 64, "position": 0 },
+        "relay": { "type": "string", "minLength": 1, "maxLength": 200, "position": 1 },
+        "cid": { "type": "bytes", "size": 32, "position": 2 },
+        "keyId": { "type": "integer", "minimum": 0, "maximum": 4294967295, "position": 3 },
+        "groupKey": { "type": "bytes", "size": 48, "position": 4 },
+        "threshold": { "type": "integer", "minimum": 2, "maximum": 64, "position": 5 },
+        "members": { "type": "array", "byteArray": true, "minItems": 64, "maxItems": 2048, "position": 6 },
+        "pubShares": { "type": "array", "byteArray": true, "minItems": 96, "maxItems": 3072, "position": 7 }
+      },
+      "indices": [
+        { "name": "owner", "properties": [{ "$ownerId": "asc" }], "unique": true }
+      ],
+      "required": ["$createdAt", "$updatedAt", "room", "cid", "keyId", "groupKey", "threshold", "members", "pubShares"],
+      "additionalProperties": false
+    },
+    "orgMessage": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "properties": {
+        "org": { "type": "identifier", "position": 0 },
+        "digest": { "type": "bytes", "size": 32, "position": 1 },
+        "part": { "type": "integer", "minimum": 0, "maximum": 15, "position": 2 },
+        "parts": { "type": "integer", "minimum": 1, "maximum": 16, "position": 3 },
+        "fmt": { "type": "integer", "minimum": 0, "maximum": 1, "position": 4 },
+        "body": { "type": "array", "byteArray": true, "minItems": 1, "maxItems": 5120, "position": 5 }
+      },
+      "indices": [
+        { "name": "log", "properties": [{ "org": "asc" }, { "$ownerId": "asc" }, { "$createdAt": "asc" }] }
+      ],
+      "required": ["$createdAt", "org", "digest", "part", "parts", "fmt", "body"],
+      "additionalProperties": false
+    }
+  }
+}

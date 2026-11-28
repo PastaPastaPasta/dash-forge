@@ -132,7 +132,7 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
 
   const contractOf = (id) => {
     const c = state.contracts.get(id);
-    return c ? { id: { toString: () => id }, version: c.version, toJSON: () => c.json } : undefined;
+    return c ? { id: { toString: () => id }, ownerId: c.ownerId, version: c.version, toJSON: () => c.json } : undefined;
   };
 
   class EvoSDK {
