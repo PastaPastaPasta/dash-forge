@@ -110,10 +110,13 @@ bounds('orgMessage', 'body', 10, 1, 5120)
 for _p in ('org', 'digest', 'part', 'parts', 'fmt', 'body'):
     no(f'orgMessage without {_p}', 'orgMessage', 'required', **{_p: DROP})
 
-# The organization republishes its roster with a replace (orgMember and orgMessage are immutable types)
+# The organization republishes its roster with a replace; the other three types are never replaced
 REPLACES.append({"item": "ORG", "name": "a roster republished", "type": "org", "expect": "ok", "stored": doc('org'),
                  "doc": doc('org', relay=DROP, cid=b(11, 32), keyId=3, groupKey=b(12, 48), threshold=3,
                             members=b(13, 128), pubShares=b(14, 192))})
+for _t, _change in (('orgMember', {'proof': b(15, 64)}), ('orgShare', {'sealed': b(15, 72)}), ('orgMessage', {'body': b(15, 600)})):
+    REPLACES.append({"item": "ORG", "name": f"{_t} replaced (not mutable)", "type": _t, "expect": "refused",
+                     "why": "documentsMutable", "stored": doc(_t), "doc": doc(_t, **_change)})
 
 
 def index(label, t, name, properties, unique):
