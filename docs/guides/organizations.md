@@ -47,7 +47,7 @@ You need the organization's group id (or its invite link), your multisig recover
 dg org connect t_0123456789abcdef
 ```
 
-dg reads the key ceremony from the group's relay (`--relay`, default `https://multisig.dashhq.org`), checks it, and finds the organization's identity on the network. It then links your Forge identity to your member key on Platform and stores your share of the signing key there, sealed so that only your recovery phrase opens it. From then on dg needs only the phrase and Platform. It remembers the organization in `orgs.json` next to dg's `config.toml` (the identity id, the group id, the relay, your public key, the name, the threshold and the members) and keeps the ceremony's public messages in `org-ceremonies/`. Nothing secret is stored on this computer.
+dg reads the key ceremony from the group's relay (`--relay`, default `https://multisig.dashhq.org`), checks it, and finds the organization's identity on the network. It then links your Forge identity to your member key on Platform and stores your share of the signing key there, sealed so that only your recovery phrase opens it. From then on dg needs only the phrase and Platform. It remembers the organization in `orgs.json` next to dg's `config.toml` (the identity id, the group id, the relay, your public key, the name, the threshold and the members) and keeps the ceremony's public messages in `org-ceremonies/`. Nothing secret is stored on this computer. After upgrading from a dg that kept requests on the relay, connect each organization once more.
 
 Your recovery phrase is read from `--phrase-file <file>`, else `DG_ORG_PHRASE`, else a hidden prompt. A passphrase comes from `--passphrase-file`, `DG_ORG_PASSPHRASE`, or the prompt. dg never writes either to disk.
 

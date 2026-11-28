@@ -117,6 +117,7 @@ export async function platformVectors(dtiPath, source) {
       const owner = id32(`m3 extra identity ${k}`);
       return { $id: id32(`om3-extra-${k}`), $ownerId: owner, $createdAt: createdAt(10 + k), org: ORG, room: ROOM, authPub: m3.authPub, proof: proof(p3, NETWORK, ORG, owner) };
     }),
+    { $id: id32('om1-also-m2'), $ownerId: m1.ownerId, $createdAt: createdAt(6), org: ORG, room: ROOM, authPub: m2.authPub, proof: proof(p2, NETWORK, ORG, m1.ownerId) },
     { $id: id32('om-outsider'), $ownerId: OUTSIDER_OWNER, $createdAt: createdAt(5), org: ORG, room: ROOM, authPub: outsider.keys.authPub, proof: proof(outsider, NETWORK, ORG, OUTSIDER_OWNER) },
   ];
   // orgShare documents: one per member identity per ceremony (unique org, $ownerId, cid).
@@ -148,6 +149,12 @@ export async function platformVectors(dtiPath, source) {
 
   // --- orgMessage parts ----------------------------------------------------------------------
   const sha = (b) => hex(sha256(b));
+  // deflate-raw that must end exactly at the payload's end (no trailing bytes, not truncated)
+  const inflateWhole = (payload) => {
+    const { buffer, engine } = inflateRawSync(payload, { maxOutputLength: MAX_PAYLOAD, info: true });
+    if (engine.bytesWritten !== payload.length) throw new Error('bytes after the deflate stream');
+    return new Uint8Array(buffer);
+  };
   const encode = (envelope, fmt) => {
     const raw = utf8(canonical(envelope));
     const payload = fmt === 1 ? new Uint8Array(deflateRawSync(raw, { level: 9 })) : raw;
@@ -162,7 +169,7 @@ export async function platformVectors(dtiPath, source) {
   };
   const decode = (fmt, partsHex) => {
     const payload = unhex(partsHex.join(''));
-    const raw = fmt === 1 ? new Uint8Array(inflateRawSync(payload, { maxOutputLength: MAX_PAYLOAD })) : payload;
+    const raw = fmt === 1 ? inflateWhole(payload) : payload;
     return JSON.parse(new TextDecoder().decode(raw));
   };
 
@@ -188,12 +195,12 @@ export async function platformVectors(dtiPath, source) {
       if (sha(payload) !== first.digest) continue;
       let text;
       try {
-        const raw = first.fmt === 1 ? new Uint8Array(inflateRawSync(payload, { maxOutputLength: MAX_PAYLOAD })) : payload;
+        const raw = first.fmt === 1 ? inflateWhole(payload) : payload;
         if (raw.length > MAX_PAYLOAD) continue;
         text = utf8Fatal.decode(raw);
         const env = JSON.parse(text);
         if (canonical(env) !== text) continue;
-        out.push({ owner: first.$ownerId, envelope: env, t: Math.min(...list.map((d) => d.$createdAt)) });
+        out.push({ owner: first.$ownerId, envelope: env, t: Math.max(...list.map((d) => d.$createdAt)) });
       } catch {
         continue;
       }
@@ -274,10 +281,12 @@ export async function platformVectors(dtiPath, source) {
     { name: 'a repeated part with the same body is fine', docs: [...docsOf(m2.ownerId, big, 100), docsOf(m2.ownerId, big, 200)[0]], accepted: [big.id] },
     { name: 'a repeated part with another body: the earliest counts', docs: [...docsOf(m2.ownerId, big, 100), { ...docsOf(m2.ownerId, big, 50)[1], body: 'ff' }], accepted: [] },
     { name: 'fmt 0 bytes that are deflate', docs: docsOf(m1.ownerId, small, 100, { fmt: 0 }), accepted: [] },
+    { name: 'bytes after the deflate stream', docs: docsOf(m1.ownerId, encodeRaw(new Uint8Array([...deflateRawSync(utf8(canonical(apprA1))), 0]), 1), 100), accepted: [] },
+    { name: 'a truncated deflate stream', docs: docsOf(m1.ownerId, encodeRaw(new Uint8Array(deflateRawSync(utf8(canonical(apprA1)))).slice(0, -3), 1), 100), accepted: [] },
     { name: 'not canonical JSON', docs: docsOf(m1.ownerId, encodeRaw(utf8(JSON.stringify(apprA1, null, 1))), 100), accepted: [] },
   ];
-  function encodeRaw(payload) {
-    return { fmt: 0, digest: sha(payload), parts: [hex(payload)] };
+  function encodeRaw(payload, fmt = 0) {
+    return { fmt, digest: sha(payload), parts: [hex(payload)] };
   }
   for (const c of reassembly) {
     const got = reassemble(c.docs).map((m) => envelopeId(m.envelope));
@@ -297,17 +306,18 @@ export async function platformVectors(dtiPath, source) {
     ...late(id32('m2 not bound'), apprA3, 1),
   ];
   const boundOwners = { [m1.authPub]: [m1.ownerId], [m2.authPub]: [m2.ownerId], [m3.authPub]: [m3.ownerId] };
-  const ownerAuth = Object.fromEntries(Object.entries(boundOwners).flatMap(([a, os]) => os.map((o) => [o, a])));
+  const ownerAuth = {};
+  for (const [a, os] of Object.entries(boundOwners)) for (const o of os) (ownerAuth[o] ??= new Set()).add(a);
   const seen = new Map();
   for (const m of reassemble(mergeDocs)) {
-    if (!ownerAuth[m.owner] || m.envelope.from !== ownerAuth[m.owner]) continue;
+    if (!ownerAuth[m.owner]?.has(m.envelope.from)) continue;
     const id = envelopeId(m.envelope);
     if (!seen.has(id) || seen.get(id).t > m.t) seen.set(id, { t: m.t, env: m.envelope });
   }
   const merged = [...seen.entries()].sort((a, b) => a[1].t - b[1].t || (a[0] < b[0] ? -1 : 1));
   const mergeState = reduce([...base.ceremonyMessages, ...merged.map(([, { env }]) => env)], { room });
   const merge = {
-    note: 'Envelopes count only from the log of an identity bound (orgMember) to the envelope `from`. Each envelope is ordered by the earliest $createdAt of the documents carrying it, then envelope id; that time is the `at` the request flow shows and orders approvals by.',
+    note: 'Envelopes count only from the log of an identity bound (orgMember) to the envelope `from`. A copy of a message is complete at its last part\'s $createdAt; each envelope is ordered by its earliest complete copy, then envelope id; that time is the `at` the request flow shows and orders approvals by.',
     boundOwners,
     docs: mergeDocs,
     order: merged.map(([id]) => id),
@@ -355,10 +365,12 @@ export async function platformVectors(dtiPath, source) {
     { name: 'a create gone after a claim, nonce spent', parts: [part({ claim: true, nonceSpent: true })], expect: { parts: ['gone'], status: 'done', text: 'Done (no longer on Platform)' } },
     { name: 'a create gone without a claim is expired', parts: [part({ nonceSpent: true })], expect: { parts: ['expired'], status: 'expired' } },
     { name: 'another request landed with its nonce', parts: [part({ claim: true, nonceSpent: true, takenByOther: true })], expect: { parts: ['expired'], status: 'expired' } },
+    { name: 'another request landed with its nonce, whatever its document shows', parts: [part({ doc: 'present', claim: true, nonceSpent: true, takenByOther: true })], expect: { parts: ['expired'], status: 'expired' } },
     { name: 'a replace at its revision with the same fields', parts: [part({ action: 'replace', doc: 'same', nonceSpent: true })], expect: { parts: ['done'], status: 'done' } },
     { name: 'a replace at its revision with other fields', parts: [part({ action: 'replace', doc: 'different', nonceSpent: true, claim: true })], expect: { parts: ['expired'], status: 'expired' } },
-    { name: 'a replace at a later revision, nonce spent', parts: [part({ action: 'replace', doc: 'later', nonceSpent: true })], expect: { parts: ['done'], status: 'done' } },
-    { name: 'a replace at a later revision, nonce free', parts: [part({ action: 'replace', doc: 'later' })], expect: { parts: ['ready'], status: 'ready' } },
+    { name: 'a replace at a later revision, nonce spent, claimed', parts: [part({ action: 'replace', doc: 'later', nonceSpent: true, claim: true })], expect: { parts: ['done'], status: 'done' } },
+    { name: 'a replace at a later revision, nonce spent, no claim', parts: [part({ action: 'replace', doc: 'later', nonceSpent: true })], expect: { parts: ['expired'], status: 'expired' } },
+    { name: 'a replace at a later revision, nonce free', parts: [part({ action: 'replace', doc: 'later', claim: true })], expect: { parts: ['expired'], status: 'expired' } },
     { name: 'a delete: gone and nonce spent', parts: [part({ action: 'delete', doc: 'absent', nonceSpent: true })], expect: { parts: ['done'], status: 'done' } },
     { name: 'a delete: gone, nonce free (someone else deleted it)', parts: [part({ action: 'delete', doc: 'absent' })], expect: { parts: ['ready'], status: 'ready' } },
     { name: 'a delete: still there, nonce spent', parts: [part({ action: 'delete', doc: 'present', nonceSpent: true, claim: true })], expect: { parts: ['expired'], status: 'expired' } },
@@ -386,9 +398,9 @@ export async function platformVectors(dtiPath, source) {
     rules: {
       proofMessage: 'UTF-8 of "dash-forge/org-member/1\\n<network>\\n<org base58>\\n<$ownerId base58>", Ed25519 by authPub',
       sealedShare: 'orgShare.sealed: XChaCha20-Poly1305, key HKDF-SHA256(ikm = 64-byte BIP-39 seed, salt "dash-forge/org-share/1", info "<network>\\n<org base58>\\n<cid hex>", 32 bytes), plaintext the 32-byte big-endian secret share of the signing slot, stored nonce(24) || ciphertext || tag(16)',
-      payload: 'canonical JSON of the envelope as UTF-8; fmt 1 = deflate-raw of it; parts of at most maxPart bytes; digest = SHA-256 of the whole stored payload; inflated at most maxPayload bytes. Writers use fmt 1 when it is shorter.',
+      payload: 'canonical JSON of the envelope as UTF-8; fmt 1 = deflate-raw of it, one stream ending exactly at the payload end; parts of at most maxPart bytes; digest = SHA-256 of the whole stored payload; inflated at most maxPayload bytes. Writers use fmt 1 when it is shorter. A message copy counts at its last part\'s $createdAt.',
       shares: 'a member opens the orgShare of one of its bound identities whose cid is the signing ceremony, and checks the opened share against its public share',
-      memberIdentities: 'an orgMember counts when org matches, authPub is a roster member and proof verifies for its $ownerId; at most maxIdentitiesPerKey per authPub, earliest $createdAt (then $id) first',
+      memberIdentities: 'an orgMember counts when org matches, authPub is a roster member and proof verifies for its $ownerId (checked before the cap); at most maxIdentitiesPerKey per authPub, earliest $createdAt (then $id) first; one identity may bind several keys (byOrg is org, $ownerId, authPub)',
       requestIds: 'every Forge request id is <group>-<first 16 hex of the proposer auth key>; a bare group resolves when exactly one proposer used it; a proposal without a Forge note is its own request, id = proposal id',
       status: 'invalid (structural or review problems) > declined > done (every part done or gone) > expired (any part expired) > ready (every part ready, done or gone) > collecting',
     },
@@ -402,6 +414,6 @@ export async function platformVectors(dtiPath, source) {
     reassembly,
     merge,
     requestIds,
-    status: { threshold: base.threshold, size: members.length, partRules: 'landed: create doc present; replace doc same, or later with nonce spent; delete doc absent with nonce spent. expired: takenByOther and not landed. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent. ready: shares >= N. else collecting.', cases: statusCases },
+    status: { threshold: base.threshold, size: members.length, partRules: 'expired: takenByOther (wins over everything below). landed: create doc present; replace doc same, or later with nonce spent and a claim; delete doc absent with nonce spent. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, or a replace whose document is at a later revision. ready: shares >= N. else collecting.', cases: statusCases },
   };
 }

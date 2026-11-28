@@ -284,18 +284,16 @@ fn merged(v: &Value) -> Vec<transport::Timed> {
         .iter()
         .map(message_doc)
         .collect();
-    let owner_key: BTreeMap<String, String> = m["boundOwners"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .flat_map(|(k, os)| {
-            os.as_array()
-                .unwrap()
-                .iter()
-                .map(move |o| (o.as_str().unwrap().to_string(), k.clone()))
-        })
-        .collect();
-    transport::merge(&transport::reassemble(&docs), &owner_key)
+    let mut owner_keys: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (k, os) in m["boundOwners"].as_object().unwrap() {
+        for o in os.as_array().unwrap() {
+            owner_keys
+                .entry(o.as_str().unwrap().to_string())
+                .or_default()
+                .insert(k.clone());
+        }
+    }
+    transport::merge(&transport::reassemble(&docs), &owner_keys)
 }
 
 #[test]

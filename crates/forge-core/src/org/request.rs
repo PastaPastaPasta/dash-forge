@@ -234,11 +234,14 @@ impl PartState {
     }
 }
 
-/// Whether the write is visible on Platform.
-pub fn landed(action: &str, f: &PartFacts) -> bool {
+/// Whether the write is visible on Platform. A replace whose document is past its revision
+/// counts only with its nonce spent and a member's `claim` that it broadcast it.
+pub fn landed(action: &str, f: &PartFacts, claim: bool) -> bool {
     match action {
         "create" => matches!(f.doc, DocState::Present | DocState::Same),
-        "replace" => f.doc == DocState::Same || (f.doc == DocState::Later && f.nonce_spent),
+        "replace" => {
+            f.doc == DocState::Same || (f.doc == DocState::Later && f.nonce_spent && claim)
+        }
         "delete" => f.doc == DocState::Absent && f.nonce_spent,
         _ => false,
     }
@@ -258,13 +261,13 @@ pub fn part_state(
         PartState::Collecting
     };
     let Some(f) = facts else { return signed };
-    if landed(action, f) {
-        PartState::Done
-    } else if f.taken_by_other {
+    if f.taken_by_other {
         PartState::Expired
+    } else if landed(action, f, claim) {
+        PartState::Done
     } else if action == "create" && claim && f.nonce_spent && f.doc == DocState::Absent {
         PartState::Gone
-    } else if f.nonce_spent {
+    } else if f.nonce_spent || (action == "replace" && f.doc == DocState::Later) {
         PartState::Expired
     } else {
         signed
@@ -379,7 +382,7 @@ pub fn status(
             let Some(p) = state.proposals.get(id) else {
                 return (false, PartState::Collecting);
             };
-            let ready = matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed);
+            let ready = p.status.is_signed();
             let action = p.action();
             let facts = chain.and_then(|c| c.get(id));
             (
@@ -423,7 +426,7 @@ pub fn declined_out(state: &RoomState, req: &Request, ceremony: &Ceremony) -> bo
         state
             .proposals
             .get(id)
-            .is_some_and(|p| matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed))
+            .is_some_and(|p| p.status.is_signed())
     });
     let c = &ceremony.config;
     !any_ready

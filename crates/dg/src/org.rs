@@ -158,14 +158,17 @@ fn load_all_from(path: &Path) -> Result<Vec<OrgRecord>> {
     }
 }
 
-fn save_all_to(path: &Path, list: &[OrgRecord]) -> Result<()> {
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(list)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
+}
+
+fn save_all_to(path: &Path, list: &[OrgRecord]) -> Result<()> {
+    write_atomic(path, &serde_json::to_vec_pretty(list)?)
 }
 
 /// The organizations connected on this computer for `ctx`'s network.
@@ -195,15 +198,10 @@ fn ceremony_path_in(dir: &Path, record: &OrgRecord) -> PathBuf {
 }
 
 fn save_ceremony_in(dir: &Path, record: &OrgRecord, messages: &[Value]) -> Result<()> {
-    let path = ceremony_path_in(dir, record);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(messages)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("writing {}", path.display()))
+    write_atomic(
+        &ceremony_path_in(dir, record),
+        &serde_json::to_vec(messages)?,
+    )
 }
 
 fn load_ceremony_in(dir: &Path, record: &OrgRecord) -> Vec<Value> {
@@ -351,9 +349,8 @@ async fn connect(ctx: &Ctx, group: &str, relay: Option<&str>, phrase: &PhraseArg
     let client = ctx.connect().await?;
     let member = Member::of(ctx, &client).await?;
     let engine = member.engine(&client)?;
-    let (record, ceremony) =
+    let (mut record, ceremony) =
         core_org::connect(&client, &contract, relay, &room, &seed, &keys, &engine).await?;
-    let mut record = record;
     if let Some(old) = connected(ctx)
         .into_iter()
         .find(|r| r.org_id == record.org_id)
@@ -454,11 +451,8 @@ impl Row {
                 .await
                 .map(|r| Org::review_problems(&r))
                 .unwrap_or_default();
-            if let Ok(view) = org.chain_view(client, &req).await {
-                summary = org.summary(&req, Some(&view), &problems);
-            } else {
-                summary = org.summary(&req, None, &problems);
-            }
+            let view = org.chain_view(client, &req).await.ok();
+            summary = org.summary(&req, view.as_ref(), &problems);
         }
         let (collected, threshold) = org.progress(&req);
         let me = &org.record.auth_pub;
@@ -1041,7 +1035,7 @@ pub async fn request_repo_create(
     let mut s = open_owner(ctx, &client, record, &args.phrase).await?;
     let label = s.org.record.label.clone();
     let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.open_nonces());
+    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.held_nonces(&client).await?);
     let owner = core_org::actions::Owner {
         client: &client,
         org: &s.identity,
@@ -1089,7 +1083,7 @@ pub async fn route_member_change(
     let label = format!("{}/{}", record.label, handle.name());
     let mut s = open_owner(ctx, &client, record, phrase).await?;
     let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.open_nonces());
+    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.held_nonces(&client).await?);
     let owner = core_org::actions::Owner {
         client: &client,
         org: &s.identity,

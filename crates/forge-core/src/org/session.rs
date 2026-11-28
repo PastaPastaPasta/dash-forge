@@ -28,8 +28,10 @@ use super::{bls, signing_ceremonies, signing_slot, MemberRecord, OrgError, OrgRe
 
 const CONFIRM_ATTEMPTS: usize = 8;
 const CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
-/// The most `orgMember` documents read per member key.
-const MEMBER_DOCS_READ: u32 = 100;
+/// `orgMember` documents are read per member key in pages, past ones whose proof fails, until
+/// enough identities are bound or this many were read.
+const MEMBER_DOCS_PAGE: u32 = 100;
+const MEMBER_DOCS_BOUND: usize = 1000;
 
 /// "Forge won't sign this: <reasons>." (§11.1): its own code, and the free next step.
 pub fn refused(req_id: &str, problems: &[String]) -> Error {
@@ -164,12 +166,8 @@ pub async fn read_roster(
         .await?;
     Ok(docs
         .first()
-        .and_then(roster_of)
+        .and_then(|d| Roster::from_props(&d.fields))
         .filter(|r| holds_group_key(identity, r.key_id, &r.group_key)))
-}
-
-fn roster_of(d: &FetchedDocument) -> Option<Roster> {
-    Roster::from_props(&d.fields)
 }
 
 fn member_doc(d: &FetchedDocument) -> Option<MemberDoc> {
@@ -203,6 +201,10 @@ fn message_doc(d: &FetchedDocument) -> Option<MessageDoc> {
         fmt: d.field_u64("fmt")?,
         body: d.field_bytes("body")?,
     })
+}
+
+fn bytes32(hex_str: &str) -> Option<[u8; 32]> {
+    hex::decode(hex_str).ok()?.try_into().ok()
 }
 
 /// A connected organization with its current log.
@@ -266,8 +268,19 @@ impl Org {
         let cstate = reduce(&self.ceremony, Some(&self.record.room));
         let auth = self.record.auth_pub.clone();
         if let Some(r) = &self.roster {
+            if r.room != self.record.room {
+                return Err(Error::Config(format!(
+                    "{}'s published roster names another group ({}): connect again with `dg org connect {}`",
+                    self.record.label,
+                    super::one_line(&r.room),
+                    super::one_line(&r.room)
+                )));
+            }
             if !r.members.contains(&auth) {
-                return Err(OrgError::NotAMember.into());
+                return Err(Error::Config(format!(
+                    "your key is not in {}'s current roster: connect again with `dg org connect {}`",
+                    self.record.label, self.record.room
+                )));
             }
             let transcript = signing_ceremonies(&cstate).into_iter().find(|c| {
                 c.cid == r.cid && Roster::of_ceremony(c, None).is_some_and(|o| o.same_key(r))
@@ -309,6 +322,16 @@ impl Org {
         Ok(identity)
     }
 
+    fn org_bytes(&self) -> Result<[u8; 32]> {
+        crate::platform::decode_identifier(&self.record.org_id)
+    }
+
+    fn has_share(&self, owner: &str) -> bool {
+        self.shares
+            .iter()
+            .any(|s| s.owner == owner && s.cid == self.cid)
+    }
+
     /// The forge-org contract id.
     pub fn contract_id(&self) -> String {
         self.contract.id()
@@ -316,28 +339,41 @@ impl Org {
 
     /// Read the members' identities and logs again.
     pub async fn refresh(&mut self, client: &PlatformClient) -> Result<()> {
-        let org = crate::platform::decode_identifier(&self.record.org_id)?;
+        let org = self.org_bytes()?;
         let mut members = Vec::new();
         self.rebuild();
-        for auth in self.member_keys() {
-            let key: [u8; 32] = hex::decode(&auth)
-                .ok()
-                .and_then(|b| b.try_into().ok())
+        let keys = self.member_keys();
+        for auth in &keys {
+            let key: [u8; 32] = bytes32(auth)
                 .ok_or_else(|| OrgError::Malformed(format!("{auth} is not a member key")))?;
-            let docs = client
-                .query_documents(
-                    &self.contract,
-                    transport::DOC_MEMBER,
-                    &[
-                        QueryFilter::eq("org", FieldValue::identifier(org)),
-                        QueryFilter::eq("authPub", FieldValue::Bytes32(key)),
-                    ],
-                    &[QueryOrder::asc("$createdAt")],
-                    MEMBER_DOCS_READ,
-                    None,
-                )
-                .await?;
-            members.extend(docs.iter().filter_map(member_doc));
+            let mut mine: Vec<MemberDoc> = Vec::new();
+            let mut after: Option<String> = None;
+            let mut read = 0;
+            while read < MEMBER_DOCS_BOUND {
+                let page = client
+                    .query_documents(
+                        &self.contract,
+                        transport::DOC_MEMBER,
+                        &[
+                            QueryFilter::eq("org", FieldValue::identifier(org)),
+                            QueryFilter::eq("authPub", FieldValue::Bytes32(key)),
+                        ],
+                        &[QueryOrder::asc("$createdAt")],
+                        MEMBER_DOCS_PAGE,
+                        after.as_deref(),
+                    )
+                    .await?;
+                read += page.len();
+                after = page.last().map(|d| d.id.clone());
+                mine.extend(page.iter().filter_map(member_doc));
+                let bound =
+                    transport::bind_identities(&mine, &self.network, &self.record.org_id, &keys);
+                let full = bound.get(auth).map_or(0, Vec::len) >= transport::MAX_IDENTITIES_PER_KEY;
+                if full || page.len() < MEMBER_DOCS_PAGE as usize {
+                    break;
+                }
+            }
+            members.extend(mine);
         }
         self.members = members;
         self.rebind();
@@ -371,11 +407,14 @@ impl Org {
                 .collect();
     }
 
-    fn owner_keys(&self) -> BTreeMap<String, String> {
-        self.bound
-            .iter()
-            .flat_map(|(k, os)| os.iter().map(move |o| (o.clone(), k.clone())))
-            .collect()
+    fn owner_keys(&self) -> BTreeMap<String, BTreeSet<String>> {
+        let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (k, os) in &self.bound {
+            for o in os {
+                out.entry(o.clone()).or_default().insert(k.clone());
+            }
+        }
+        out
     }
 
     fn rebuild(&mut self) {
@@ -404,17 +443,12 @@ impl Org {
         seed: &Seed,
         keys: &MemberKeys,
     ) -> Result<bool> {
-        let wrote_member = self.ensure_bound(client, engine, keys).await?;
+        let wrote_member = self.ensure_bound(engine, keys).await?;
         let wrote_share = self.ensure_share(client, engine, seed, keys).await?;
         Ok(wrote_member || wrote_share)
     }
 
-    async fn ensure_bound(
-        &mut self,
-        client: &PlatformClient,
-        engine: &WriteEngine<'_>,
-        keys: &MemberKeys,
-    ) -> Result<bool> {
+    async fn ensure_bound(&mut self, engine: &WriteEngine<'_>, keys: &MemberKeys) -> Result<bool> {
         let owner = engine.owner_id();
         if self.is_bound(&keys.auth_pub, &owner) {
             return Ok(false);
@@ -429,33 +463,8 @@ impl Org {
                 self.record.label
             )));
         }
-        let org = crate::platform::decode_identifier(&self.record.org_id)?;
-        let taken = client
-            .query_documents(
-                &self.contract,
-                transport::DOC_MEMBER,
-                &[
-                    QueryFilter::eq("org", FieldValue::identifier(org)),
-                    QueryFilter::eq(
-                        "$ownerId",
-                        FieldValue::identifier(crate::platform::decode_identifier(&owner)?),
-                    ),
-                ],
-                &[],
-                1,
-                None,
-            )
-            .await?;
-        if !taken.is_empty() {
-            return Err(Error::Config(format!(
-                "this Forge identity is already linked to another member of {}: sign in with your own identity",
-                self.record.label
-            )));
-        }
-        let auth: [u8; 32] = hex::decode(&keys.auth_pub)
-            .ok()
-            .and_then(|b| b.try_into().ok())
-            .ok_or(OrgError::NotAMember)?;
+        let org = self.org_bytes()?;
+        let auth: [u8; 32] = bytes32(&keys.auth_pub).ok_or(OrgError::NotAMember)?;
         let proof = transport::member_proof(keys, &self.network, &self.record.org_id, &owner);
         let props = BTreeMap::from([
             ("org".to_string(), FieldValue::identifier(org)),
@@ -469,7 +478,7 @@ impl Org {
         self.members.push(MemberDoc {
             id,
             owner,
-            created_at: now_ms(),
+            created_at: crate::cache::now_ms(),
             org: self.record.org_id.clone(),
             auth_pub: auth.to_vec(),
             proof: proof.to_vec(),
@@ -489,11 +498,7 @@ impl Org {
     ) -> Result<bool> {
         let owner = engine.owner_id();
         self.read_shares(client, &owner).await?;
-        if self
-            .shares
-            .iter()
-            .any(|s| s.owner == owner && s.cid == self.cid)
-        {
+        if self.has_share(&owner) {
             return Ok(false);
         }
         let Ok(mine) = self.my_share(seed, keys) else {
@@ -507,15 +512,17 @@ impl Org {
             &self.cid,
             &share,
         );
-        let cid: [u8; 32] = hex::decode(&self.cid)
-            .ok()
-            .and_then(|b| b.try_into().ok())
-            .ok_or_else(|| self.no_key())?;
+        let opened =
+            transport::open_share(seed, &self.network, &self.record.org_id, &self.cid, &sealed);
+        if opened != Some(share) {
+            return Err(OrgError::Share(
+                "your sealed share does not open to your share: nothing was written".into(),
+            )
+            .into());
+        }
+        let cid: [u8; 32] = bytes32(&self.cid).ok_or_else(|| self.no_key())?;
         let props = BTreeMap::from([
-            (
-                "org".to_string(),
-                FieldValue::identifier(crate::platform::decode_identifier(&self.record.org_id)?),
-            ),
+            ("org".to_string(), FieldValue::identifier(self.org_bytes()?)),
             ("cid".to_string(), FieldValue::Bytes32(cid)),
             ("sealed".to_string(), FieldValue::Bytes(sealed.clone())),
         ]);
@@ -533,17 +540,10 @@ impl Org {
 
     /// Read `owner`'s `orgShare` of the signing ceremony, once.
     async fn read_shares(&mut self, client: &PlatformClient, owner: &str) -> Result<()> {
-        if self
-            .shares
-            .iter()
-            .any(|s| s.owner == owner && s.cid == self.cid)
-        {
+        if self.has_share(owner) {
             return Ok(());
         }
-        let cid: [u8; 32] = hex::decode(&self.cid)
-            .ok()
-            .and_then(|b| b.try_into().ok())
-            .ok_or_else(|| self.no_key())?;
+        let cid: [u8; 32] = bytes32(&self.cid).ok_or_else(|| self.no_key())?;
         let docs = client
             .query_documents(
                 &self.contract,
@@ -637,7 +637,7 @@ impl Org {
             )));
         }
         let encoded = transport::encode(&envelope)?;
-        let org = crate::platform::decode_identifier(&self.record.org_id)?;
+        let org = self.org_bytes()?;
         let parts = encoded.parts.len() as u64;
         for (i, body) in encoded.parts.into_iter().enumerate() {
             let props = BTreeMap::from([
@@ -660,7 +660,7 @@ impl Org {
             self.timed.push(Timed {
                 id,
                 envelope,
-                at: transport::iso_ms(now_ms()),
+                at: now_iso(),
             });
         }
         self.rebuild();
@@ -684,8 +684,7 @@ impl Org {
     }
 
     pub fn threshold(&self) -> usize {
-        self.ceremony()
-            .map_or(self.record.threshold, |c| c.config.threshold)
+        self.quorum().0
     }
 
     pub fn requests(&self) -> Vec<Request> {
@@ -767,6 +766,32 @@ impl Org {
         out
     }
 
+    /// [`Self::open_nonces`] less the nonces expired replaces release: a replace whose document
+    /// moved past its revision can no longer land (§11.6).
+    pub async fn held_nonces(
+        &self,
+        client: &PlatformClient,
+    ) -> Result<BTreeMap<String, BTreeSet<u64>>> {
+        let mut held = self.open_nonces();
+        for r in self.requests() {
+            for id in &r.proposals {
+                let Some(d) = self.decoded(id).filter(|d| d.action == "replace") else {
+                    continue;
+                };
+                if d.owner_id != self.record.org_id {
+                    continue;
+                }
+                let f = facts(client, &d).await?;
+                if f.doc == DocState::Later && !(f.nonce_spent && self.claimed(id)) {
+                    if let Some(set) = held.get_mut(&d.contract_id) {
+                        set.remove(&d.nonce);
+                    }
+                }
+            }
+        }
+        Ok(held)
+    }
+
     /// The participants' auth keys of the signing key.
     pub fn member_keys(&self) -> BTreeSet<String> {
         self.ceremony()
@@ -805,9 +830,16 @@ impl Org {
             .is_some_and(|c| request::declined_out(&self.state, req, c))
     }
 
+    /// Whether a member reported broadcasting the proposal.
+    fn claimed(&self, proposal_id: &str) -> bool {
+        self.state
+            .proposals
+            .get(proposal_id)
+            .is_some_and(|p| p.status == ProposalStatus::Executed)
+    }
+
     pub fn decoded(&self, proposal_id: &str) -> Option<DecodedWrite> {
-        let p = self.state.proposals.get(proposal_id)?;
-        decode_unsigned(&hex::decode(p.unsigned_hex()).ok()?).ok()
+        self.state.proposals.get(proposal_id)?.decoded()
     }
 
     /// Review every proposal of `req` (§9), against Platform's current nonces, and re-run the
@@ -843,7 +875,8 @@ impl Org {
                     n
                 };
                 if let Some(problem) = review::nonce_problem(&d, current) {
-                    if !request::landed(&d.action, &facts(client, &d).await?) {
+                    let claim = p.status == ProposalStatus::Executed;
+                    if !request::landed(&d.action, &facts(client, &d).await?, claim) {
                         r.nonce = Some(problem);
                     }
                 }
@@ -871,8 +904,10 @@ impl Org {
         let Some(repo_id) = review::referenced_ids(src).0.into_iter().next() else {
             return Ok(None);
         };
-        let Ok(repo) = crate::resolve::resolve_id(client, &repo_id).await else {
-            return Ok(None);
+        let repo = match crate::resolve::resolve_id(client, &repo_id).await {
+            Ok(repo) => repo,
+            Err(Error::NotFound) => return Ok(None),
+            Err(e) => return Err(e),
         };
         if super::actions::keyed(client, &repo).await? {
             let name = format!("{}/{}", self.record.label, repo.name());
@@ -902,13 +937,24 @@ impl Org {
             if d.owner_id != self.record.org_id {
                 continue;
             }
-            let mut f = facts(client, &d).await?;
-            if f.nonce_spent && !request::landed(&d.action, &f) {
-                f.taken_by_other = self.nonce_landed_elsewhere(client, req, &d).await?;
-            }
+            let f = self.part_facts(client, req, &d).await?;
             view.insert(id.clone(), f);
         }
         Ok(view)
+    }
+
+    /// What Platform shows of the part `d`, with whether another request landed with its nonce.
+    async fn part_facts(
+        &self,
+        client: &PlatformClient,
+        req: &Request,
+        d: &DecodedWrite,
+    ) -> Result<PartFacts> {
+        let mut f = facts(client, d).await?;
+        if f.nonce_spent {
+            f.taken_by_other = self.nonce_landed_elsewhere(client, req, d).await?;
+        }
+        Ok(f)
     }
 
     /// Whether another request's part is known to have landed with `d`'s nonce.
@@ -927,7 +973,7 @@ impl Org {
                 if o.owner_id == d.owner_id
                     && o.contract_id == d.contract_id
                     && o.nonce == d.nonce
-                    && request::landed(&o.action, &facts(client, &o).await?)
+                    && request::landed(&o.action, &facts(client, &o).await?, self.claimed(id))
                 {
                     return Ok(true);
                 }
@@ -1110,7 +1156,8 @@ impl Org {
         self.bind(client).await?;
         let reviews = self.review(client, forge, req).await?;
         let problems = Self::review_problems(&reviews);
-        let summary = self.summary(req, None, &problems);
+        let chain = self.chain_view(client, req).await?;
+        let summary = self.summary(req, Some(&chain), &problems);
         if !summary.problems.is_empty() {
             return Err(refused(&req.id, &summary.problems));
         }
@@ -1140,12 +1187,10 @@ impl Org {
         self.ensure_member(client, engine, seed, keys).await?;
         let posted = self.approve_all(engine, &shares, keys, req).await?;
         let req = self.find(&req.id)?;
-        let ready = req.proposals.iter().all(|id| {
-            matches!(
-                self.state.proposals[id].status,
-                ProposalStatus::Ready | ProposalStatus::Executed
-            )
-        });
+        let ready = req
+            .proposals
+            .iter()
+            .all(|id| self.state.proposals[id].status.is_signed());
         let finished = if ready {
             Some(self.finish(client, forge, engine, keys, &req).await?)
         } else {
@@ -1186,7 +1231,7 @@ impl Org {
         client: &PlatformClient,
         req: &Request,
         reviews: &[Reviewed],
-    ) -> Result<Vec<(DecodedWrite, PartState)>> {
+    ) -> Result<Vec<(DecodedWrite, PartState, PartFacts)>> {
         let mut used: BTreeSet<(String, u64)> = BTreeSet::new();
         let mut out = Vec::new();
         for (id, r) in req.proposals.iter().zip(reviews) {
@@ -1201,18 +1246,15 @@ impl Org {
                 ));
             }
             let p = &self.state.proposals[id];
-            let ready = matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed);
-            let mut f = facts(client, &d).await?;
-            if f.nonce_spent && !request::landed(&d.action, &f) {
-                f.taken_by_other = self.nonce_landed_elsewhere(client, req, &d).await?;
-            }
+            let ready = p.status.is_signed();
+            let f = self.part_facts(client, req, &d).await?;
             let state = request::part_state(
                 &d.action,
                 ready,
                 p.status == ProposalStatus::Executed,
                 Some(&f),
             );
-            out.push((d, state));
+            out.push((d, state, f));
         }
         Ok(out)
     }
@@ -1230,20 +1272,33 @@ impl Org {
     ) -> Result<Finished> {
         let reviews = self.checked(client, forge, req).await?;
         let parts = self.part_states(client, req, &reviews).await?;
-        if parts.iter().any(|(_, s)| *s == PartState::Expired) {
+        if parts.iter().any(|(_, s, _)| *s == PartState::Expired) {
             return Err(refused(
                 &req.id,
                 &["it was overtaken: another write used its nonce".to_string()],
             ));
         }
-        if parts.iter().any(|(_, s)| *s == PartState::Collecting) {
+        let mut blocked: Vec<String> = Vec::new();
+        for ((d, state, f), r) in parts.iter().zip(&reviews) {
+            if state.finished() {
+                continue;
+            }
+            blocked.extend(r.nonce.clone());
+            if d.action == "replace" && f.doc == DocState::Different {
+                blocked.push("the document it edits changed since it was made".into());
+            }
+        }
+        if !blocked.is_empty() {
+            return Err(refused(&req.id, &blocked));
+        }
+        if parts.iter().any(|(_, s, _)| *s == PartState::Collecting) {
             return Ok(Finished {
                 broadcast: 0,
                 done: false,
             });
         }
         let mut broadcast = 0;
-        for (id, (d, state)) in req.proposals.clone().iter().zip(parts) {
+        for (id, (d, state, _)) in req.proposals.clone().iter().zip(parts) {
             let claimed = self.state.proposals[id].status == ProposalStatus::Executed;
             if state.finished() {
                 if !claimed {
@@ -1270,7 +1325,7 @@ impl Org {
             let ok = match outcome {
                 Ok(BroadcastOutcome::Applied | BroadcastOutcome::AlreadyExists) => Ok(()),
                 Ok(BroadcastOutcome::NonceConsumed) => {
-                    if request::landed(&d.action, &facts(client, &d).await?) {
+                    if request::landed(&d.action, &facts(client, &d).await?, true) {
                         Ok(())
                     } else {
                         Err(Error::Config(
@@ -1420,12 +1475,6 @@ pub(crate) fn derived(w: &UnsignedWrite) -> Value {
     d
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
 /// What Platform shows of `d`'s document and nonce.
 async fn facts(client: &PlatformClient, d: &DecodedWrite) -> Result<PartFacts> {
     let contract = client.fetch_contract(&d.contract_id).await?;
@@ -1460,7 +1509,7 @@ async fn confirm(client: &PlatformClient, d: &DecodedWrite) -> bool {
     for attempt in 1..=CONFIRM_ATTEMPTS {
         if facts(client, d)
             .await
-            .is_ok_and(|f| request::landed(&d.action, &f))
+            .is_ok_and(|f| request::landed(&d.action, &f, true))
         {
             return true;
         }

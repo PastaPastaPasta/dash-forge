@@ -3,7 +3,7 @@
 //! envelopes. No network here; `session` does the reads and writes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 
 use blstrs_plus::Scalar;
 use chacha20poly1305::aead::{Aead, KeyInit};
@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 use super::canon::canonical;
 use super::ceremony::{Config, KeySlot, Participant, SlotKeys};
 use super::derive::{MemberKeys, Seed};
-use super::envelope::{self, is_hex};
+use super::envelope;
 use super::state::{Ceremony, CeremonyResult};
 use super::OrgError;
 
@@ -164,14 +164,7 @@ fn encode_payload(fmt: u8, payload: &[u8]) -> Result<Encoded, OrgError> {
 pub fn decode(fmt: u64, payload: &[u8]) -> Option<Value> {
     let raw = match fmt {
         0 => payload.to_vec(),
-        1 => {
-            let mut out = Vec::new();
-            flate2::read::DeflateDecoder::new(payload)
-                .take(MAX_PAYLOAD as u64 + 1)
-                .read_to_end(&mut out)
-                .ok()?;
-            out
-        }
+        1 => inflate_whole(payload)?,
         _ => return None,
     };
     if raw.len() > MAX_PAYLOAD {
@@ -180,6 +173,17 @@ pub fn decode(fmt: u64, payload: &[u8]) -> Option<Value> {
     let text = std::str::from_utf8(&raw).ok()?;
     let value: Value = serde_json::from_str(text).ok()?;
     (canonical(&value).ok()? == text).then_some(value)
+}
+
+/// One deflate-raw stream that ends exactly at the end of `payload` (nothing after it, not
+/// truncated), inflating to at most one byte over [`MAX_PAYLOAD`].
+fn inflate_whole(payload: &[u8]) -> Option<Vec<u8>> {
+    let mut z = flate2::Decompress::new(false);
+    let mut out = Vec::with_capacity(MAX_PAYLOAD + 1);
+    let status = z
+        .decompress_vec(payload, &mut out, flate2::FlushDecompress::Finish)
+        .ok()?;
+    (status == flate2::Status::StreamEnd && z.total_in() == payload.len() as u64).then_some(out)
 }
 
 /// An `orgMessage` document as read.
@@ -195,7 +199,7 @@ pub struct MessageDoc {
     pub body: Vec<u8>,
 }
 
-/// One whole message: who carried it, the envelope, and its earliest document's time.
+/// One whole message: who carried it, the envelope, and when its last part landed.
 #[derive(Debug, Clone)]
 pub struct Carried {
     pub owner: String,
@@ -215,11 +219,7 @@ pub fn reassemble(docs: &[MessageDoc]) -> Vec<Carried> {
     }
     let mut out = Vec::new();
     for ((owner, digest), mut ds) in groups {
-        ds.sort_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        ds.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
         let mut chosen: BTreeMap<u64, &MessageDoc> = BTreeMap::new();
         for d in ds {
             chosen.entry(d.part).or_insert(d);
@@ -248,7 +248,7 @@ pub fn reassemble(docs: &[MessageDoc]) -> Vec<Carried> {
             out.push(Carried {
                 owner: owner.to_string(),
                 envelope,
-                created_at: chosen.values().map(|d| d.created_at).min().unwrap_or(0),
+                created_at: chosen.values().map(|d| d.created_at).max().unwrap_or(0),
             });
         }
     }
@@ -285,11 +285,7 @@ pub fn bind_identities<'a>(
     members: &BTreeSet<String>,
 ) -> BTreeMap<String, Vec<&'a MemberDoc>> {
     let mut sorted: Vec<&MemberDoc> = docs.iter().collect();
-    sorted.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    sorted.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
     let mut out: BTreeMap<String, Vec<&MemberDoc>> = BTreeMap::new();
     for d in sorted {
         let key = hex::encode(&d.auth_pub);
@@ -318,15 +314,13 @@ pub struct Timed {
 /// The organization's log: envelopes carried by an identity bound to their author, of the
 /// types a log holds, deduplicated by envelope id at their earliest time, ordered by (time,
 /// id).
-pub fn merge(carried: &[Carried], owner_key: &BTreeMap<String, String>) -> Vec<Timed> {
+pub fn merge(carried: &[Carried], owner_keys: &BTreeMap<String, BTreeSet<String>>) -> Vec<Timed> {
     let mut best: BTreeMap<String, (u64, &Value)> = BTreeMap::new();
     for c in carried {
         let from = c.envelope["from"].as_str();
         let kind = c.envelope["type"].as_str().unwrap_or_default();
-        if from.is_none()
-            || owner_key.get(&c.owner).map(String::as_str) != from
-            || !MESSAGE_TYPES.contains(&kind)
-        {
+        let bound = from.is_some_and(|f| owner_keys.get(&c.owner).is_some_and(|ks| ks.contains(f)));
+        if !bound || !MESSAGE_TYPES.contains(&kind) {
             continue;
         }
         let Ok(id) = envelope::id(&c.envelope) else {
@@ -351,29 +345,7 @@ pub fn merge(carried: &[Carried], owner_key: &BTreeMap<String, String>) -> Vec<T
 
 /// Milliseconds since the epoch as `YYYY-MM-DDTHH:MM:SS.mmmZ`.
 pub fn iso_ms(ms: u64) -> String {
-    let secs = ms / 1000;
-    let days = i64::try_from(secs / 86_400).unwrap_or(0);
-    let rem = secs % 86_400;
-    let (y, m, d) = civil_from_days(days);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60,
-        ms % 1000
-    )
-}
-
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or(1);
-    let m = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or(1);
-    (era * 400 + yoe + i64::from(m <= 2), m, d)
+    super::envelope::iso_from_ms(u128::from(ms))
 }
 
 /// The organization's published roster (an `org` document).
@@ -512,21 +484,16 @@ impl Roster {
 
     /// The `members` and `pubShares` byte arrays of the `org` document.
     pub fn members_bytes(&self) -> Vec<u8> {
-        self.members
-            .iter()
-            .flat_map(|h| hex::decode(h).unwrap_or_default())
-            .collect()
+        concat_hex(&self.members)
     }
 
     pub fn pub_shares_bytes(&self) -> Vec<u8> {
-        self.pub_shares
-            .iter()
-            .flat_map(|h| hex::decode(h).unwrap_or_default())
-            .collect()
+        concat_hex(&self.pub_shares)
     }
 }
 
-/// Whether `text` is a 32-byte lower-case hex key.
-pub fn is_key_hex(text: &str) -> bool {
-    is_hex(text, Some(32))
+fn concat_hex(list: &[String]) -> Vec<u8> {
+    list.iter()
+        .flat_map(|h| hex::decode(h).unwrap_or_default())
+        .collect()
 }

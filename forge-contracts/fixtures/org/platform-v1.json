@@ -17,9 +17,9 @@
  "rules": {
   "proofMessage": "UTF-8 of \"dash-forge/org-member/1\\n<network>\\n<org base58>\\n<$ownerId base58>\", Ed25519 by authPub",
   "sealedShare": "orgShare.sealed: XChaCha20-Poly1305, key HKDF-SHA256(ikm = 64-byte BIP-39 seed, salt \"dash-forge/org-share/1\", info \"<network>\\n<org base58>\\n<cid hex>\", 32 bytes), plaintext the 32-byte big-endian secret share of the signing slot, stored nonce(24) || ciphertext || tag(16)",
-  "payload": "canonical JSON of the envelope as UTF-8; fmt 1 = deflate-raw of it; parts of at most maxPart bytes; digest = SHA-256 of the whole stored payload; inflated at most maxPayload bytes. Writers use fmt 1 when it is shorter.",
+  "payload": "canonical JSON of the envelope as UTF-8; fmt 1 = deflate-raw of it, one stream ending exactly at the payload end; parts of at most maxPart bytes; digest = SHA-256 of the whole stored payload; inflated at most maxPayload bytes. Writers use fmt 1 when it is shorter. A message copy counts at its last part's $createdAt.",
   "shares": "a member opens the orgShare of one of its bound identities whose cid is the signing ceremony, and checks the opened share against its public share",
-  "memberIdentities": "an orgMember counts when org matches, authPub is a roster member and proof verifies for its $ownerId; at most maxIdentitiesPerKey per authPub, earliest $createdAt (then $id) first",
+  "memberIdentities": "an orgMember counts when org matches, authPub is a roster member and proof verifies for its $ownerId (checked before the cap); at most maxIdentitiesPerKey per authPub, earliest $createdAt (then $id) first; one identity may bind several keys (byOrg is org, $ownerId, authPub)",
   "requestIds": "every Forge request id is <group>-<first 16 hex of the proposer auth key>; a bare group resolves when exactly one proposer used it; a proposal without a Forge note is its own request, id = proposal id",
   "status": "invalid (structural or review problems) > declined > done (every part done or gone) > expired (any part expired) > ready (every part ready, done or gone) > collecting"
  },
@@ -207,6 +207,15 @@
    "proof": "1e569f275a2b9b33fe48fc724a60caee573fb2428fb33b073c982e98b2da3b5fb6919f68a99de6db8b5dfc4df15f2c189b94be784f33504c0ca81cfac081b003"
   },
   {
+   "$id": "4sAhcb5PFe4u3D6CWgSiA6SBJoPdh4h1vdrbZBaiyRU3",
+   "$ownerId": "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs",
+   "$createdAt": 1795867206000,
+   "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
+   "room": "t_000102030405060708090a0b0c0d0e0f",
+   "authPub": "710811b01d023880ebcc0b798462d71993843f197fbcb0b5be7e0eca0517b4d7",
+   "proof": "91a98e2843d816cc237128b03e68a77caf80df91bc7a2289b37903436136aa6a565edaca2cb980969b697d03eb853f516469df9961323cb9e838e730206a2500"
+  },
+  {
    "$id": "62EvmX75Q9ZYzthYrVjjXHmZHNE5FHSJVG55xv1Hcq1U",
    "$ownerId": "xFN6LQae3AGacz15fyBxbBtnFrv4YTuyT28abNb7bxs",
    "$createdAt": 1795867205000,
@@ -221,7 +230,8 @@
    "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs"
   ],
   "710811b01d023880ebcc0b798462d71993843f197fbcb0b5be7e0eca0517b4d7": [
-   "4epuq9EgVgdhW3MFjvpwojviZTnRS2P6Ys1t346Gvx7K"
+   "4epuq9EgVgdhW3MFjvpwojviZTnRS2P6Ys1t346Gvx7K",
+   "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs"
   ],
   "01b3c4dbcf7cefa96c5273ab15185869f23b83f7e18742cd8b5776f5f289caac": [
    "DPLLaaeocmi47CA5UoUPv5WLE59hyrTacF4aMvcUcYLs",
@@ -673,10 +683,44 @@
    "accepted": []
   },
   {
-   "name": "not canonical JSON",
+   "name": "bytes after the deflate stream",
    "docs": [
     {
      "$id": "4EDJz5fptrmrVyLzRcjp7eTCPE9xP7Q65SjQ6qzJMQLo",
+     "$ownerId": "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs",
+     "$createdAt": 1795867300000,
+     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
+     "digest": "2926d1cbd09cf4a0fda107d7991fd5daede1e5b4e80c0a31e32629b1b9b7007c",
+     "part": 0,
+     "parts": 1,
+     "fmt": 1,
+     "body": "2dd1b16e9b310c45e177d1ecb49794488aff1b74efd4a590443109d0d68613040d02bf7be1a0fbc1b79c8f325ecb5118ac0f440fdcbf131fc001fa42c08f722af31cefe5f82897ebf9727e19bfbec5bd0fddb9aa4b555d9d169bb32d706c2344b868ef52bbce56c79210040973cd9c7dd631ad9ccacbd3b8ee97bb2cd533b7824978c9145fa9bb5a06cfee3ad39282d046d25803cae18626d58dad0b6dfbfaf4fcf874879effc4fe5b0efa8f97a38cd199baa42c61ca86417dad2d5ce10cef1c63a7ce1e41b56fd34c9ab66a920368a4be4394dcbc12778aa1f09da45d9938565722f5c8a953b20629b4c5a6186d6c9f1e68b116556083cdd4bc03ca9314a8b5fa341a6b1b0b7c5a2547728ea45c096b3246f7d9cbed763b95bc9e7f97a3ec06c067ae6e3497ac2909cea030da54d7dcc14d2c5469ce11ec8c4cd888e8d2c0739653b99e3fa5d79f00088c8a0681c2d0e1189858086ce47dd0f363398ad7aca2b48c6612a2ad545dda297a47a6e92633f79621a0d642eb302343d8d2489655b322b69291a94ee1e58d7ca676f56a016f8b719fade8210ddbc758b577c89cd602a39ccaebfbe5f3e5e5723dbfed722a6fe5a0db3f00"
+    }
+   ],
+   "accepted": []
+  },
+  {
+   "name": "a truncated deflate stream",
+   "docs": [
+    {
+     "$id": "6KcDgtSv8tuxwxbd1fbU7rV7kLLMkLBPT9iZdYwaQ2cR",
+     "$ownerId": "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs",
+     "$createdAt": 1795867300000,
+     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
+     "digest": "d8ab1ccc6196c61dc79beaee5c219998791d55fe48c275a4f78c201007e6273c",
+     "part": 0,
+     "parts": 1,
+     "fmt": 1,
+     "body": "2dd1b16e9b310c45e177d1ecb49794488aff1b74efd4a590443109d0d68613040d02bf7be1a0fbc1b79c8f325ecb5118ac0f440fdcbf131fc001fa42c08f722af31cefe5f82897ebf9727e19bfbec5bd0fddb9aa4b555d9d169bb32d706c2344b868ef52bbce56c79210040973cd9c7dd631ad9ccacbd3b8ee97bb2cd533b7824978c9145fa9bb5a06cfee3ad39282d046d25803cae18626d58dad0b6dfbfaf4fcf874879effc4fe5b0efa8f97a38cd199baa42c61ca86417dad2d5ce10cef1c63a7ce1e41b56fd34c9ab66a920368a4be4394dcbc12778aa1f09da45d9938565722f5c8a953b20629b4c5a6186d6c9f1e68b116556083cdd4bc03ca9314a8b5fa341a6b1b0b7c5a2547728ea45c096b3246f7d9cbed763b95bc9e7f97a3ec06c067ae6e3497ac2909cea030da54d7dcc14d2c5469ce11ec8c4cd888e8d2c0739653b99e3fa5d79f00088c8a0681c2d0e1189858086ce47dd0f363398ad7aca2b48c6612a2ad545dda297a47a6e92633f79621a0d642eb302343d8d2489655b322b69291a94ee1e58d7ca676f56a016f8b719fade8210ddbc758b577c89cd602a39ccaebfbe5f3e5e5723dbfed722a6fe5"
+    }
+   ],
+   "accepted": []
+  },
+  {
+   "name": "not canonical JSON",
+   "docs": [
+    {
+     "$id": "9npALrc16CF15PuhEsZvaojwHeL3SeA1s61LWiaf5pFS",
      "$ownerId": "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs",
      "$createdAt": 1795867300000,
      "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -691,7 +735,7 @@
   }
  ],
  "merge": {
-  "note": "Envelopes count only from the log of an identity bound (orgMember) to the envelope `from`. Each envelope is ordered by the earliest $createdAt of the documents carrying it, then envelope id; that time is the `at` the request flow shows and orders approvals by.",
+  "note": "Envelopes count only from the log of an identity bound (orgMember) to the envelope `from`. A copy of a message is complete at its last part's $createdAt; each envelope is ordered by its earliest complete copy, then envelope id; that time is the `at` the request flow shows and orders approvals by.",
   "boundOwners": {
    "e40009bfc871bc5cb5f02fd1d71e13cbed2457d661bbad2920ff07add85402bb": [
     "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs"
@@ -705,7 +749,7 @@
   },
   "docs": [
    {
-    "$id": "6KcDgtSv8tuxwxbd1fbU7rV7kLLMkLBPT9iZdYwaQ2cR",
+    "$id": "AUYC7QKpji8QkEe7bDu1GwiSnuf8bxGK1pbpdr9c6GyW",
     "$ownerId": "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs",
     "$createdAt": 1795867210000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -716,7 +760,7 @@
     "body": "55924d6edc300c85af5270ed14142591b276bd42d155eba2d00f353132b127b626453098bb170e665370c507be07f0236f903a4420247e32e689c20f431131a2f98a883f6180bcd60f8837a8bacdef5a21deee03cc4bd7a51f72ffb82844e8ba77b80fb068ffbb6e2f0f65d10e032c6b3f466e13b4753be904d10c139cb6f57a99204e90ccff35c130c1ae6f13441c2658dbc3d1e77ed64fc7777dbbeadebf7c9be00e036cfa769d377dd5a5ef107fdda0cc1522783bb6a68c643c159ffd581aab9556298791739366aa41979a492521531d059db7a390046f546080fdbc1e789ee7d333dc7f0fb0cfa725e5f3b10e33372116f684825cd8887b689550983d5b71476f13a1107b31e2d98b1547e80c0c705d8ebc8329201ef4dab6be4204758838e65682985c7cc9be21b56aaa1835b664ade4bc54669373aa3412b686926a0dde21e57c20593f93fa1f44344868d1a14746c1802326cc58b0a26283cfa52042f5ce0727994a6ab6346773f55a8b6b3eab551e6b49264b70d585347a8bc5d2c8548370726cc550493e949a5baa29949198adc9ea424a36dbec131a169bb2dae2b2b1d90751e73da5e31a35e041fbf14b976dbdac7b3ac300ef10cdfd1f"
    },
    {
-    "$id": "9npALrc16CF15PuhEsZvaojwHeL3SeA1s61LWiaf5pFS",
+    "$id": "2QBcwE6SPvkgXWUoRGteUNG55RTUiRcsE4dJ85zUqN7N",
     "$ownerId": "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs",
     "$createdAt": 1795867212000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -727,7 +771,7 @@
     "body": "2dd1b16e9b310c45e177d1ecb49794488aff1b74efd4a590443109d0d68613040d02bf7be1a0fbc1b79c8f325ecb5118ac0f440fdcbf131fc001fa42c08f722af31cefe5f82897ebf9727e19bfbec5bd0fddb9aa4b555d9d169bb32d706c2344b868ef52bbce56c79210040973cd9c7dd631ad9ccacbd3b8ee97bb2cd533b7824978c9145fa9bb5a06cfee3ad39282d046d25803cae18626d58dad0b6dfbfaf4fcf874879effc4fe5b0efa8f97a38cd199baa42c61ca86417dad2d5ce10cef1c63a7ce1e41b56fd34c9ab66a920368a4be4394dcbc12778aa1f09da45d9938565722f5c8a953b20629b4c5a6186d6c9f1e68b116556083cdd4bc03ca9314a8b5fa341a6b1b0b7c5a2547728ea45c096b3246f7d9cbed763b95bc9e7f97a3ec06c067ae6e3497ac2909cea030da54d7dcc14d2c5469ce11ec8c4cd888e8d2c0739653b99e3fa5d79f00088c8a0681c2d0e1189858086ce47dd0f363398ad7aca2b48c6612a2ad545dda297a47a6e92633f79621a0d642eb302343d8d2489655b322b69291a94ee1e58d7ca676f56a016f8b719fade8210ddbc758b577c89cd602a39ccaebfbe5f3e5e5723dbfed722a6fe5a0db3f"
    },
    {
-    "$id": "AUYC7QKpji8QkEe7bDu1GwiSnuf8bxGK1pbpdr9c6GyW",
+    "$id": "4j1gdaK2CnABesnPf3Z9RZN9XYZKVcGKz4qz1rXFeyj8",
     "$ownerId": "DPLLaaeocmi47CA5UoUPv5WLE59hyrTacF4aMvcUcYLs",
     "$createdAt": 1795867211000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -738,7 +782,7 @@
     "body": "2dd14d6e54410c04e0bbf47a00b7ddfe7b3760cf8a0db2bbdb492460469328228a7277f410fbd2a752d57b8b97763404944fbd7f42fbd6f10038a07f4680efedd2f2badedaf1de6ef7ebedfa1c3fbfae33bf64d724671299d627aaa34ec0b5b5c35ace62c664928362f262589d11a92a2d2952dba53d3fc67d3f9f3293576d01ec8c93937d966cd25a98e692a5d5578711d56306082e57184caea8c67deb97c7a787c7137afabdf69f76d07fbc1d2d017bceed636e29932a445fca3e0cdd57c590ad046b6af9586739217304355d4695d3d37cef9ce114a5802a3dca842504c06d02a7b14ae0cc8a515dce592421cc97918413a285f3c0ec19060ad31c918c6097a10003cd9e8282c3673f853dd6922cf0dcdbdac7c7c7a5d5fdfaab1d0d7ad21c2b67e9dc152e935129b2733736f1424aa3d2dd4d07ce65c9aa525c683e2366bbb4fbf59ff4f203003a20100c6010503070084898b060439d073d3db4a33971aeec40eab265adb030829c193a19654ae8a61dc03356dfb979a01b796ea34dc2a91dc1732d9c6a5d67045b5441df4364f326ce52075ca8c37b6ca2b5ba493a1742018c76692f6fb7f3cbb8ddeed7d7dd2eedb51dfde32f"
    },
    {
-    "$id": "2QBcwE6SPvkgXWUoRGteUNG55RTUiRcsE4dJ85zUqN7N",
+    "$id": "Ar38bA4bYS2ueMw2tXyUJdJCyEf7JGC9WGHRMjhbeVKi",
     "$ownerId": "DPLLaaeocmi47CA5UoUPv5WLE59hyrTacF4aMvcUcYLs",
     "$createdAt": 1795867209000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -749,7 +793,7 @@
     "body": "2dd1b16e9b310c45e177d1ecb49794488aff1b74efd4a590443109d0d68613040d02bf7be1a0fbc1b79c8f325ecb5118ac0f440fdcbf131fc001fa42c08f722af31cefe5f82897ebf9727e19bfbec5bd0fddb9aa4b555d9d169bb32d706c2344b868ef52bbce56c79210040973cd9c7dd631ad9ccacbd3b8ee97bb2cd533b7824978c9145fa9bb5a06cfee3ad39282d046d25803cae18626d58dad0b6dfbfaf4fcf874879effc4fe5b0efa8f97a38cd199baa42c61ca86417dad2d5ce10cef1c63a7ce1e41b56fd34c9ab66a920368a4be4394dcbc12778aa1f09da45d9938565722f5c8a953b20629b4c5a6186d6c9f1e68b116556083cdd4bc03ca9314a8b5fa341a6b1b0b7c5a2547728ea45c096b3246f7d9cbed763b95bc9e7f97a3ec06c067ae6e3497ac2909cea030da54d7dcc14d2c5469ce11ec8c4cd888e8d2c0739653b99e3fa5d79f00088c8a0681c2d0e1189858086ce47dd0f363398ad7aca2b48c6612a2ad545dda297a47a6e92633f79621a0d642eb302343d8d2489655b322b69291a94ee1e58d7ca676f56a016f8b719fade8210ddbc758b577c89cd602a39ccaebfbe5f3e5e5723dbfed722a6fe5a0db3f"
    },
    {
-    "$id": "4j1gdaK2CnABesnPf3Z9RZN9XYZKVcGKz4qz1rXFeyj8",
+    "$id": "3cUFUZ8PXR78tJc9LRihmwmE8WYgnfX8ujM3EbMpYxg5",
     "$ownerId": "4epuq9EgVgdhW3MFjvpwojviZTnRS2P6Ys1t346Gvx7K",
     "$createdAt": 1795867220000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -760,7 +804,7 @@
     "body": "557bcb8e1d4992ddaf0c72cd11ccdddedce91fb4924a10ece53d05f5147baad9230c1afdef82dd1a2d44020499e08d8c08773f765ef9f7aff8f9f5fdebc2957f3ee79faffdb773bf037c87f35f10e0bf7f7dfbca1ffd1f5fdffffed5f3fbafff3efdf5fdeffff8f6f5eb6f3fe7b79ffbe59ffff197f9fafef573fefaf3eb1fdfbe7e9b9fffe7c7effffb3fbff2dbfcfcfaf6f5db8f9ffb5ffefecbd7fbf1fb9fe697afefe7db2f5f7ffafdc7dffef2cbd7f75fbef2feffbf7ff9faf6cbd75fe7df7ef9fa0edf7ef9faf1fef3133f7ffdf9e7f97ce2bffe53fefaa77ffaf1dbfcf2f58faf6f5fbfcfbffdedd7dfe75fe7b79f7ffdfafe3ffefe55bff6d7f72f467f6f04eee15b9cecf564505fdf34977cfa4e1fa078272a406ebb0231ba5e353ea35fdfbefefae71ffb7afee5d73ffdcbd73ffee7b7afbffefaa7df22ffbc8f23224fafa8f0050529394afff9b5bea0222ca8b4ffc6b820575cf68a7ffb6dafb1eff16baede5698ae10e6c6cb65aafdea50e74bb92add679ec13d8d6fc2ae97628dabcf93c776284d3b2ea429c6896a53c7bec2e42d2f025a18abb105d22c8df2c06df38046bc58e1e9d0032db784d5a159f71ee0b297e7603ece37afab2ad5101a2b4cdfa537da8fba11d1e7cd4d1c939c228cf27a3937c51b259085cb58232a450b24ccc80dcf7d39f3f4d6e37be0048aa3f24102546419e841c59c90cc2acb734a87f9dcb8e754e62dcf9cc962ea3add58904ad973f34594050d809d07ef6102e6bd000fcb86a57a2438d12bdf3b418f1c130f429cbea945a83742cd12cc26b4a506e1620de3737ead5560841a73e5797a9d7978801e3755bf1b735471124e935cb0a8c163e7203e328031b8e9572fb01874b20a38dd934591cecac40870f03603fae181d775484f1c072fcc4b87dd089fcc41173a5cf53aa8dfa8ce9cf6361370e04b85dc40a9de000e8a7da70a19ed84ea21983a674a8aa8ee60ce9cab1eb70b004541cc1f1437cce9cee33e81e7d0a5b1b023cfeaa23a73a5841dbe6322e46e40ef29c9741463389f76d0fd66e9b10f32c4eff2830411aa84770fbbbc677263f886776a1ad3c90303712cf1910a083336711c673cb7ec88b705e82ee3bbd6350a76eee4739bb0769c1196e630d3377304df79eff864e7305a55e11baad315753aaebb49ab2580df57247da0f261eb85c74cbec7caf8b4d23b0e53aac2a247a1e8a8cbc94b6e6917ca234c8afb9a133e0b51bfac04c27e51321b5ae2b089769ef30e9d2784368f1494c2500892481e76043cd0006b494517a736829e7ab067aa94738124220cbbc5ca7b2677f3c423bd8ff89e73246f11a9f2c9534dadda5572f860bfe83e35becb12fde2eca99ac991e4b6db8fb32db834e1a1ed0a1ea0e3e1b78f954470d9d8096a39e5a03dbb2f0530e31621428321d381d20e0a18a6b1067914a4fcce649d67300214c1928849ef19e631bb76c1fd3ef22122f1e0714a6d2fbf4694ca7ae7c2b038bba28eb1abf7d01bab831ac1179d163a25a1504cf8567e1002539bb9de04b63ccb9ba7a6ed999d718d16a3ac692e18791976aaa25188eba85e48318107f74203206956b827f23935b37be273e6e59c670472bcc0eda23ebab4f7573a05dc9995163a852c82875cfd75a51d47e9503e15e6c56f626248d9c4eac2492886913983189127311f04d2100f4852cd196583d37dc9aee50904274178e7c4740a5abbccd4674bbde7e1c22619917cf309c1e127b70092de40d4bcd29083f7bc6089c8ab34ef45ccbeb508236ef02a674878c18e029a879ff5d4d517976067aede1773ce3da57a3bd05487b8dccddbb49a20e43d9037940d6671e74a48bedb1c4354185de711dd1d18c17994ae70e665480600e4980717b34dd21600f4e2f4dd558be903ac8ef7a4b449e9de56b3050409b9f90929164ebb514a87e38a5f5944561401ee90667d4496a18b1ce97c764b32a09e60a0e68cbbdffcba542a29bab5217b0c7605512bd245509973e0bcbcb480e4c75298957c57c01bebd8790fc28e31bcb95ec800d97afd618c0e8602727f16c6e4191250e1ab27647c120dd87d1420b8c7e4bc7343e914f1bd87c9d294df5ca63a1a423af7b6776873030f9810959f51a346537a0c08c59626fa42268caa1d16cc6e9f7ac96c3ba7a3e42a70bc96ee2bf5a4296fd298d905b511045ade155cafb872cfb2107a3663349ffbe102eaa560fcf6c48db707135d7fc188210160d04f95aed7792e75a38282dddce2d16d642af0c63b571d03fd5e6f99c2d0e8b01824c3574230173c5bc2e08a93516b1cbfd6f2a1705340e24319e3118bf78b07d8a4749f66dd0b42b5bc0c661e0edd5190c68b226f50e7b84dd662168f09e74989bb84e80534d90dc4176019356284ce26e764c38291695b20724a5d807c47e606cc0c78704cdcbccb69a01611fd9a27368ced453a85e4045462b467bd4b21ef1c6cd96304700e65bec76017f9c09163104fc7f45528cf297b8919f3f009c6bda260d63e91fc749ae7a4993bf5917a6d379d6eb4de9d6a35c983a5aff6c5b626b1649bf7b14cd0825baeec878ce0dab2df137c2ddb0d7600bac8a3bb7f2b2d6688c37b66cff1926a85f6911402c27895c4a3c6974419d1f7eabc5c013d2a0373c9d6b98d22fa1e9ff8603953e6c4abb0ce548bba0e745610e4ecf1b9145d794fd8b30c797d71ffd00fbf7c7547dda809969f3de347c56c677099369e29e2c9a7ea4fb4eaba31746b6a5f778093ce0699c015b1137b4741aa42e3a5b9cb67daa27a120683e89200e273ecb3b780ad25c2ee106aa7cee5e53eafe6c413d4387aaec1d310446a9bba116377f9310dd7bed78897e8afdf51e86bfc9e67c0011837263785ac73f376f9bb4fa43b97dc2511131e4997569f9317b259ddb42a4a070a141ea7f3452482be628ba20533797d05cd25e7c78fcf6b9e5bc30c1ada94f1da161db2faa21f6dd71ea84c1f8db4eb11721d1ccb57df9dc63e6f69addf0727738ce264d6e54ead575813996de457300eef59a4b19a313a4e04ac2b5460cc3c4df6f85e84b9752c32d28cb0d89d0d431c0ef37bc12c54705e64333f9a8870a9551701895a37142fb4b63f16749cfb427ccf3d56c6c2b3df228d51d15da230a8c1673732d00c5cba07ce9250ef411b78d3bc5af11e11917999d0715cbb5d1aaa2f470ea82e8c29f00e6d105419c16369afd46218efc10b9470edcc112f910a25ded1665422cd0fb32f69d22dec74670767ff208c9338bd0e996bfd00ee2bbf3907e349c058c6990cb5c08b0e32c4c20eb0d8acedfdd176cebc7c5dd29de2c570ca2e47c30a873977c6c35194045fc5a0bdc376ef69167d8c05cfdbcfb9aab9d2be627c9073d02f1b616b50c38d1d7273d5da24ac98d885c09fc55577d6537e578310ead084e03e841da71208a542e877a8f754e1f108275e4d8f467ca1e25a34c7314a17690c0fb82489b7a96118d66c68273da3f5ec6a80f24cf79d8baffbe43c8755e7177d9a49096ae746643fb387e74a8d62314b0d59950092605a42389d3b1cc0e87693fa3de83cc9cfdf2375dc638c40c077b023bd1dc3e015bfa583ca9c728a47a503ced1685a6f00b005eb360ff7149dca22c9a689beeab55a04c78fda6049e58db338d2f624e6ba5caff44377d1d2f8c07236240eb86586658433946cce14f4b846cf133fd30e2e6b1b781db665dac507838dea261c41bb5ac6819d67ccefcb203ea8bd9c4e8c07a927f4d90a8e4719a1e3f3bc4fb85ae41e1aef7c44c30273c650775d5792119cbcb7f33d39afae1c19cd975c58b0bc74a4a82876f548a709d9cf5c2eee3fc85da704b1187bbfc21427eae9a7f7acec5745ca839e7af23e6716c6165571b3647c7d650c2dcf9a2fab1a5d9fb2473dd8599c7e3a88ec01d8ab076d42f7803f8f7eafabe9f0e977380c5847d9a15e01b180c1c35e3c0b5d7b024ff65a39e4b150735f1c8873892050e1c4ba2bb1cfdc79ae9c8244ef703c6c70e7ecdb6d8783b166554e2c2c522fdd64532ff2cc5c3a878a9214925dbbdd950038b27c8fd8348ad9953cae6f6808a4f940dc97b79bb96fee3eb2fb623da6ba0daf16ac134fbb32ec83854dfbf2ed22e10fefd2f4c5fb875960f6d8e818bd9220e91dc7c03767e02ec27b20975ea4b23ef7397c8661be433ae856d0af03f7ed287631e21da9033a711fdf523b968543ef8ebbcef5776f54d3da0d24d422e28fe0f623b193eb2b2e015da3c40103eb4dd37cc0fa909da6fa109925938fa19c3b1e0a91f6b9d84c606ffd03a407c27d190695f03c16a13397aeb48d5fb37acc17c6319d85a45ea5601bef5dc2083a4de77a5b1f462fc553ac8cc76b378904356a34afe8921484d40e843ce6fe66400c7b572bb84ef29935f0bad4ba975d5fbca53aa7b51b4cec4ecc3a53b42784154000ef2a86d4777707e7ee47d72558cfa2979a2820d95dd5f026e45c7b4d2e9179e511791e7da1126f18abaee5bdc582d21de317d95187e9e99122484119befe0eca857381c7425a76fcdad3b3cb1a11ef053876af29083607a09276a0d9c8cead4ba3c4bb5f6e2e8892a2b8f41ec341a2b7a6d2ead7cc485e71885a40f57caa75650aefd5c9fac37be643d810a77da5195345f2144468b5bf77a60c74a41a1ece614cf264f2d79090276a4da61589bb6ceb024c2b7d78f7473ebfe77e451351982f7b1a4a158034086b92bca3b11249a196944c23c19144e7a2de8d7b76c164a1d01086ba97052e5b7f54bd53e9ee863ba15773b1c622f85ded0c119b83b66467280d6b590e2b5e2bede4941dce98afe99c1bc1f0e4242a3ea9eb5d8fe749749c1a3053934291f560deba40c9e80526550c0f190e8e324a4374c93b916e8dbad2d278d27591de556dc754582f6faf695cdc7ab1960a4559799d14bf299608abfd590677b213d643748b7e9e69b94eced3ca41995cdf6af2341a021faade2d0d83c0f26e9212eeb882e4b8ef95ece15677349df4ebd0c44e497ddfdb01cf594baa62f1c93b96ec521dbcb9647819775aa5c8c2ca057ec774ad8e332f16ca50f4421832bf11ce01ba901af8ac9fec7e203af6344283e994db596a680a06826fe166b44bc9741f4823cf00519f21bc494ba9700d93e372994d2f7f0ee155b0dc5b644242b55ec5a26b4007c479bed63d2a9e8cc151250780a7943baf2b263dc70e6e367101eeb1e68aa379f3b5afa17ed32e993df7b8c710e9ac338b88bca2133319e7ad5d9a43bbd02b304c8df3091f0ea590de05a96a6d0c697b59d7953a9eb817dd9779f864d88364510985027c04a206a05a2f48ce203162236645aa7ab45b9f16d3a5fe373dc96675abfb8aa0b89b03bc5db18847d4761fa00a952c69e071efe28fcc0cdb884093777488902ab8ca12ff864a2be767d486a768d723806be0b2c5bd1fa54cb4ee2b01043e9a02e5d55f13b6684de138af847702056b86ed78dde344cbd71edb5d65048af436e780c73eb59b9d510fa44a9c361a8fb3fcd93ffa5b43dcddd5840ee16db17b77d8db3a48fee2bcf039eb2d1f5dfb768fba78ddba2d3b0764600a6ede3bba91c4ee2f28e440b687bcd63ab28d62cc5aa63430ce715a967ea82517732bfbd3e7e7a511332da7c3f5eff15e3c1c45ee87779dc740ed1af659790ead9725af0a35c0de913b4c23fba597f1405b16a5854fc29a13b19e1fea03aab3a71d7c89e1431952caac108a1bebb63dd4a3fc48c7e040308faede2252bcf219c0bc261e04dc8782331870a3ceeb1e45d68729e11dedb85059934b2c72d7143b05e4d0e41cb397ea7ae108bdda6428247a0a4b7688449dc1ca11d885b843a373f3606e7652e08f1165a4a712bbd6d6f5614a3e0f0daec2851d6b0a21640fc797d984d96de848392f4fd621517ce7f6f59b6f7ac9e28a1c11c7255a0fcaec482f11c30e62ebe97bef4e5ba73bf2eeed6b242e88a66c483c7b5c8f193b7e8801eb49b2947b5594688343e584695a647189a09a3c25b6dbcd8bc16a4d04ce7b08adee123e8f9c8d2cc1eb9946d1ce16cfb9e82a1b4662cb9a5f70d8424fcad298b91d5a33742478038d47de2a6707c6865668f01a061c6eb6ae842134bdaafa87f0499a7a34591e9cdec670aa110f221cb9896657050d879c23b2a55557459b079d60398bad7fe076b8facdb2557bab3750af6956f9790ab31e0e893f66e8433b9a24da39851fdd2b78972b77a534b7afeea15db5b8a01c679d1058caa146ceb96ec9e3b64f0c56ddd56167e0f3fa02c3ba4d11ed5978eff1f5d3d40331e235f620dc79de53e439cb74373d3712183c4a24ed73fa03759e57710e3c989e85a320dbb1e0ac1b5a93dc384bf50ca6d9c8757227c3c6e83a247262fd4755388c1b100ff566db880ec75f36c6397b06c3b58d9fea8d4e5b33c6016e1a1e9ebb0ce60e5114e5ab8d05845e78e2e7e499c6bb794c295cf98497b48a16d998f41dee57e98bd17e6975bf4766e1bbe0dc70758cd67484ae4ccacd5507f0e4dd1406718a6824f4e57df028b40cd7b6bdef84d61a05750eb043c8e61d104b41c4e2aedff2eee592baaa7d91fb4ef69ba36574a3f0ce8bcd56b1582e191b8d0c05d7789135cb8bb11cf1bd3339201b6d91184b1322338cc5135bbfcac0eadec1b55f9eae7e167a8f1fe58e9bad0cdc177490fa1cf1143e78701dcd9bcbd94e1f927b8e0dc9b39bb296afd8527f3868e681fb52367a120f21783ba2529e264fe42ea4e20d9977378bddac2919f955ac14b12ee37d546fab891583c5c5ba61d2eb0d3280fa26ac48216b7ca1ba9eca327b2e0e7c8bdb2b08f62bdde3f760d035c6d8a4c04aaf67e29dba38889b5798017e54525f4fd07bdfdd12c11f51bae0d15e07b4736883c4a186f51576256df62cd7dcfb1034fc3e478ebbeae0c416337c9cb47a9db33cb3a6498cd6390887874bab3838017772896bdaba2fc78a3e2ad87c0781a270a091203ecd7772db03f81a10697626c3c6b42b71de1f29c8e328a0460e85932fdffaac98400130b53382e703ded1b76493c83e79f9d45ac7ecafd64ab930b5a8cb47539151fbd93ad8abece324e90a2ae40993aee3e979d6bea2c183d69c37775439a4d3c90c0057a38d3c6ae5abdcbb4ef739ab093db01faf3785bdc27c3de6b21cc5f34c7664bebb91869d7b883813ce5aaea3b5e6e2f55dd3b301e384e6c93c47843ba9deca4835309c5d82bc72b8375583b71458"
    },
    {
-    "$id": "Ar38bA4bYS2ueMw2tXyUJdJCyEf7JGC9WGHRMjhbeVKi",
+    "$id": "215kyq2Y3inwzYy7EVvCSHcWACdV2QKywnBV2dumXFst",
     "$ownerId": "4epuq9EgVgdhW3MFjvpwojviZTnRS2P6Ys1t346Gvx7K",
     "$createdAt": 1795867221000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -771,7 +815,7 @@
     "body": "652716729ec870dc5b9103bee94f7ec4ccbd7d7c0b242c75b06a971ae7c5922cc584b58f4731df789ff978426d3a7ea8eefa3427e590f11b5f11e9ab628bdb475dcf549fc3909836c17e4e46cf39ab05770784ace7375ab661851f7ebd89e42b38f2e8f97d3695808c87abad042c0507087967a49f783366c7674d0130b42dd2d066684926fec095d6c55fbea9b53234af19aedfbb9f23ed3902af8e0964eacbc528238d52757bb9eff0f2ada0b3b9ef0593bd84caf16dfb6c1046f888c824b6cc83f2f2956cb8c769e2d5d178e49d3735bd5d90cf30e24b4327a7ca89705d4bf78f2bd3173e292213f85923976f67316cf5a66ce398638140e74473d59da1c160fc04c9f20996d8cff51ed9ded7333d9b618b1cb1fb36286d7fab348876ca429e0e09ac24f0e1b363daee3c4ed37d827b5b1653f782dbbea0bbb2ab47ce6c034036f78383a5dc5a53d4e7c2c7525c31bf35018e2d8ce846d20a302fe631eb9a01e005556ac33b5567b530ddc573b91015cf3e5e313fefbb3e132ec38e814beb66d01a38cbc91a20fce136bfde5cd9148aa29a8936c45a771c7bbde0daaa0824bfa435bab4466e9db6c7fcecd240e25ad13c8f00b6f970de4c533a463d671bb9a26b94e2464aef319d535bb6206a3e362d4e9b28486f6ebf1b692718ace47eeb53e50e4fb31a9f8e59cfb5db2d29bdc9e29de63c7bbaa2aff41f19067bd80d8057561fab7b2b324b497071dd0dc7f36c3141148d97d05f4e66240ca7a0b3ea2ef5beeacc3535379fbe92f7f459c0365852da700bcbe396d19b753e70455441af62cc7887807d8b4c7edaf1b9623c8a3dbfcb1f33b73977dbc278fdb0904bf8eec5fd65f5682b6b379b1cae01b7f03d1bbe75dd3576403501e7e1ddc2a1bbc47922a3b175376de7e2b3f62f903e4abdbd369fc56c6b257282f21cdf5641ba9606ddd7ccb3c1fd562dca5613acca0aa751a11bbef1cb47aceab69bec5cb8b5ecd89bb6a9787a4fd07959cb6d457762cd6cda5df2240897ec612cbc6c0703663f0398f8b677371d2adb58db78b5f052a9e903af9695af337502ee5a281f113b075faf8016b4973e7636305e89cc66a9c0ba87dd050156dcfbac1340958e835681b0259d07cc2c078bce25efcd75a60e73d85ebccc15618b796ff2519fc76bed2c4a2eaf7ccb8fd2e7ddb639e926280f56d5434c8598bc97ebc96e84e548b506485e8e323a011f89cba786ae516caba7b78cca64ecc6b8b522b1618a57b686a02f13b8b47431c811a84afd880c20f86e32e3c51cb1a64f99673f70568458c24ece3990256c8a1b5d67df2273d6c819babab2dc141604302e0f0c9065836f2f031a6143622f3fa8a07901fb98253188bdcee40e9a73c250d7527a7e351bb62b3adb6d1cd92adedd419d298295c8717429c6de5e1c9e4d78f1f9dc7aeefb4c6280f67c4b9597714dbc80ba4acf45fc98436d14eb3143a6f7a96ef7345504fa802e60006d5f2715efa7b4d4b327c7d773dbfad52579b155dae8790b8a28e2b5b695b2bec31b526c1b89d6500b3cd0a0899b60eba353b09bdcc6f072736efa1b5bc96aae854a1cc18d18a65b36063e6733e53d0672765af2325516b4d99e2ad7b2d362addc6461f5b5e4be0bd0da7d69f7d6a1b5dbe1467c64e29a5e2ca1db579bb53c7173a8e3ad9b8e0a9ebac2ceab9b68ddb5834c5b3e7efee1265c8bcd1e6bf77d8a010f45c26b8df6a888fea34754be833bdf763c1b3df9addd1a8b1e576e306cb72c37c19a5ad355221a692e920cf892847842dbcb9bbcd09f99a32b2565e2c6a18367a54772d056952eeffec2ed78cd16720200fddaf434bfdc20c2b1083c76f61d9eaeb203af8a09e782792abb9da173df67e5f539b7c152c516d4f3bc28ade0215cab64cf5b7d9f97c123dc6db9fde1e777f4eaeb9d408f1e6e34a8b8707bde6c71e356d61f5e806dce6e3049ebfe9c276890d7d6b7a1a5fd4b31693bd623ed68dbd9c4710b060e78b35e7c036c46cdabc712fb01761dbd279c125f8b6dc5c8612393beba9a6cdb4267538b81ed10d255325200ddf3b8e90d2d55982b8deecd5bad7926276edd676458fe6aab41a0fa478df46eaeb75e07ae7ade775cce4905868bc95e47d72a1e6aaf4d576925f4168eb7560bb6d525c338b0255820fe545e1e8432a95b17e0390d9637d4667f1ee0fdfee35fbfbe7fe9013b67ebd070b7e13059dbd67623b9ad67bd72c2b7f960564272cec65715b082837a8bf3bffff85ce9e7ff028003173e2937082c0a3904e44e6318785f9f9afe7ed37edb43abf3d447473bf8b26edf031feb760c26c71d596f8f6d2934b719a5e804f77e480501546f54d5b39cd415785baa45f68445ce7b8277408ef0a4fac1a610dcc4f4027e7dfb7f3f1df197df7ffce5c75fe3cf5fdfbefefdebfbf9c7ff05"
    },
    {
-    "$id": "3cUFUZ8PXR78tJc9LRihmwmE8WYgnfX8ujM3EbMpYxg5",
+    "$id": "D4CwXu4ZXG3mAQaF2wHtntsawwfPpmKvUu2s6pgMg1vu",
     "$ownerId": "DPLLaaeocmi47CA5UoUPv5WLE59hyrTacF4aMvcUcYLs",
     "$createdAt": 1795867230000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -782,7 +826,7 @@
     "body": "1dcc4d6a1c410c06d0ab04addbe193ea4f5537c83eab6c8254aa320e897b986902c6f8eec1790778ef64170d12487d627e12fdce328001fe5a801f74909ff146e39d6ef7f3763eecf7b7a041d0cd6688641961bb97b285235942e61ed9520f6b7baeae62338175566f11c519cbdc950eba2f7b9caf34e83acf2ffef24c1f07edfbf9e773674f3387cfdde6dad6eb2cd2923917d6a2b56f49ae69b7c5dab2cc502fadd55db6689f66f3733fff4fd74f000c414246414583a2c3e098082c6c3ae8f1f24c83b6b7d673a952b549981bf3146c98f73ab1d3c25a9a93e652b1a297508ee2b2ccdb025af7d0caecbab647cb56bc6f0e9935ac14eeb395bcaa7be59e26c20b372cedb2a389584f083ae87abb2d1a745fbfd6bce8a0bf34f8e31f"
    },
    {
-    "$id": "215kyq2Y3inwzYy7EVvCSHcWACdV2QKywnBV2dumXFst",
+    "$id": "GxMgr3WXesxzyYdBYkrGHmMmaTtBphGLUQdk7FHDTUfm",
     "$ownerId": "CYCkWnz8ErwGEPrSUnB3jtDUiWXmFu6xabYHrStUhtXE",
     "$createdAt": 1795867201000,
     "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
@@ -804,7 +848,7 @@
    "2d6efc395366c81c27927c02de710dd956885386b43ac5d50d15223ffb8b3ab7": "2026-11-28T12:00:10.000Z",
    "fa252d1f532615d0baa57448fab7a47da074f88095679deeb64b1dc85be873a4": "2026-11-28T12:00:11.000Z",
    "8ded2293835fdc4ffb0db65b5295c8a64820eaf155933b00f18477ee50b2dce7": "2026-11-28T12:00:12.000Z",
-   "08f1aa0d3a40daf955f21d3a30419d4a39da7fce982ac3018c6b7dd5b10eabb8": "2026-11-28T12:00:20.000Z",
+   "08f1aa0d3a40daf955f21d3a30419d4a39da7fce982ac3018c6b7dd5b10eabb8": "2026-11-28T12:00:21.000Z",
    "469801b3e96061a87d9a9692eec774fdcb7ef74cc64870f553b3e1671977bec1": "2026-11-28T12:00:30.000Z"
   },
   "expected": {
@@ -1016,7 +1060,7 @@
  "status": {
   "threshold": 2,
   "size": 3,
-  "partRules": "landed: create doc present; replace doc same, or later with nonce spent; delete doc absent with nonce spent. expired: takenByOther and not landed. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent. ready: shares >= N. else collecting.",
+  "partRules": "expired: takenByOther (wins over everything below). landed: create doc present; replace doc same, or later with nonce spent and a claim; delete doc absent with nonce spent. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, or a replace whose document is at a later revision. ready: shares >= N. else collecting.",
   "cases": [
    {
     "name": "collecting",
@@ -1153,6 +1197,25 @@
     }
    },
    {
+    "name": "another request landed with its nonce, whatever its document shows",
+    "parts": [
+     {
+      "action": "create",
+      "shares": 2,
+      "claim": true,
+      "nonceSpent": true,
+      "doc": "present",
+      "takenByOther": true
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
     "name": "a replace at its revision with the same fields",
     "parts": [
      {
@@ -1191,12 +1254,12 @@
     }
    },
    {
-    "name": "a replace at a later revision, nonce spent",
+    "name": "a replace at a later revision, nonce spent, claimed",
     "parts": [
      {
       "action": "replace",
       "shares": 2,
-      "claim": false,
+      "claim": true,
       "nonceSpent": true,
       "doc": "later",
       "takenByOther": false
@@ -1210,12 +1273,31 @@
     }
    },
    {
-    "name": "a replace at a later revision, nonce free",
+    "name": "a replace at a later revision, nonce spent, no claim",
     "parts": [
      {
       "action": "replace",
       "shares": 2,
       "claim": false,
+      "nonceSpent": true,
+      "doc": "later",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
+    "name": "a replace at a later revision, nonce free",
+    "parts": [
+     {
+      "action": "replace",
+      "shares": 2,
+      "claim": true,
       "nonceSpent": false,
       "doc": "later",
       "takenByOther": false
@@ -1223,9 +1305,9 @@
     ],
     "expect": {
      "parts": [
-      "ready"
+      "expired"
      ],
-     "status": "ready"
+     "status": "expired"
     }
    },
    {

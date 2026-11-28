@@ -197,7 +197,7 @@ pub fn now_iso() -> String {
     iso_from_ms(ms)
 }
 
-fn iso_from_ms(ms: u128) -> String {
+pub(crate) fn iso_from_ms(ms: u128) -> String {
     let secs = i64::try_from(ms / 1000).unwrap_or(0);
     let millis = ms % 1000;
     let days = secs.div_euclid(86_400);
