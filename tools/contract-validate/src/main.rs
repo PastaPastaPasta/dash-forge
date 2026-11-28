@@ -31,7 +31,8 @@
 //!      validation every create and replace runs), then, as a node does on a create, the
 //!      `distinctFrom` and `encryptedFor` shape checks: each accepted case must pass and each
 //!      refused one must fail for the reason it names. `<dir>/<name>.replace.json` holds replaces
-//!      of a stored document, refused outright on a type that is not `documentsMutable`, else
+//!      of a stored document, refused outright (reason `documentsMutable`, a label of this tool,
+//!      not a consensus code) on a type that is not `documentsMutable`, else
 //!      judged by the same property validation and then v5's `immutable` check (a changed
 //!      property listed by name, or under a condition that holds, is 40128);
 //!      `<dir>/<name>.indices.json` says which indexes the parsed contract must (not) have;

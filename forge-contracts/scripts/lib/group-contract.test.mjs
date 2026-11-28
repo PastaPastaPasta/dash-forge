@@ -91,6 +91,15 @@ test('a reservation that lands during the rerun is not registered twice', async 
   assert.equal(t.record().contractId, reserved.contractId);
 });
 
+test('a reservation whose nonce is used and whose contract cannot be found stops the run', async () => {
+  const t = setup();
+  t.write({ org: { contractId: contractId(t.fake.ownerId, 6n), contractGroupId: GROUP, identityNonce: '6', status: 'broadcasting' } });
+  t.fake.externalTransition(1);
+  await assert.rejects(t.run(), /was broadcast and its nonce is used/);
+  assert.equal(t.fake.broadcasts, 0);
+  assert.equal(t.record().status, 'broadcasting');
+});
+
 test('a recorded contract that is not this schema stops the run', async () => {
   const t = setup();
   const id = contractId(t.fake.ownerId, 3n);
