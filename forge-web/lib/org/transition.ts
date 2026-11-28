@@ -5,7 +5,7 @@ import type { ForgeIds } from '../deployments'
 import { contractKindOfType } from '../layout'
 import { isNonceSpent, isNonceTooFar } from '../sdk/nonce'
 import { isDeclaredLink, parseDeclaredOrg } from './gate'
-import { rosterMismatch, type Roster } from './roster'
+import { rosterMismatch, type Roster } from './roster-fields'
 import { hex, isObject, unhex } from './util'
 
 export type DocAction = 'create' | 'replace' | 'delete'
