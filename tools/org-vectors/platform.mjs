@@ -107,9 +107,9 @@ export async function platformVectors(dtiPath, source) {
   const OUTSIDER_OWNER = id32('outsider');
   // orgMember documents as a reader sees them: which bind an identity to a member, and which not.
   const memberDocs = [
-    { $id: id32('om1'), $ownerId: m1.ownerId, $createdAt: createdAt(1), org: ORG, room: ROOM, authPub: m1.authPub, proof: m1.proof, sealedShare: m1.sealedShare },
+    { $id: id32('om1'), $ownerId: m1.ownerId, $createdAt: createdAt(1), org: ORG, room: ROOM, authPub: m1.authPub, proof: m1.proof },
     { $id: id32('om2'), $ownerId: m2.ownerId, $createdAt: createdAt(2), org: ORG, room: ROOM, authPub: m2.authPub, proof: m2.proof },
-    { $id: id32('om3'), $ownerId: m3.ownerId, $createdAt: createdAt(3), org: ORG, room: ROOM, authPub: m3.authPub, proof: m3.proof, sealedShare: m3.sealedShare },
+    { $id: id32('om3'), $ownerId: m3.ownerId, $createdAt: createdAt(3), org: ORG, room: ROOM, authPub: m3.authPub, proof: m3.proof },
     { $id: id32('om-copied'), $ownerId: STRANGER, $createdAt: createdAt(0), org: ORG, room: ROOM, authPub: m1.authPub, proof: m1.proof },
     { $id: id32('om-other-org'), $ownerId: id32('m2 second identity'), $createdAt: createdAt(4), org: ORG, room: ROOM, authPub: m2.authPub, proof: proof(p2, NETWORK, STRANGER, id32('m2 second identity')) },
     { $id: id32('om-other-net'), $ownerId: id32('m2 third identity'), $createdAt: createdAt(4), org: ORG, room: ROOM, authPub: m2.authPub, proof: proof(p2, 'devnet-x', ORG, id32('m2 third identity')) },
@@ -118,6 +118,11 @@ export async function platformVectors(dtiPath, source) {
       return { $id: id32(`om3-extra-${k}`), $ownerId: owner, $createdAt: createdAt(10 + k), org: ORG, room: ROOM, authPub: m3.authPub, proof: proof(p3, NETWORK, ORG, owner) };
     }),
     { $id: id32('om-outsider'), $ownerId: OUTSIDER_OWNER, $createdAt: createdAt(5), org: ORG, room: ROOM, authPub: outsider.keys.authPub, proof: proof(outsider, NETWORK, ORG, OUTSIDER_OWNER) },
+  ];
+  // orgShare documents: one per member identity per ceremony (unique org, $ownerId, cid).
+  const shareDocs = [
+    { $id: id32('os1'), $ownerId: m1.ownerId, $createdAt: createdAt(1), org: ORG, cid: CID, sealed: m1.sealedShare },
+    { $id: id32('os3'), $ownerId: m3.ownerId, $createdAt: createdAt(3), org: ORG, cid: CID, sealed: m3.sealedShare },
   ];
   const MAX_PER_KEY = 4;
   const bound = {};
@@ -380,8 +385,9 @@ export async function platformVectors(dtiPath, source) {
     limits: { maxPart: MAX_PART, maxParts: MAX_PARTS, maxPayload: MAX_PAYLOAD, maxIdentitiesPerKey: MAX_PER_KEY },
     rules: {
       proofMessage: 'UTF-8 of "dash-forge/org-member/1\\n<network>\\n<org base58>\\n<$ownerId base58>", Ed25519 by authPub',
-      sealedShare: 'XChaCha20-Poly1305, key HKDF-SHA256(ikm = 64-byte BIP-39 seed, salt "dash-forge/org-share/1", info "<network>\\n<org base58>\\n<cid hex>", 32 bytes), plaintext the 32-byte big-endian secret share of the signing slot, stored nonce(24) || ciphertext || tag(16)',
+      sealedShare: 'orgShare.sealed: XChaCha20-Poly1305, key HKDF-SHA256(ikm = 64-byte BIP-39 seed, salt "dash-forge/org-share/1", info "<network>\\n<org base58>\\n<cid hex>", 32 bytes), plaintext the 32-byte big-endian secret share of the signing slot, stored nonce(24) || ciphertext || tag(16)',
       payload: 'canonical JSON of the envelope as UTF-8; fmt 1 = deflate-raw of it; parts of at most maxPart bytes; digest = SHA-256 of the whole stored payload; inflated at most maxPayload bytes. Writers use fmt 1 when it is shorter.',
+      shares: 'a member opens the orgShare of one of its bound identities whose cid is the signing ceremony, and checks the opened share against its public share',
       memberIdentities: 'an orgMember counts when org matches, authPub is a roster member and proof verifies for its $ownerId; at most maxIdentitiesPerKey per authPub, earliest $createdAt (then $id) first',
       requestIds: 'every Forge request id is <group>-<first 16 hex of the proposer auth key>; a bare group resolves when exactly one proposer used it; a proposal without a Forge note is its own request, id = proposal id',
       status: 'invalid (structural or review problems) > declined > done (every part done or gone) > expired (any part expired) > ready (every part ready, done or gone) > collecting',
@@ -390,6 +396,7 @@ export async function platformVectors(dtiPath, source) {
     sealedShares: sealedCases,
     memberDocs,
     boundIdentities: bound,
+    shareDocs,
     roster,
     messages: messageCases,
     reassembly,

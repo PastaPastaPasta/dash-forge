@@ -16,8 +16,9 @@
  },
  "rules": {
   "proofMessage": "UTF-8 of \"dash-forge/org-member/1\\n<network>\\n<org base58>\\n<$ownerId base58>\", Ed25519 by authPub",
-  "sealedShare": "XChaCha20-Poly1305, key HKDF-SHA256(ikm = 64-byte BIP-39 seed, salt \"dash-forge/org-share/1\", info \"<network>\\n<org base58>\\n<cid hex>\", 32 bytes), plaintext the 32-byte big-endian secret share of the signing slot, stored nonce(24) || ciphertext || tag(16)",
+  "sealedShare": "orgShare.sealed: XChaCha20-Poly1305, key HKDF-SHA256(ikm = 64-byte BIP-39 seed, salt \"dash-forge/org-share/1\", info \"<network>\\n<org base58>\\n<cid hex>\", 32 bytes), plaintext the 32-byte big-endian secret share of the signing slot, stored nonce(24) || ciphertext || tag(16)",
   "payload": "canonical JSON of the envelope as UTF-8; fmt 1 = deflate-raw of it; parts of at most maxPart bytes; digest = SHA-256 of the whole stored payload; inflated at most maxPayload bytes. Writers use fmt 1 when it is shorter.",
+  "shares": "a member opens the orgShare of one of its bound identities whose cid is the signing ceremony, and checks the opened share against its public share",
   "memberIdentities": "an orgMember counts when org matches, authPub is a roster member and proof verifies for its $ownerId; at most maxIdentitiesPerKey per authPub, earliest $createdAt (then $id) first",
   "requestIds": "every Forge request id is <group>-<first 16 hex of the proposer auth key>; a bare group resolves when exactly one proposer used it; a proposal without a Forge note is its own request, id = proposal id",
   "status": "invalid (structural or review problems) > declined > done (every part done or gone) > expired (any part expired) > ready (every part ready, done or gone) > collecting"
@@ -113,8 +114,7 @@
    "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
    "room": "t_000102030405060708090a0b0c0d0e0f",
    "authPub": "e40009bfc871bc5cb5f02fd1d71e13cbed2457d661bbad2920ff07add85402bb",
-   "proof": "ee642c8fd975abd140d442082d6ff60ce04156fb92b9d324f335ef82a037dd248a2b24dff2681529c99499825805f716e35fb1055df42be6b42eab50f531d407",
-   "sealedShare": "000102030405060708090a0b0c0d0e0f10111213141516177ed766f499eda12c21b9f8f0748a594e33cce825d14deabfb9adb1ea42ede1b54437b7340f9b094c9bc5b6c1ed9cff2b"
+   "proof": "ee642c8fd975abd140d442082d6ff60ce04156fb92b9d324f335ef82a037dd248a2b24dff2681529c99499825805f716e35fb1055df42be6b42eab50f531d407"
   },
   {
    "$id": "2C3G2N1hKeJaSxd9rvGKx4sBcEgEq5YuSSd4fvGmz5Nf",
@@ -132,8 +132,7 @@
    "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
    "room": "t_000102030405060708090a0b0c0d0e0f",
    "authPub": "01b3c4dbcf7cefa96c5273ab15185869f23b83f7e18742cd8b5776f5f289caac",
-   "proof": "3545fcc34859da2e29fbfbd592950eaff5f216228c6a421a92269a4c3612c03e4df864f230b00429b6fd40a1e517c81bfbcf052fb277f30c24bb7aef0569870e",
-   "sealedShare": "000102030405060708090a0b0c0d0e0f1011121314151617ea7ecc79c4231878455c6e7256453c01f90f02ca31f713f8d5ad011156a04f8ff7db656989167a2d5c951b4f716a0b87"
+   "proof": "3545fcc34859da2e29fbfbd592950eaff5f216228c6a421a92269a4c3612c03e4df864f230b00429b6fd40a1e517c81bfbcf052fb277f30c24bb7aef0569870e"
   },
   {
    "$id": "89gnxUAZEVsNUyRphVLUXDJkWyfDMohigvTxxvqgPpbr",
@@ -231,6 +230,24 @@
    "8Ey7pawzR9amLM1c1DTqZTpYNeJeUAS35V82nnfPojVU"
   ]
  },
+ "shareDocs": [
+  {
+   "$id": "2WJUxTc98wJqq5xEhsU58HeUHsSpnR6byZrvw7zZZMJc",
+   "$ownerId": "53fhHpTqr5pTVThnPTjK1fQvLhjYYMwWJ6CVJxBpmUhs",
+   "$createdAt": 1795867201000,
+   "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
+   "cid": "539ffe602152c5b59cf6e37fd2b896bf7f1d104af1aca062d9704539727851e7",
+   "sealed": "000102030405060708090a0b0c0d0e0f10111213141516177ed766f499eda12c21b9f8f0748a594e33cce825d14deabfb9adb1ea42ede1b54437b7340f9b094c9bc5b6c1ed9cff2b"
+  },
+  {
+   "$id": "DjnpWyq8zL7YodFAYNn8TnegnXsmT3WMbctwAJfupSsm",
+   "$ownerId": "DPLLaaeocmi47CA5UoUPv5WLE59hyrTacF4aMvcUcYLs",
+   "$createdAt": 1795867203000,
+   "org": "6fGaeK9sCne19t3X54mk4JRJapmo8VvnQ9kgDix9PG3R",
+   "cid": "539ffe602152c5b59cf6e37fd2b896bf7f1d104af1aca062d9704539727851e7",
+   "sealed": "000102030405060708090a0b0c0d0e0f1011121314151617ea7ecc79c4231878455c6e7256453c01f90f02ca31f713f8d5ad011156a04f8ff7db656989167a2d5c951b4f716a0b87"
+  }
+ ],
  "roster": {
   "room": "t_000102030405060708090a0b0c0d0e0f",
   "relay": "https://multisig.dashhq.org",
