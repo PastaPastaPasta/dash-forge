@@ -131,6 +131,8 @@ interface AuthContextValue {
   adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: Parameters<AuthController['adoptWalletKeys']>[3]) => Promise<void>
   /** Which Forge contracts the session's keys cover, and whether a held key is unlimited. */
   readonly grants: AuthSession['grants'] | null
+  /** One held key covers the whole Forge group (forge-user, forge-org); null when not known. */
+  readonly groupKey: boolean | null
   readonly unlimitedKey: boolean
   readonly unboundedKey: boolean
   unlock: (identityId: string, method: UnlockMethod) => Promise<void>
@@ -407,6 +409,7 @@ export function AuthProvider({
       storage: session?.storage ?? null,
       origin: session?.origin ?? null,
       grants: session?.grants ?? null,
+      groupKey: session?.groupKey ?? null,
       unlimitedKey: session?.unlimited === true,
       unboundedKey: session?.unbounded === true,
       limitedKeys: controller.supportsLimitedKeys(),
@@ -455,6 +458,7 @@ export function SignedOutView({ children }: { children: React.ReactNode }): JSX.
       storage: null,
       origin: null,
       grants: null,
+      groupKey: null,
       unlimitedKey: false,
       unboundedKey: false,
       vaults: [],

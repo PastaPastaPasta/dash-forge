@@ -7,8 +7,7 @@ import { useContext, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { ORGS_ON, refreshOrgs, useOrgRecords, useOrgView } from '@/hooks/use-orgs'
 import { newRequestCost } from '@/lib/org/cost'
-import { orgWriteScope } from '@/lib/org/transport'
-import { useWriteGuard } from '@/hooks/use-write-guard'
+import { useOrgWriteGuard } from './use-org-guard'
 import type { CostPreview } from '@/lib/sdk'
 import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { createRequest, requestLink, type CreateRequestInput } from '@/lib/org/service'
@@ -36,7 +35,7 @@ export function useOrgRequester(ownerId: string | null): OrgRequester {
   const records = useOrgRecords()
   const record = ORGS_ON && ownerId ? (records.find((r) => r.orgId === ownerId) ?? null) : null
   const { signer } = useAuth()
-  const guard = useWriteGuard()
+  const guard = useOrgWriteGuard()
   const { view } = useOrgView(ownerId ?? '')
   const needsMember = signer !== null && view !== null && !view.members.some((m) => m.ownerId === signer.identityId)
   const [asking, setAsking] = useState(false)
@@ -54,7 +53,7 @@ export function useOrgRequester(ownerId: string | null): OrgRequester {
   const submit = async (build: (sdk: EvoSDK) => Promise<CreateRequestInput | null>, intent?: string): Promise<boolean> => {
     const forge = NETWORKS[DEFAULT_NETWORK].v2
     if (record === null || forge === null) throw new Error('connect the organization first')
-    if (!guard.check(newRequestCost(1, needsMember), orgWriteScope(forge), 'ask the co-signers') || signer === null) {
+    if (!guard(newRequestCost(1, needsMember), 'ask the co-signers') || signer === null) {
       throw new Error('Sign in to Forge first: requests are posted with your own identity.')
     }
     const sdk = await ensureSdk(DEFAULT_NETWORK)

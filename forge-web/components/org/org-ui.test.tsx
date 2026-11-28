@@ -9,7 +9,8 @@ import type { OrgView, RequestView } from '@/lib/org/service'
 import { dismissedRequests, forgetOrg, saveOrg, type OrgRecord } from '@/lib/org/store'
 import { useState } from 'react'
 
-vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null }) }))
+const auth = vi.hoisted(() => ({ value: { identity: null } as Record<string, unknown> }))
+vi.mock('@/contexts/auth-context', () => ({ useAuth: () => auth.value }))
 
 const { RequestCard } = await import('./request-card')
 const { NeedsSignature } = await import('./needs-signature')
@@ -124,6 +125,29 @@ describe('request card', () => {
     act(() => (host.querySelector('[data-testid="org-dismiss"]') as HTMLButtonElement).click())
     expect(dismissedRequests('testnet', record.orgId).has('0123456789abcdef')).toBe(true)
     expect(host.querySelector('[data-testid="org-decline"]')).toBeNull()
+  })
+})
+
+describe('org write guard', () => {
+  it('a session whose keys each cover one Forge contract is asked to replace its key before signing', async () => {
+    const { useUiStore } = await import('@/hooks/use-ui-store')
+    const openLogin = vi.fn()
+    useUiStore.setState({ openLogin })
+    auth.value = { identity: 'Me1111111111111111111111111111111111111111', signer: { identityId: 'Me1111111111111111111111111111111111111111' }, balance: '100000000000', grants: { core: true, collab: true, community: true, meta: true }, groupKey: false, keyLimits: null, funds: null, unlockScope: 'full' }
+    try {
+      const v = view([request('collecting', false)])
+      render(<RequestCard view={v} request={v.requests[0]!} />)
+      act(() => (host.querySelector('[data-testid="org-sign"]') as HTMLButtonElement).click())
+      expect(openLogin).toHaveBeenCalledWith('wallet-replace')
+      expect(document.querySelector('[role="dialog"]')).toBeNull()
+      openLogin.mockClear()
+      auth.value = { ...auth.value, groupKey: true }
+      render(<RequestCard view={v} request={v.requests[0]!} />)
+      act(() => (host.querySelector('[data-testid="org-sign"]') as HTMLButtonElement).click())
+      expect(openLogin).not.toHaveBeenCalled()
+    } finally {
+      auth.value = { identity: null }
+    }
   })
 })
 

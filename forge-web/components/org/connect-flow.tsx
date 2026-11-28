@@ -8,14 +8,13 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { useAuth } from '@/contexts/auth-context'
 import { refreshOrgs } from '@/hooks/use-orgs'
-import { useWriteGuard } from '@/hooks/use-write-guard'
 import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { orgWritesCost } from '@/lib/org/cost'
-import { orgWriteScope } from '@/lib/org/transport'
 import { multisigAppUrl, orgNetworkName } from '@/lib/org/gate'
 import { connect, verifyInvite, type ConnectCandidate } from '@/lib/org/service'
 import { ensureSdk } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
+import { useOrgWriteGuard } from './use-org-guard'
 import { EMPTY_PHRASE, PhraseField, unlockFrom, type PhraseState } from './phrase-field'
 
 export function NewOrganizationSteps(): JSX.Element {
@@ -40,7 +39,7 @@ export function NewOrganizationSteps(): JSX.Element {
 export function ConnectFlow({ initial = '' }: { initial?: string }): JSX.Element {
   const router = useRouter()
   const { signer } = useAuth()
-  const guard = useWriteGuard()
+  const guard = useOrgWriteGuard()
   const [text, setText] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
@@ -106,7 +105,7 @@ export function ConnectFlow({ initial = '' }: { initial?: string }): JSX.Element
             <Button
               variant="primary"
               onClick={() => {
-                if (guard.check(memberCost, orgWriteScope(forge), 'connect this organization')) setConfirming(true)
+                if (guard(memberCost, 'connect this organization')) setConfirming(true)
               }}
               data-testid="org-connect-save"
             >

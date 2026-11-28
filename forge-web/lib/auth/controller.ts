@@ -60,7 +60,7 @@ import { clearLedger } from '../spend'
 import { clearInbox } from '../view/inbox'
 import { clearDrafts } from '../view/draft-text'
 import { forgetLastIdentity, readLastIdentity, rememberLastIdentity } from './last-identity'
-import { checkWalletKey, hasNoLimits, isSigningContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './wallet-key'
+import { checkWalletKey, coversGroup, hasNoLimits, isSigningContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './wallet-key'
 import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
 import { acknowledgeKeys, checkKeys, forgetKeySnapshot, type WatchedKey } from './key-watch'
@@ -222,6 +222,8 @@ export interface AuthSession {
   readonly origin?: KeyOrigin
   /** Which Forge contracts this session's keys can sign on. */
   readonly grants?: { readonly core: boolean; readonly collab: boolean; readonly community: boolean; readonly meta: boolean }
+  /** One key this session holds covers the whole Forge group, as forge-user and forge-org writes need ({@link grants} may come from several keys). */
+  readonly groupKey?: boolean
   /**
    * A key this session holds has no budget or no expiry (a shipped wallet's key): whoever copies
    * it can spend until it is disabled. The UI warns.
@@ -752,7 +754,7 @@ export class AuthController {
       if (!match) throw keyFailure(identity, secret.keyId, origin)
       const keyType = identity.publicKeys.find((k) => k.keyId === match.keyId)?.keyTypeNumber
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
-      let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded' | 'origin'> = {}
+      let extra: Pick<AuthSession, 'grants' | 'groupKey' | 'unlimited' | 'unbounded' | 'origin'> = {}
       if (storage === 'vault') {
         const forge = NETWORKS[this.network].v2
         if (!forge) throw new KeyNotUsableError(new NotDeployedError(NETWORKS[this.network]).message)
@@ -938,7 +940,7 @@ export class AuthController {
     secret: VaultSecret,
     keyId: number,
     forge: ForgeIds,
-  ): Promise<Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded'>> {
+  ): Promise<Pick<AuthSession, 'grants' | 'groupKey' | 'unlimited' | 'unbounded'>> {
     const mainKey = identity.publicKeys.find((k) => k.keyId === keyId)
     if (!mainKey) throw new KeyNotUsableError()
     const main = keyScope(mainKey, forge)
@@ -957,6 +959,7 @@ export class AuthController {
     let community = main.community
     let meta = main.meta
     let unbounded = main.unbounded
+    let groupKey = coversGroup(main)
     let unlimited = hasNoLimits(mainKey)
     for (const e of secret.extra ?? []) {
       // Held only to be disabled later: it grants nothing.
@@ -976,10 +979,11 @@ export class AuthController {
       community ||= scope.community
       meta ||= scope.meta
       unbounded ||= scope.unbounded
+      groupKey ||= coversGroup(scope)
       unlimited ||= hasNoLimits(k)
     }
     this.scopes = { main, extra: extraScopes }
-    return { grants: { core, collab, community, meta }, unlimited, unbounded }
+    return { grants: { core, collab, community, meta }, groupKey, unlimited, unbounded }
   }
 
   /**

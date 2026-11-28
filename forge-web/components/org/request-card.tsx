@@ -8,15 +8,14 @@ import { useCopy } from '@/hooks/use-copy'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useAuth } from '@/contexts/auth-context'
 import { useOrgsStore, useUnlocked, setOrgView } from '@/hooks/use-orgs'
-import { useWriteGuard } from '@/hooks/use-write-guard'
 import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
 import { orgWritesCost } from '@/lib/org/cost'
-import { orgWriteScope } from '@/lib/org/transport'
 import { declinedText, refusedText } from '@/lib/org/requests'
 import { declineRequest, finishRequest, loadOrg, requestLink, signRequest, type OrgView, type RequestView } from '@/lib/org/service'
 import { dismissRequest } from '@/lib/org/store'
 import { ensureSdk, type CostPreview } from '@/lib/sdk'
 import { timeAgo } from '@/lib/view/format'
+import { useOrgWriteGuard } from './use-org-guard'
 import { EMPTY_PHRASE, PhraseField, unlockFrom, type PhraseState } from './phrase-field'
 
 export function absoluteRequestLink(orgId: string, requestId: string): string {
@@ -71,7 +70,7 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
   const { record } = view
   const unlocked = useUnlocked(record.authPub)
   const { signer } = useAuth()
-  const guard = useWriteGuard()
+  const guard = useOrgWriteGuard()
   const [asking, setAsking] = useState<Pending | null>(null)
   const [phrase, setPhrase] = useState<PhraseState>(EMPTY_PHRASE)
   const forge = NETWORKS[DEFAULT_NETWORK].v2
@@ -99,7 +98,7 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
   }
 
   const start = (what: Pending): void => {
-    if (!guard.check(actionCost(what, request, firstWrite), orgWriteScope(forge), ACTION[what].confirm.toLowerCase())) return
+    if (!guard(actionCost(what, request, firstWrite), ACTION[what].confirm.toLowerCase())) return
     setAsking(what)
   }
 
