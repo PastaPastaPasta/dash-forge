@@ -18,12 +18,12 @@ use super::OrgError;
 pub struct Shares {
     pub index: u32,
     pub cid: String,
-    shares: BTreeMap<String, Scalar>,
+    by_slot: BTreeMap<String, Scalar>,
 }
 
 impl Drop for Shares {
     fn drop(&mut self) {
-        for s in self.shares.values_mut() {
+        for s in self.by_slot.values_mut() {
             s.zeroize();
         }
     }
@@ -35,12 +35,12 @@ impl Shares {
         Self {
             index,
             cid: cid.to_string(),
-            shares: BTreeMap::from([(slot.to_string(), share)]),
+            by_slot: BTreeMap::from([(slot.to_string(), share)]),
         }
     }
 
     pub fn get(&self, slot: &str) -> Option<&Scalar> {
-        self.shares.get(slot)
+        self.by_slot.get(slot)
     }
 }
 
@@ -70,9 +70,9 @@ pub fn recover_shares(
     let shares = Shares {
         index: me,
         cid: cid.to_string(),
-        shares: receive_shares(seed, keys, &c.config, cid, &c.reveals)?,
+        by_slot: receive_shares(seed, keys, &c.config, cid, &c.reveals)?,
     };
-    for (slot, share) in &shares.shares {
+    for (slot, share) in &shares.by_slot {
         let expected = c.slot(slot).map(|(_, k)| k.public_shares[&me].as_str());
         if expected != Some(bls::g1_hex(&bls::g1(share)).as_str()) {
             return Err(OrgError::Share(format!(

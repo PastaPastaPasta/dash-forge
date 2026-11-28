@@ -727,6 +727,11 @@ ORG_REQUEST = {
     'status': E('collecting', 'ready', 'done', 'expired', 'declined', 'invalid'),
     'collected': D('Valid signatures (the fewest any part of the request has).', I),
     'threshold': I, 'signedByYou': B, 'declinedByYou': B,
+    'text': D('The sentence both clients show for `invalid` ("Forge won\'t sign this: …"), `declined` and a done '
+              'request whose document is gone; null otherwise.', nl(S)),
+    'problems': D('Why Forge won\'t sign it; empty when it passes review.', SA),
+    'parts': D('Each part\'s state, in order.', A(E('collecting', 'ready', 'done', 'gone', 'expired'))),
+    'dismissed': D('Dismissed on this computer (`dg org dismiss`).', B),
 }
 ORG_REQUEST_REQ = ['org', 'orgId', 'id', 'title', 'status', 'collected', 'threshold']
 cmd('org connect', 'An organization connected on this computer.', {
@@ -737,7 +742,7 @@ cmd('org connect', 'An organization connected on this computer.', {
 cmd('org list', 'The organizations connected on this computer for the network (public values only).', {
     'network': S,
     'orgs': A(O({'network': S, 'orgId': S, 'room': S, 'relay': S, 'authPub': S, 'label': S, 'threshold': I,
-                 'members': A(ORG_MEMBER)},
+                 'members': A(ORG_MEMBER), 'dismissed': D('Requests dismissed on this computer.', SA)},
                 ['network', 'orgId', 'room', 'relay', 'authPub', 'label', 'threshold', 'members'])),
 }, ['network', 'orgs'])
 cmd('org requests', 'Every request in the connected organizations.', {
@@ -745,7 +750,6 @@ cmd('org requests', 'Every request in the connected organizations.', {
 }, ['requests'])
 cmd('org show', 'One request: what it writes, who signed and declined, and what is next.', {
     **ORG_REQUEST, 'writes': SA, 'signers': SA, 'declined': A(O({'by': S, 'reason': S}, ['by', 'reason'])),
-    'problems': D('Why Forge refuses to sign it; empty when it passes review.', SA),
     'next': D('The command to run next, or null.', nl(S)),
 }, ORG_REQUEST_REQ + ['writes', 'signers', 'declined', 'problems', 'next'])
 cmd('org sign', 'A request signed (and put on Platform when this signature completed it).', {
@@ -758,6 +762,12 @@ cmd('org decline', 'A request declined.', {
 cmd('org finish', 'A fully signed request put on Platform. A request that cannot finish yet exits with an error instead.', {
     'status': E('done'), 'org': S, 'id': S, 'broadcast': I, 'collected': I, 'threshold': I,
 }, ['status', 'id'])
+cmd('org dismiss', 'A request hidden on this computer (nothing is written).', {
+    'status': E('dismissed'), 'org': S, 'id': S,
+}, ['status', 'id'])
+cmd('org migrate', 'Your own messages in the relay\'s open requests copied to Platform.', {
+    'status': E('migrated', 'nothing'), 'org': S, 'posted': I,
+}, ['status', 'posted'])
 
 # -- branches and publishing ------------------------------------------------------------------
 BRANCH_ROW = O({'branch': S, 'tip': S, 'publishedAs': S, 'onto': S}, ['branch', 'tip', 'publishedAs', 'onto'])

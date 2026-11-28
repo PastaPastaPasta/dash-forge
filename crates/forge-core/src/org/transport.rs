@@ -51,7 +51,9 @@ pub fn member_proof(keys: &MemberKeys, network: &str, org: &str, owner: &str) ->
 
 pub fn verify_proof(auth_pub: &[u8], network: &str, org: &str, owner: &str, proof: &[u8]) -> bool {
     let (Ok(key), Ok(sig)) = (
-        <[u8; 32]>::try_from(auth_pub).map_err(|_| ()).and_then(|k| VerifyingKey::from_bytes(&k).map_err(|_| ())),
+        <[u8; 32]>::try_from(auth_pub)
+            .map_err(|_| ())
+            .and_then(|k| VerifyingKey::from_bytes(&k).map_err(|_| ())),
         Signature::from_slice(proof),
     ) else {
         return false;
@@ -87,13 +89,25 @@ pub fn seal_share(
 }
 
 /// [`seal_share`] with a random nonce.
-pub fn seal_share_random(seed: &Seed, network: &str, org: &str, cid: &str, share: &Scalar) -> Vec<u8> {
+pub fn seal_share_random(
+    seed: &Seed,
+    network: &str,
+    org: &str,
+    cid: &str,
+    share: &Scalar,
+) -> Vec<u8> {
     let mut nonce = [0u8; 24];
     getrandom::getrandom(&mut nonce).expect("OS random source");
     seal_share(seed, network, org, cid, share, nonce)
 }
 
-pub fn open_share(seed: &Seed, network: &str, org: &str, cid: &str, sealed: &[u8]) -> Option<Scalar> {
+pub fn open_share(
+    seed: &Seed,
+    network: &str,
+    org: &str,
+    cid: &str,
+    sealed: &[u8],
+) -> Option<Scalar> {
     if sealed.len() < 24 + 16 {
         return None;
     }
@@ -201,12 +215,18 @@ pub fn reassemble(docs: &[MessageDoc]) -> Vec<Carried> {
     }
     let mut out = Vec::new();
     for ((owner, digest), mut ds) in groups {
-        ds.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+        ds.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         let mut chosen: BTreeMap<u64, &MessageDoc> = BTreeMap::new();
         for d in ds {
             chosen.entry(d.part).or_insert(d);
         }
-        let Some(first) = chosen.get(&0) else { continue };
+        let Some(first) = chosen.get(&0) else {
+            continue;
+        };
         let (parts, fmt) = (first.parts, first.fmt);
         let whole = (1..=MAX_PARTS as u64).contains(&parts)
             && chosen.len() as u64 == parts
@@ -217,7 +237,10 @@ pub fn reassemble(docs: &[MessageDoc]) -> Vec<Carried> {
         if !whole {
             continue;
         }
-        let payload: Vec<u8> = chosen.values().flat_map(|d| d.body.iter().copied()).collect();
+        let payload: Vec<u8> = chosen
+            .values()
+            .flat_map(|d| d.body.iter().copied())
+            .collect();
         if Sha256::digest(&payload).as_slice() != digest {
             continue;
         }
@@ -262,7 +285,11 @@ pub fn bind_identities<'a>(
     members: &BTreeSet<String>,
 ) -> BTreeMap<String, Vec<&'a MemberDoc>> {
     let mut sorted: Vec<&MemberDoc> = docs.iter().collect();
-    sorted.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+    sorted.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
     let mut out: BTreeMap<String, Vec<&MemberDoc>> = BTreeMap::new();
     for d in sorted {
         let key = hex::encode(&d.auth_pub);
@@ -296,10 +323,15 @@ pub fn merge(carried: &[Carried], owner_key: &BTreeMap<String, String>) -> Vec<T
     for c in carried {
         let from = c.envelope["from"].as_str();
         let kind = c.envelope["type"].as_str().unwrap_or_default();
-        if from.is_none() || owner_key.get(&c.owner).map(String::as_str) != from || !MESSAGE_TYPES.contains(&kind) {
+        if from.is_none()
+            || owner_key.get(&c.owner).map(String::as_str) != from
+            || !MESSAGE_TYPES.contains(&kind)
+        {
             continue;
         }
-        let Ok(id) = envelope::id(&c.envelope) else { continue };
+        let Ok(id) = envelope::id(&c.envelope) else {
+            continue;
+        };
         let slot = best.entry(id).or_insert((c.created_at, &c.envelope));
         if c.created_at < slot.0 {
             *slot = (c.created_at, &c.envelope);
@@ -363,36 +395,6 @@ pub struct Roster {
 pub const ROSTER_SLOT: &str = "high";
 
 impl Roster {
-    /// From an `org` document's fields: `None` when they are not a well-formed roster.
-    pub fn from_fields(
-        room: &str,
-        relay: Option<&str>,
-        cid: &[u8],
-        key_id: u64,
-        group_key: &[u8],
-        threshold: u64,
-        members: &[u8],
-        pub_shares: &[u8],
-    ) -> Option<Self> {
-        let n = members.len() / 32;
-        let ok = cid.len() == 32
-            && group_key.len() == 48
-            && members.len().is_multiple_of(32)
-            && (2..=64).contains(&n)
-            && pub_shares.len() == n * 48
-            && (2..=n as u64).contains(&threshold);
-        ok.then(|| Self {
-            room: room.to_string(),
-            relay: relay.map(str::to_string),
-            cid: hex::encode(cid),
-            key_id: u32::try_from(key_id).unwrap_or(u32::MAX),
-            group_key: hex::encode(group_key),
-            threshold: usize::try_from(threshold).unwrap_or(0),
-            members: members.chunks(32).map(hex::encode).collect(),
-            pub_shares: pub_shares.chunks(48).map(hex::encode).collect(),
-        })
-    }
-
     /// The roster a completed ceremony gives for its signing slot.
     pub fn of_ceremony(c: &Ceremony, relay: Option<&str>) -> Option<Self> {
         let (slot, keys) = super::signing_slot(c)?;
@@ -473,13 +475,54 @@ impl Roster {
         )
     }
 
+    /// The roster an `org` document's properties describe: `None` when they are not a
+    /// well-formed one.
+    pub fn from_props(p: &BTreeMap<String, crate::platform::FieldValue>) -> Option<Self> {
+        let cid = p.get("cid")?.as_bytes()?;
+        let group_key = p.get("groupKey")?.as_bytes()?;
+        let members = p.get("members")?.as_bytes()?;
+        let pub_shares = p.get("pubShares")?.as_bytes()?;
+        let threshold = p.get("threshold")?.as_u64()?;
+        let n = members.len() / 32;
+        let ok = cid.len() == 32
+            && group_key.len() == 48
+            && members.len().is_multiple_of(32)
+            && (2..=64).contains(&n)
+            && pub_shares.len() == n * 48
+            && (2..=n as u64).contains(&threshold);
+        ok.then(|| Self {
+            room: p
+                .get("room")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            relay: p.get("relay").and_then(|v| v.as_str()).map(str::to_string),
+            cid: hex::encode(&cid),
+            key_id: p
+                .get("keyId")
+                .and_then(crate::platform::FieldValue::as_u64)
+                .and_then(|k| u32::try_from(k).ok())
+                .unwrap_or(u32::MAX),
+            group_key: hex::encode(&group_key),
+            threshold: usize::try_from(threshold).unwrap_or(0),
+            members: members.chunks(32).map(hex::encode).collect(),
+            pub_shares: pub_shares.chunks(48).map(hex::encode).collect(),
+        })
+    }
+
     /// The `members` and `pubShares` byte arrays of the `org` document.
     pub fn members_bytes(&self) -> Vec<u8> {
-        self.members.iter().flat_map(|h| hex::decode(h).unwrap_or_default()).collect()
+        self.members
+            .iter()
+            .flat_map(|h| hex::decode(h).unwrap_or_default())
+            .collect()
     }
 
     pub fn pub_shares_bytes(&self) -> Vec<u8> {
-        self.pub_shares.iter().flat_map(|h| hex::decode(h).unwrap_or_default()).collect()
+        self.pub_shares
+            .iter()
+            .flat_map(|h| hex::decode(h).unwrap_or_default())
+            .collect()
     }
 }
 

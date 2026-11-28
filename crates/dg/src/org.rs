@@ -197,7 +197,8 @@ fn ceremony_path_in(dir: &Path, record: &OrgRecord) -> PathBuf {
 fn save_ceremony_in(dir: &Path, record: &OrgRecord, messages: &[Value]) -> Result<()> {
     let path = ceremony_path_in(dir, record);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec(messages)?)
@@ -353,7 +354,10 @@ async fn connect(ctx: &Ctx, group: &str, relay: Option<&str>, phrase: &PhraseArg
     let (record, ceremony) =
         core_org::connect(&client, &contract, relay, &room, &seed, &keys, &engine).await?;
     let mut record = record;
-    if let Some(old) = connected(ctx).into_iter().find(|r| r.org_id == record.org_id) {
+    if let Some(old) = connected(ctx)
+        .into_iter()
+        .find(|r| r.org_id == record.org_id)
+    {
         record.dismissed = old.dismissed;
     }
     save_ceremony_in(&crate::config::config_dir()?, &record, &ceremony)?;
@@ -824,7 +828,9 @@ async fn dismiss(ctx: &Ctx, id: &str) -> Result<()> {
 
 async fn migrate(ctx: &Ctx, which: &str, phrase: &PhraseArgs) -> Result<()> {
     let orgs = connected(ctx);
-    let record = pick(&orgs, which).cloned().ok_or_else(|| not_connected(which))?;
+    let record = pick(&orgs, which)
+        .cloned()
+        .ok_or_else(|| not_connected(which))?;
     let (seed, keys) = unlock_for(ctx, phrase, &record)?;
     let client = ctx.connect().await?;
     let mut org = load(ctx, &client, record).await?;
@@ -834,7 +840,12 @@ async fn migrate(ctx: &Ctx, which: &str, phrase: &PhraseArgs) -> Result<()> {
     if mine.is_empty() {
         ctx.emit(
             json!({ "status": "nothing", "org": org.record.label, "posted": 0 }),
-            || println!("Nothing to copy: you have no messages in {}'s open requests on the relay.", line(&org.record.label)),
+            || {
+                println!(
+                    "Nothing to copy: you have no messages in {}'s open requests on the relay.",
+                    line(&org.record.label)
+                );
+            },
         );
         return Ok(());
     }
@@ -848,7 +859,11 @@ async fn migrate(ctx: &Ctx, which: &str, phrase: &PhraseArgs) -> Result<()> {
     let posted = org.migrate(&client, &engine, &seed, &keys, mine).await?;
     ctx.emit(
         json!({ "status": "migrated", "org": org.record.label, "posted": posted }),
-        || println!("Copied {posted} message(s) to Platform. `dg org requests` lists the requests."),
+        || {
+            println!(
+                "Copied {posted} message(s) to Platform. `dg org requests` lists the requests."
+            );
+        },
     );
     Ok(())
 }
@@ -1040,7 +1055,10 @@ pub async fn request_repo_create(
         "name": forge_core::resolve::repo_slug(&opts.name)?,
     });
     let engine = s.member.engine(&client)?;
-    post_request(ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra).await
+    post_request(
+        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
+    )
+    .await
 }
 
 /// `dg collab add|remove` on a repository a connected organization owns: a request instead of a
@@ -1085,7 +1103,10 @@ pub async fn route_member_change(
     };
     let extra = json!({ "member": member, "role": role.as_str(), "repo": label });
     let engine = s.member.engine(&client)?;
-    post_request(ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra).await?;
+    post_request(
+        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
+    )
+    .await?;
     Ok(Some(()))
 }
 
@@ -1131,7 +1152,10 @@ pub async fn waiting_count(ctx: &Ctx) -> Option<usize> {
         .and_then(Result::ok)?;
     let mut n = 0;
     for record in orgs {
-        let read = tokio::time::timeout(std::time::Duration::from_secs(8), load(ctx, &client, record));
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            load(ctx, &client, record),
+        );
         if let Ok(Ok(org)) = read.await {
             n += org.waiting().len();
         }
@@ -1167,7 +1191,10 @@ mod tests {
         let r = record("testnet", "A", "acme");
         assert!(load_ceremony_in(dir.path(), &r).is_empty());
         save_ceremony_in(dir.path(), &r, &[json!({ "type": "hello" })]).unwrap();
-        assert_eq!(load_ceremony_in(dir.path(), &r), vec![json!({ "type": "hello" })]);
+        assert_eq!(
+            load_ceremony_in(dir.path(), &r),
+            vec![json!({ "type": "hello" })]
+        );
         assert!(ceremony_path_in(dir.path(), &r).ends_with("org-ceremonies/testnet-A.json"));
     }
 

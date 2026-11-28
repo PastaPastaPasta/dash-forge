@@ -123,8 +123,10 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg milestone list` | [`milestone-list.schema.json`](dg/milestone-list.schema.json) |
 | `dg org connect` | [`org-connect.schema.json`](dg/org-connect.schema.json) |
 | `dg org decline` | [`org-decline.schema.json`](dg/org-decline.schema.json) |
+| `dg org dismiss` | [`org-dismiss.schema.json`](dg/org-dismiss.schema.json) |
 | `dg org finish` | [`org-finish.schema.json`](dg/org-finish.schema.json) |
 | `dg org list` | [`org-list.schema.json`](dg/org-list.schema.json) |
+| `dg org migrate` | [`org-migrate.schema.json`](dg/org-migrate.schema.json) |
 | `dg org requests` | [`org-requests.schema.json`](dg/org-requests.schema.json) |
 | `dg org show` | [`org-show.schema.json`](dg/org-show.schema.json) |
 | `dg org sign` | [`org-sign.schema.json`](dg/org-sign.schema.json) |

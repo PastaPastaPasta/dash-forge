@@ -149,7 +149,9 @@ pub fn find<'a>(requests: &'a [Request], id: &str) -> Option<&'a Request> {
         return Some(r);
     }
     let prefixed = format!("{id}-");
-    let mut by_group = requests.iter().filter(|r| r.forge && r.id.starts_with(&prefixed));
+    let mut by_group = requests
+        .iter()
+        .filter(|r| r.forge && r.id.starts_with(&prefixed));
     if let Some(r) = by_group.next() {
         return by_group.next().is_none().then_some(r);
     }
@@ -244,7 +246,12 @@ pub fn landed(action: &str, f: &PartFacts) -> bool {
 
 /// One part's state (§11.6). `claim`: a member reported broadcasting it. Without `facts`
 /// (nothing read from Platform), only signatures count.
-pub fn part_state(action: &str, shares_ready: bool, claim: bool, facts: Option<&PartFacts>) -> PartState {
+pub fn part_state(
+    action: &str,
+    shares_ready: bool,
+    claim: bool,
+    facts: Option<&PartFacts>,
+) -> PartState {
     let signed = if shares_ready {
         PartState::Ready
     } else {
@@ -311,23 +318,23 @@ pub fn summarize(
     size: usize,
     parts: &[(bool, PartState)],
 ) -> Summary {
-    let states: Vec<PartState> = parts.iter().map(|(_, s)| *s).collect();
+    let each: Vec<PartState> = parts.iter().map(|(_, s)| *s).collect();
     let status = if !problems.is_empty() {
         RequestStatus::Invalid
     } else if !parts.iter().any(|(ready, _)| *ready) && declined > size.saturating_sub(threshold) {
         RequestStatus::Declined
-    } else if !states.is_empty() && states.iter().all(|s| s.finished()) {
+    } else if !each.is_empty() && each.iter().all(|s| s.finished()) {
         RequestStatus::Done
-    } else if states.contains(&PartState::Expired) {
+    } else if each.contains(&PartState::Expired) {
         RequestStatus::Expired
-    } else if !states.is_empty() && states.iter().all(|s| *s != PartState::Collecting) {
+    } else if !each.is_empty() && each.iter().all(|s| *s != PartState::Collecting) {
         RequestStatus::Ready
     } else {
         RequestStatus::Collecting
     };
     Summary {
         status,
-        parts: states,
+        parts: each,
         problems,
         threshold,
         size,
@@ -338,10 +345,12 @@ pub fn summarize(
 /// don't form a whole one, or one isn't a valid proposal of the room.
 pub fn structural_problems(state: &RoomState, req: &Request) -> Vec<String> {
     let mut out: Vec<String> = req.problem.iter().cloned().collect();
-    let invalid = req
-        .proposals
-        .iter()
-        .any(|id| state.proposals.get(id).is_none_or(|p| p.status == ProposalStatus::Invalid));
+    let invalid = req.proposals.iter().any(|id| {
+        state
+            .proposals
+            .get(id)
+            .is_none_or(|p| p.status == ProposalStatus::Invalid)
+    });
     if invalid {
         out.push("one of its parts is not a valid proposal from a member".into());
     }
@@ -417,7 +426,8 @@ pub fn declined_out(state: &RoomState, req: &Request, ceremony: &Ceremony) -> bo
             .is_some_and(|p| matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed))
     });
     let c = &ceremony.config;
-    !any_ready && declined_count(state, req, ceremony) > c.participants.len().saturating_sub(c.threshold)
+    !any_ready
+        && declined_count(state, req, ceremony) > c.participants.len().saturating_sub(c.threshold)
 }
 
 /// `(collected, threshold)`: the fewest valid shares any proposal has, against the threshold.
@@ -521,14 +531,20 @@ mod tests {
 
     #[test]
     fn every_id_names_its_proposer_and_a_bare_group_resolves_when_unique() {
-        let st = state(&[("aaaaaaaaaaaaaaaaaa", G, 0, 1), ("bbbbbbbbbbbbbbbbbb", G, 0, 1)]);
+        let st = state(&[
+            ("aaaaaaaaaaaaaaaaaa", G, 0, 1),
+            ("bbbbbbbbbbbbbbbbbb", G, 0, 1),
+        ]);
         let reqs = requests(&st, "c");
         let ids: Vec<&str> = reqs.iter().map(|r| r.id.as_str()).collect();
         assert!(ids.contains(&"0123456789abcdef-aaaaaaaaaaaaaaaa"));
         assert!(ids.contains(&"0123456789abcdef-bbbbbbbbbbbbbbbb"));
         assert!(find(&reqs, G).is_none());
         let one = requests(&state(&[("aaaaaaaaaaaaaaaaaa", G, 0, 1)]), "c");
-        assert_eq!(find(&one, G).unwrap().id, "0123456789abcdef-aaaaaaaaaaaaaaaa");
+        assert_eq!(
+            find(&one, G).unwrap().id,
+            "0123456789abcdef-aaaaaaaaaaaaaaaa"
+        );
     }
 
     #[test]

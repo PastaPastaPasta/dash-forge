@@ -169,16 +169,7 @@ pub async fn read_roster(
 }
 
 fn roster_of(d: &FetchedDocument) -> Option<Roster> {
-    Roster::from_fields(
-        &d.field_str("room")?,
-        d.field_str("relay").as_deref(),
-        &d.field_bytes("cid")?,
-        d.field_u64("keyId")?,
-        &d.field_bytes("groupKey")?,
-        d.field_u64("threshold")?,
-        &d.field_bytes("members")?,
-        &d.field_bytes("pubShares")?,
-    )
+    Roster::from_props(&d.fields)
 }
 
 fn member_doc(d: &FetchedDocument) -> Option<MemberDoc> {
@@ -281,16 +272,13 @@ impl Org {
             let transcript = signing_ceremonies(&cstate).into_iter().find(|c| {
                 c.cid == r.cid && Roster::of_ceremony(c, None).is_some_and(|o| o.same_key(r))
             });
-            match transcript.and_then(|c| signing_slot(c).map(|(k, _)| (c, k))) {
-                Some((c, k)) => {
-                    (self.cid, self.slot, self.key_id) = (c.cid.clone(), k.slot.clone(), k.key_id);
-                    self.stand_in = None;
-                }
-                None => {
-                    (self.cid, self.slot, self.key_id) =
-                        (r.cid.clone(), transport::ROSTER_SLOT.to_string(), r.key_id);
-                    self.stand_in = Some(r.ceremony(&self.network, &self.record.label));
-                }
+            if let Some((c, k)) = transcript.and_then(|c| signing_slot(c).map(|(k, _)| (c, k))) {
+                (self.cid, self.slot, self.key_id) = (c.cid.clone(), k.slot.clone(), k.key_id);
+                self.stand_in = None;
+            } else {
+                (self.cid, self.slot, self.key_id) =
+                    (r.cid.clone(), transport::ROSTER_SLOT.to_string(), r.key_id);
+                self.stand_in = Some(r.ceremony(&self.network, &self.record.label));
             }
             return Ok(());
         }
@@ -376,10 +364,11 @@ impl Org {
 
     fn rebind(&mut self) {
         let keys: BTreeSet<String> = self.member_keys();
-        self.bound = transport::bind_identities(&self.members, &self.network, &self.record.org_id, &keys)
-            .into_iter()
-            .map(|(k, ds)| (k, ds.into_iter().map(|d| d.owner.clone()).collect()))
-            .collect();
+        self.bound =
+            transport::bind_identities(&self.members, &self.network, &self.record.org_id, &keys)
+                .into_iter()
+                .map(|(k, ds)| (k, ds.into_iter().map(|d| d.owner.clone()).collect()))
+                .collect();
     }
 
     fn owner_keys(&self) -> BTreeMap<String, String> {
@@ -500,15 +489,24 @@ impl Org {
     ) -> Result<bool> {
         let owner = engine.owner_id();
         self.read_shares(client, &owner).await?;
-        if self.shares.iter().any(|s| s.owner == owner && s.cid == self.cid) {
+        if self
+            .shares
+            .iter()
+            .any(|s| s.owner == owner && s.cid == self.cid)
+        {
             return Ok(false);
         }
         let Ok(mine) = self.my_share(seed, keys) else {
             return Ok(false);
         };
         let share = *mine.get(&self.slot).ok_or_else(|| self.no_key())?;
-        let sealed =
-            transport::seal_share_random(seed, &self.network, &self.record.org_id, &self.cid, &share);
+        let sealed = transport::seal_share_random(
+            seed,
+            &self.network,
+            &self.record.org_id,
+            &self.cid,
+            &share,
+        );
         let cid: [u8; 32] = hex::decode(&self.cid)
             .ok()
             .and_then(|b| b.try_into().ok())
@@ -535,7 +533,11 @@ impl Org {
 
     /// Read `owner`'s `orgShare` of the signing ceremony, once.
     async fn read_shares(&mut self, client: &PlatformClient, owner: &str) -> Result<()> {
-        if self.shares.iter().any(|s| s.owner == owner && s.cid == self.cid) {
+        if self
+            .shares
+            .iter()
+            .any(|s| s.owner == owner && s.cid == self.cid)
+        {
             return Ok(());
         }
         let cid: [u8; 32] = hex::decode(&self.cid)
@@ -549,7 +551,9 @@ impl Org {
                 &[
                     QueryFilter::eq(
                         "org",
-                        FieldValue::identifier(crate::platform::decode_identifier(&self.record.org_id)?),
+                        FieldValue::identifier(crate::platform::decode_identifier(
+                            &self.record.org_id,
+                        )?),
                     ),
                     QueryFilter::eq(
                         "$ownerId",
@@ -579,7 +583,10 @@ impl Org {
     /// sealed share on Platform (§10.1).
     pub fn my_share(&self, seed: &Seed, keys: &MemberKeys) -> Result<Shares> {
         let c = self.ceremony().ok_or_else(|| self.no_key())?;
-        let index = c.config.index_of(&keys.auth_pub).ok_or(OrgError::NotAMember)?;
+        let index = c
+            .config
+            .index_of(&keys.auth_pub)
+            .ok_or(OrgError::NotAMember)?;
         if c.has_transcript() {
             return Ok(member::recover_shares(seed, keys, &self.state, &self.cid)?);
         }
@@ -594,7 +601,13 @@ impl Org {
             .filter(|d| d.cid == self.cid && d.org == self.record.org_id)
             .filter(|d| mine.is_some_and(|os| os.contains(&d.owner)))
             .filter_map(|d| {
-                transport::open_share(seed, &self.network, &self.record.org_id, &self.cid, &d.sealed)
+                transport::open_share(
+                    seed,
+                    &self.network,
+                    &self.record.org_id,
+                    &self.cid,
+                    &d.sealed,
+                )
             })
             .find(|s| bls::g1_hex(&bls::g1(s)) == *public);
         opened
@@ -632,7 +645,10 @@ impl Org {
                 ("digest".to_string(), FieldValue::Bytes32(encoded.digest)),
                 ("part".to_string(), FieldValue::Integer(i as u64)),
                 ("parts".to_string(), FieldValue::Integer(parts)),
-                ("fmt".to_string(), FieldValue::Integer(u64::from(encoded.fmt))),
+                (
+                    "fmt".to_string(),
+                    FieldValue::Integer(u64::from(encoded.fmt)),
+                ),
                 ("body".to_string(), FieldValue::Bytes(body)),
             ]);
             engine
@@ -1034,6 +1050,7 @@ impl Org {
         let title = request::fit_title(title);
         let network = client.network().key();
         for (seq, w) in writes.into_iter().enumerate() {
+            let derived = derived(&w);
             let mut intent = w.intent;
             intent["signer"]["cid"] = json!(self.cid);
             intent["signer"]["slot"] = json!(self.slot);
@@ -1049,7 +1066,7 @@ impl Org {
                 "signable": hex::encode(&w.signable),
                 "requirements": [{ "cid": self.cid, "slot": self.slot }],
                 "intent": intent,
-                "derived": { "documentId": w.document_id },
+                "derived": derived,
                 "note": note.to_json(),
             });
             let envelope = seal(keys, &self.record.room, "proposal", body, &now_iso())?;
@@ -1173,11 +1190,15 @@ impl Org {
         let mut used: BTreeSet<(String, u64)> = BTreeSet::new();
         let mut out = Vec::new();
         for (id, r) in req.proposals.iter().zip(reviews) {
-            let d = r.decoded.clone().ok_or_else(|| {
-                refused(&req.id, &["one of its parts can't be read".to_string()])
-            })?;
+            let d = r
+                .decoded
+                .clone()
+                .ok_or_else(|| refused(&req.id, &["one of its parts can't be read".to_string()]))?;
             if !used.insert((d.contract_id.clone(), d.nonce)) {
-                return Err(refused(&req.id, &["two of its parts use the same nonce".to_string()]));
+                return Err(refused(
+                    &req.id,
+                    &["two of its parts use the same nonce".to_string()],
+                ));
             }
             let p = &self.state.proposals[id];
             let ready = matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed);
@@ -1185,7 +1206,12 @@ impl Org {
             if f.nonce_spent && !request::landed(&d.action, &f) {
                 f.taken_by_other = self.nonce_landed_elsewhere(client, req, &d).await?;
             }
-            let state = request::part_state(&d.action, ready, p.status == ProposalStatus::Executed, Some(&f));
+            let state = request::part_state(
+                &d.action,
+                ready,
+                p.status == ProposalStatus::Executed,
+                Some(&f),
+            );
             out.push((d, state));
         }
         Ok(out)
@@ -1255,13 +1281,23 @@ impl Org {
                 Err(e) => Err(e),
             };
             if let Err(e) = ok {
-                self.report(engine, keys, id, json!({ "ok": false, "error": e.to_string() }))
-                    .await?;
+                self.report(
+                    engine,
+                    keys,
+                    id,
+                    json!({ "ok": false, "error": e.to_string() }),
+                )
+                .await?;
                 return Err(e);
             }
             let confirmed = confirm(client, &d).await;
-            self.report(engine, keys, id, json!({ "ok": true, "confirmed": confirmed }))
-                .await?;
+            self.report(
+                engine,
+                keys,
+                id,
+                json!({ "ok": true, "confirmed": confirmed }),
+            )
+            .await?;
             broadcast += 1;
         }
         Ok(Finished {
@@ -1285,7 +1321,12 @@ impl Org {
     /// The envelopes this member made in the relay room's open requests, to copy to Platform
     /// (§10.6): their proposals, approvals, declines and broadcast records. Never anyone
     /// else's, so nobody can drop or re-time another member's messages.
-    pub fn migratable(relay_messages: &[Value], room: &str, cid: &str, auth_pub: &str) -> Vec<Value> {
+    pub fn migratable(
+        relay_messages: &[Value],
+        room: &str,
+        cid: &str,
+        auth_pub: &str,
+    ) -> Vec<Value> {
         let state = reduce(relay_messages, Some(room));
         let open: BTreeSet<String> = request::requests(&state, cid)
             .into_iter()
@@ -1366,6 +1407,17 @@ pub async fn first_name(client: &PlatformClient, id: &str) -> String {
         .ok()
         .and_then(|n| n.into_iter().next())
         .unwrap_or_else(|| id.to_string())
+}
+
+/// A proposal's `derived`: the document id, and a replace's new revision (as `dti` expects it).
+pub(crate) fn derived(w: &UnsignedWrite) -> Value {
+    let mut d = json!({ "documentId": w.document_id });
+    if let Ok(decoded) = decode_unsigned(&w.unsigned) {
+        if let (Some(r), "replace") = (decoded.revision, decoded.action.as_str()) {
+            d["newRevision"] = json!(r.to_string());
+        }
+    }
+    d
 }
 
 fn now_ms() -> u64 {
