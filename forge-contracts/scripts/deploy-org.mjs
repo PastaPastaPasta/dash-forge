@@ -7,11 +7,11 @@
 //   node forge-contracts/scripts/deploy-org.mjs --emit <file>   # offline: the JSON it registers, for contract-validate
 //
 // The record goes to deployments/<network>.json as a top-level `org` record; rerunning after
-// success is a no-op. Organizations are testnet-only: mainnet needs --i-have-owner-approval.
+// success is a no-op. Organizations are testnet-only: mainnet needs --i-have-owner-approval-for-orgs.
 import { pathToFileURL } from 'node:url';
 
 import { runCli } from './lib/group-contract.mjs';
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  runCli({ recordKey: 'org', schemaFile: 'contracts/org/forge-org.json', label: 'forge-org' });
+  runCli({ recordKey: 'org', schemaFile: 'contracts/org/forge-org.json', label: 'forge-org', mainnetApproval: 'i-have-owner-approval-for-orgs' });
 }

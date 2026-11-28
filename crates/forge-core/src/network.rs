@@ -625,14 +625,14 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
         dapi_addresses,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
         v2: file.v2.as_ref().and_then(V2Record::ids).map(|mut ids| {
-            let in_group = |r: &Option<GroupContractRecord>| {
-                r.as_ref()
-                    .filter(|u| u.contract_group_id.as_deref() == Some(ids.group.as_str()))
-                    .and_then(|u| u.contract_id.clone())
+            let in_group = |r: Option<&GroupContractRecord>| {
+                r.filter(|r| r.contract_group_id.as_deref() == Some(ids.group.as_str()))
+                    .and_then(|r| r.contract_id.as_deref())
                     .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
             };
-            ids.user = in_group(&file.user);
-            ids.org = in_group(&file.org);
+            ids.user = in_group(file.user.as_ref());
+            ids.org = in_group(file.org.as_ref());
             ids
         }),
         retired: file.retired,

@@ -141,7 +141,7 @@ export function contractKind(forge: ForgeIds, contractId: string | undefined): F
 }
 
 /** Whether `contractId` is forge-user or forge-org: group members that are not {@link FORGE_CONTRACT_KINDS}. */
-export function isGroupExtra(ids: { readonly user?: string; readonly org?: string }, contractId: string | undefined): contractId is string {
+export function isGroupExtra(ids: Pick<ForgeIds, 'user' | 'org'>, contractId: string | undefined): contractId is string {
   return contractId !== undefined && (contractId === ids.user || contractId === ids.org)
 }
 
