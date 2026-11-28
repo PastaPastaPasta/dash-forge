@@ -1060,7 +1060,7 @@
  "status": {
   "threshold": 2,
   "size": 3,
-  "partRules": "expired: takenByOther (wins over everything below). landed: create doc present; replace doc same, or later with nonce spent and a claim; delete doc absent with nonce spent. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, or a replace whose document is at a later revision. ready: shares >= N. else collecting.",
+  "partRules": "doc: absent; present (delete: the document exists); same / different (create: exists with / without the part's fields; replace: at the part's revision with / without them); base (replace: at the revision it replaces); later (replace: past its revision). expired: takenByOther (wins over everything below). landed: create same; replace same, or later with nonce spent and a claim; delete absent with nonce spent and a claim. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, a replace whose document is not at base, or a delete whose document is gone. ready: shares >= N. else collecting.",
   "cases": [
    {
     "name": "collecting",
@@ -1120,14 +1120,14 @@
     }
    },
    {
-    "name": "a create is done when its document exists",
+    "name": "a create is done when its document exists with its fields",
     "parts": [
      {
       "action": "create",
       "shares": 2,
       "claim": false,
       "nonceSpent": true,
-      "doc": "present",
+      "doc": "same",
       "takenByOther": false
      }
     ],
@@ -1204,8 +1204,84 @@
       "shares": 2,
       "claim": true,
       "nonceSpent": true,
-      "doc": "present",
+      "doc": "same",
       "takenByOther": true
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
+    "name": "a create whose document exists with other fields, nonce spent",
+    "parts": [
+     {
+      "action": "create",
+      "shares": 2,
+      "claim": true,
+      "nonceSpent": true,
+      "doc": "different",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
+    "name": "a replace waiting to land: its document is at the revision it replaces",
+    "parts": [
+     {
+      "action": "replace",
+      "shares": 2,
+      "claim": false,
+      "nonceSpent": false,
+      "doc": "base",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "ready"
+     ],
+     "status": "ready"
+    }
+   },
+   {
+    "name": "a replace whose document changed under it, nonce free",
+    "parts": [
+     {
+      "action": "replace",
+      "shares": 2,
+      "claim": false,
+      "nonceSpent": false,
+      "doc": "different",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
+    "name": "a replace whose document is gone",
+    "parts": [
+     {
+      "action": "replace",
+      "shares": 2,
+      "claim": false,
+      "nonceSpent": false,
+      "doc": "absent",
+      "takenByOther": false
      }
     ],
     "expect": {
@@ -1311,12 +1387,12 @@
     }
    },
    {
-    "name": "a delete: gone and nonce spent",
+    "name": "a delete: gone, nonce spent, claimed",
     "parts": [
      {
       "action": "delete",
       "shares": 2,
-      "claim": false,
+      "claim": true,
       "nonceSpent": true,
       "doc": "absent",
       "takenByOther": false
@@ -1330,14 +1406,52 @@
     }
    },
    {
+    "name": "a delete: gone, nonce spent, no claim",
+    "parts": [
+     {
+      "action": "delete",
+      "shares": 2,
+      "claim": false,
+      "nonceSpent": true,
+      "doc": "absent",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
     "name": "a delete: gone, nonce free (someone else deleted it)",
+    "parts": [
+     {
+      "action": "delete",
+      "shares": 2,
+      "claim": true,
+      "nonceSpent": false,
+      "doc": "absent",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
+    "name": "a delete waiting to land",
     "parts": [
      {
       "action": "delete",
       "shares": 2,
       "claim": false,
       "nonceSpent": false,
-      "doc": "absent",
+      "doc": "present",
       "takenByOther": false
      }
     ],
@@ -1375,7 +1489,7 @@
       "shares": 2,
       "claim": false,
       "nonceSpent": true,
-      "doc": "present",
+      "doc": "same",
       "takenByOther": false
      },
      {
@@ -1403,7 +1517,7 @@
       "shares": 2,
       "claim": false,
       "nonceSpent": true,
-      "doc": "present",
+      "doc": "same",
       "takenByOther": false
      },
      {
@@ -1550,7 +1664,7 @@
       "shares": 2,
       "claim": false,
       "nonceSpent": true,
-      "doc": "present",
+      "doc": "same",
       "takenByOther": false
      }
     ],

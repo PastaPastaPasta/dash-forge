@@ -410,6 +410,7 @@ fn status_follows_the_table() {
                         "same" => DocState::Same,
                         "different" => DocState::Different,
                         "later" => DocState::Later,
+                        "base" => DocState::Base,
                         other => panic!("{other}"),
                     },
                     taken_by_other: p["takenByOther"].as_bool().unwrap(),

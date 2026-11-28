@@ -191,16 +191,21 @@ impl RequestStatus {
     }
 }
 
-/// What Platform shows of a part's document (§11.6): for a create or delete, whether it exists;
-/// for a replace, whether it is at the part's revision with the same fields, at it with other
-/// fields (or missing), or at a later revision.
+/// What Platform shows of a part's document (§11.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DocState {
     #[default]
     Absent,
+    /// A delete's document still exists.
     Present,
+    /// A create's document exists with the part's fields; a replace's is at its revision with
+    /// them.
     Same,
+    /// The same, with other fields.
     Different,
+    /// A replace's document is at the revision it replaces: it has not landed yet.
+    Base,
+    /// A replace's document is past its revision.
     Later,
 }
 
@@ -234,15 +239,15 @@ impl PartState {
     }
 }
 
-/// Whether the write is visible on Platform. A replace whose document is past its revision
-/// counts only with its nonce spent and a member's `claim` that it broadcast it.
+/// Whether the write is visible on Platform. A replace whose document is past its revision, and
+/// a delete, count only with the nonce spent and a member's `claim` that it broadcast it.
 pub fn landed(action: &str, f: &PartFacts, claim: bool) -> bool {
     match action {
-        "create" => matches!(f.doc, DocState::Present | DocState::Same),
+        "create" => f.doc == DocState::Same,
         "replace" => {
             f.doc == DocState::Same || (f.doc == DocState::Later && f.nonce_spent && claim)
         }
-        "delete" => f.doc == DocState::Absent && f.nonce_spent,
+        "delete" => f.doc == DocState::Absent && f.nonce_spent && claim,
         _ => false,
     }
 }
@@ -267,7 +272,10 @@ pub fn part_state(
         PartState::Done
     } else if action == "create" && claim && f.nonce_spent && f.doc == DocState::Absent {
         PartState::Gone
-    } else if f.nonce_spent || (action == "replace" && f.doc == DocState::Later) {
+    } else if f.nonce_spent
+        || (action == "replace" && f.doc != DocState::Base)
+        || (action == "delete" && f.doc == DocState::Absent)
+    {
         PartState::Expired
     } else {
         signed
