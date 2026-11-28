@@ -142,21 +142,22 @@ This section supersedes the relay transport of §4, §5 and §9 for Forge reques
 
 | Type | Owner | Properties | Mutable / deletable | Indices |
 |---|---|---|---|---|
-| `orgMember` | a member's own Forge identity | `org` identifier; `room` string ≤ 64 (the dti group id); `authPub` bytes 32 (the member's dti auth key); `proof` bytes 64; `sealedShare` byte array ≤ 128, optional | no / no | `byOrg` (`org`, `$ownerId`) unique; `byKey` (`org`, `authPub`); `byOwner` (`$ownerId`, `org`) |
+| `orgMember` | a member's own Forge identity | `org` identifier; `room` string ≤ 64 (the dti group id); `authPub` bytes 32 (the member's dti auth key); `proof` bytes 64 | no / no | `byOrg` (`org`, `$ownerId`) unique; `byKey` (`org`, `authPub`, `$createdAt`); `byOwner` (`$ownerId`, `org`) |
+| `orgShare` | a member's own Forge identity | `org` identifier; `cid` bytes 32 (the ceremony it is a share of); `sealed` byte array 1–128 | no / no | `byCeremony` (`org`, `$ownerId`, `cid`) unique |
 | `org` | the organization (N of M) | `room` string ≤ 64; `relay` string ≤ 200, optional; `cid` bytes 32 (ceremony id); `keyId` integer; `groupKey` bytes 48; `threshold` integer 2–64; `members` byte array 64–2048 (participants' auth keys, 32 bytes each, by participant index); `pubShares` byte array 96–3072 (participants' public key shares of `groupKey`, 48 bytes each, same order) | yes / no | `owner` (`$ownerId`) unique |
 | `orgMessage` | a member's own Forge identity | `org` identifier; `digest` bytes 32; `part` integer 0–15; `parts` integer 1–16; `fmt` integer 0–1; `body` byte array 1–5120 | no / no | `log` (`org`, `$ownerId`, `$createdAt`) |
 
-`$createdAt` is required on all three and `$updatedAt` on `org`. No `refersTo` and no rule reads them, so no existing write is affected.
+`$createdAt` is required on all four and `$updatedAt` on `org`. No `refersTo` and no rule reads them, so no existing write is affected.
 
 - **`orgMember` proof**: Ed25519 by `authPub` over the UTF-8 bytes of `dash-forge/org-member/1\n<network>\n<org base58>\n<$ownerId base58>`. It binds one Forge identity to one participant key. It is never deleted: leaving is a local action, and the history stays readable.
-- **`sealedShare`**: the member's secret share of the signing slot, encrypted so only the phrase opens it: XChaCha20-Poly1305 with key HKDF-SHA256(ikm = the member's 64-byte BIP-39 seed, salt = `dash-forge/org-share/1`, info = `<network>\n<org base58>\n<cid hex>`), a random 24-byte nonce, and stored as nonce ‖ ciphertext ‖ tag. That is the same exposure as the ceremony's encrypted shares on the relay. With it, a member signs on any device from the phrase and Platform alone.
+- **`orgShare`** (`sealed`): the member's secret share of the signing slot, encrypted so only the phrase opens it: XChaCha20-Poly1305 with key HKDF-SHA256(ikm = the member's 64-byte BIP-39 seed, salt = `dash-forge/org-share/1`, info = `<network>\n<org base58>\n<cid hex>`), a random 24-byte nonce, and stored as nonce ‖ ciphertext ‖ tag. That is the same exposure as the ceremony's encrypted shares on the relay. With it, a member signs on any device from the phrase and Platform alone. It is a separate type, one per (member identity, ceremony), so after the organization re-runs its ceremony each member writes a new one.
 - **`org`** is the public roster, written by the organization through the "Publish organization" request (§10.5). Readers trust it only while `groupKey` is the organization's enabled key `keyId` (AUTHENTICATION, HIGH, BLS12_381); otherwise it is stale and ignored.
 - **`orgMessage`**: one `dti/1` envelope (`proposal`, `approve`, `reject` or `broadcast`; other types are ignored), as canonical JSON UTF-8, deflate-raw compressed when `fmt` = 1, split into `parts` documents of at most 5,120 bytes that share `digest` = SHA-256 of the whole stored payload. A message counts when every part from the same owner is present and the digest matches. Documents are never edited or deleted, so the log is also the public record of who approved what.
 
 ### 10.2 Reading an organization's log
 
 1. **Roster.** The organization's `org` document when it is current (above); before one is published, the ceremony transcript (§10.4). Both give the members, N, the group key and the public shares that `reduce` needs.
-2. **Member identities.** `orgMember` documents with `org` = the organization whose `authPub` is a member and whose `proof` verifies (at most 4 identities per `authPub`, earliest `$createdAt` first; read with a bound).
+2. **Member identities.** `orgMember` documents with `org` = the organization whose `authPub` is a member and whose `proof` verifies (at most 4 identities per `authPub`, earliest `$createdAt` first, read by `byKey` with a bound).
 3. **Messages.** For each member identity, `orgMessage` documents by `log` (`org`, that `$ownerId`), paged by `$createdAt`. Documents owned by anyone else are never read, so a stranger cannot flood the log.
 4. **State.** Each envelope must be canonical JSON, verify as a `dti/1` envelope and name the organization's room. Envelopes from all members' logs are merged, deduplicated by envelope id, ordered by (earliest `$createdAt` of the documents carrying it, envelope id), and go through the same `reduce` as before.
 
@@ -166,11 +167,11 @@ Posting a request, a signature, a decline or a broadcast record is one `orgMessa
 
 ### 10.4 The key ceremony
 
-Before the roster is published, share recovery needs the ceremony's messages from the relay. Forge reads them when a member connects, verifies them as before and keeps them locally (dg: beside `orgs.json`; web: browser storage). Connecting also writes the member's `orgMember` with `sealedShare`, so from then on that member needs only the phrase and Platform. Changing members or keys stays in multisig.dashhq.org; after a re-run, the organization publishes its roster again.
+Before the roster is published, share recovery needs the ceremony's messages from the relay. Forge reads them when a member connects, verifies them as before and keeps them locally (dg: beside `orgs.json`; web: browser storage). Connecting also writes the member's `orgShare` for the ceremony, so from then on that member needs only the phrase and Platform. Changing members or keys stays in multisig.dashhq.org; after a re-run, the organization publishes its roster again.
 
 ### 10.5 Connecting, the inbox and publishing
 
-- **Connect** (web `/org`, `dg org connect <group id or invite>`): unlock the phrase, verify the ceremony and the identity's keys (§3), write `orgMember` (with `sealedShare`) if this identity has none for the organization.
+- **Connect** (web `/org`, `dg org connect <group id or invite>`): unlock the phrase, verify the ceremony and the identity's keys (§3), write `orgMember` if this identity has none for the organization and `orgShare` if it has none for the ceremony.
 - **Inbox by identity.** A signed-in member's organizations are their `orgMember` documents (`byOwner`), on any device.
 - **Publish organization** (web: the organization page; `dg org publish <org>`): one request with two writes: the `org` roster, and the organization's `profile` with the declared link (§3) added to its links (other profile fields kept). Signers check that both match the bound ceremony exactly (room, ceremony id, key id, group key, N, the members and public shares in order, the link's N and M) and refuse otherwise. §9's review list gains `org` create/replace in `forge-org`.
 
