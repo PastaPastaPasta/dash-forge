@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # check-sdk-pins.sh: fail when the Dash Platform SDK pin disagrees anywhere (HYGI-18).
 #
-# The Platform version is written separately in six manifests and four lockfiles: the seven git
+# The Platform version is written separately in seven manifests and six lockfiles: the seven git
 # deps of Cargo.toml (plus its PLATFORM_TAG line), tools/contract-validate/Cargo.toml, the npm pins
-# of forge-web (evo-sdk, wasm-sdk), forge-contracts/sdk-v2 and tools/mint-identity, and the pnpm
+# of forge-web (evo-sdk, wasm-sdk), forge-contracts/sdk-v2, tools/mint-identity and tools/org-vectors
+# (whose `evo-sdk-503` alias is the old SDK it compares against, on purpose not a pin), and the pnpm
 # minimumReleaseAgeExclude entries. A bump must move all of them together (see the bump steps in
 # Cargo.toml), because clients at different rs-dpp versions can disagree with each other and with
 # the network silently. Every source must be present: a pin that disappears fails as well as one
@@ -61,7 +62,7 @@ for pkg in @dashevo/evo-sdk @dashevo/wasm-sdk; do
   expect "forge-web/pnpm-workspace.yaml ($pkg)" 1 \
     "$(sed -nE "s/^  - '$(sed 's/[/.]/\\&/g' <<<"$pkg")@([^']+)'\$/\1/p" forge-web/pnpm-workspace.yaml)"
 done
-for dir in forge-contracts/sdk-v2 tools/mint-identity; do
+for dir in forge-contracts/sdk-v2 tools/mint-identity tools/org-vectors; do
   expect "$dir/package.json (@dashevo/evo-sdk)" 1 "$(npm_pin "$dir/package.json" @dashevo/evo-sdk)"
   for pkg in @dashevo/evo-sdk @dashevo/wasm-sdk; do
     expect "$dir/package-lock.json ($pkg)" 1 "$(npm_lock "$dir/package-lock.json" "$pkg")"

@@ -1,0 +1,22 @@
+{
+  "name": "@dash-forge/org-vectors",
+  "version": "0.1.0",
+  "description": "Cross-SDK byte vectors for organization transitions: forge-web's builder under evo-sdk 5.0.3 and Forge's pin",
+  "type": "module",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "test": "vitest run",
+    "update": "UPDATE_VECTORS=1 vitest run --project current",
+    "dti": "node cross-sdk/dti-review.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@dashevo/evo-sdk": "5.1.0",
+    "@noble/hashes": "2.4.0",
+    "evo-sdk-503": "npm:@dashevo/evo-sdk@5.0.3",
+    "vitest": "2.1.9"
+  }
+}
