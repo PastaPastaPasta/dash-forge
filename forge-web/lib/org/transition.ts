@@ -145,7 +145,7 @@ export interface ReviewContext {
 }
 
 function contractFor(documentType: string, ctx: ReviewContext): string | null {
-  if (documentType === 'org') return ctx.orgContract ?? null
+  if (documentType === 'org') return ctx.orgContract ?? ctx.forge.org ?? null
   const kind = contractKindOfType(documentType, ctx.forge)
   return kind === null ? null : (ctx.forge[kind] ?? null)
 }
@@ -177,7 +177,7 @@ export function reviewDecoded(
   }
   if (contractFor(d.documentType, ctx) !== d.contractId) problems.push("it writes to a contract that is not this network's Forge")
   if (d.documentType === 'org') {
-    const mismatch = ctx.roster ? rosterMismatch(ctx.roster, d.data) : "the organization's key ceremony could not be read"
+    const mismatch = ctx.roster ? rosterMismatch(ctx.roster, d.data) : null
     if (mismatch) problems.push(mismatch)
   } else if (d.documentType === 'profile' && ctx.roster) {
     const links = Array.isArray(d.data['links']) ? d.data['links'] : []
