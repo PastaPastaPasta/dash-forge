@@ -1035,10 +1035,13 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     // … or IdentityPublicKeyBudgetExceededError: some budget left, but less than this costs.
     if m.contains("has spent its whole budget") || m.contains("credits of budget left") {
         return Some(
-            UserError::new(codes::KEY_BUDGET_SPENT, ctx.headline("this key's budget is used up"))
-                .cause(one_line(msg))
-                .fix(fresh_key_fix(ctx.network, "get a fresh limited key"))
-                .note("the identity's balance is untouched; only this key can no longer sign"),
+            UserError::new(
+                codes::KEY_BUDGET_SPENT,
+                ctx.headline("this key's budget is used up"),
+            )
+            .cause(one_line(msg))
+            .fix(fresh_key_fix(ctx.network, "get a fresh limited key"))
+            .note("the identity's balance is untouched; only this key can no longer sign"),
         );
     }
     if m.contains("can no longer sign") && m.contains("expired") {

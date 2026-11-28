@@ -976,11 +976,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         if forge_core::app_connect::forge::released_wallet_reads(ctx.network(), protocol) {
             return wallet::login(ctx, args, Some(client)).await;
         }
-        let chosen = file_or_words(
-            &ctx.network_label(),
-            args,
-            &mut crate::prompt::TtyPrompter,
-        )?;
+        let chosen = file_or_words(&ctx.network_label(), args, &mut crate::prompt::TtyPrompter)?;
         (client, Some(chosen))
     } else {
         (ctx.connect().await?, None)
@@ -2477,7 +2473,13 @@ mod tests {
             remaining: Some(49_000_000_000),
             expires_at: None,
         };
-        let line = key_line(&MAINNET, Some(&report(false, Some("checkRun"))), None, true, false);
+        let line = key_line(
+            &MAINNET,
+            Some(&report(false, Some("checkRun"))),
+            None,
+            true,
+            false,
+        );
         assert!(
             line.starts_with(
                 "#6 bound to checkRun documents only (a CI runner key) — 0.49 of 0.5 DASH left"
@@ -2485,7 +2487,10 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("unlimited"), "{line}");
-        assert!(key_line(&MAINNET, Some(&report(true, None)), None, true, false).starts_with("#6 limited — "));
+        assert!(
+            key_line(&MAINNET, Some(&report(true, None)), None, true, false)
+                .starts_with("#6 limited — ")
+        );
         // doctor fails a key that signs nothing any more
         let mut r = report(true, None);
         assert_eq!(r.spent_or_expired(1_000), None);
@@ -2675,10 +2680,14 @@ mod tests {
             wallet.starts_with("Renew in your wallet: `dg auth login`"),
             "{wallet}"
         );
-        let limited = renew_line(&MAINNET, Some(&r(Some(9), true)), false, Some(O::Phrase)).unwrap();
+        let limited =
+            renew_line(&MAINNET, Some(&r(Some(9), true)), false, Some(O::Phrase)).unwrap();
         assert!(limited.contains("from your DashPay wallet"), "{limited}");
         assert!(limited.contains("dg auth keys add"), "{limited}");
-        assert_eq!(renew_line(&MAINNET, Some(&r(Some(9), false)), false, None), None);
+        assert_eq!(
+            renew_line(&MAINNET, Some(&r(Some(9), false)), false, None),
+            None
+        );
         assert_eq!(
             renew_line(&MAINNET, Some(&r(Some(9), true)), false, Some(O::Dfk1)),
             None
@@ -2731,7 +2740,11 @@ mod tests {
             "Released DashPay builds can't sign in on testnet since its latest Platform upgrade: sign in with your identity file or recovery phrase."
         );
         assert!(p.said.iter().all(|l| !l.contains("secret")), "{:?}", p.said);
-        assert!(p.said.iter().all(|l| !l.contains("protocol")), "{:?}", p.said);
+        assert!(
+            p.said.iter().all(|l| !l.contains("protocol")),
+            "{:?}",
+            p.said
+        );
 
         let mut p = crate::prompt::Scripted::new(&[""]);
         let chosen = file_or_words("testnet", &args, &mut p).unwrap();
@@ -2751,11 +2764,17 @@ mod tests {
                 &forge_core::user_error::ErrorContext::default(),
             );
             assert_eq!(u.code, codes::CONFIRMATION_REQUIRED, "{u:?}");
-            assert!(u.message.contains("identity file or recovery phrase"), "{u:?}");
+            assert!(
+                u.message.contains("identity file or recovery phrase"),
+                "{u:?}"
+            );
             assert!(!u.fix.iter().any(|f| f.contains("--wallet")), "{u:?}");
             assert!(u.fix.iter().any(|f| f.contains("<identity file>")), "{u:?}");
         }
-        assert!(!signs_in_with_wallet(&on_testnet(false, true, false), &login_args(&["id.json"])).unwrap());
+        assert!(
+            !signs_in_with_wallet(&on_testnet(false, true, false), &login_args(&["id.json"]))
+                .unwrap()
+        );
         assert!(signs_in_with_wallet(&on_testnet(false, false, true), &login_args(&[])).unwrap());
     }
 
@@ -2772,10 +2791,25 @@ mod tests {
             remaining: Some(24_000_000_000),
             expires_at: Some(1),
         };
-        let wallet = renew_line(&testnet, Some(&r(Some(9))), true, Some(origin::KeyOrigin::Wallet)).unwrap();
-        assert!(wallet.starts_with("renew: `dg auth login <identity file>`"), "{wallet}");
+        let wallet = renew_line(
+            &testnet,
+            Some(&r(Some(9))),
+            true,
+            Some(origin::KeyOrigin::Wallet),
+        )
+        .unwrap();
+        assert!(
+            wallet.starts_with("renew: `dg auth login <identity file>`"),
+            "{wallet}"
+        );
         assert!(wallet.contains("dg auth login --wallet"), "{wallet}");
-        let limited = renew_line(&testnet, Some(&r(Some(9))), false, Some(origin::KeyOrigin::Phrase)).unwrap();
+        let limited = renew_line(
+            &testnet,
+            Some(&r(Some(9))),
+            false,
+            Some(origin::KeyOrigin::Phrase),
+        )
+        .unwrap();
         assert!(!limited.contains("wallet"), "{limited}");
         for from_wallet in [true, false] {
             let line = key_line(&testnet, Some(&r(None)), None, true, from_wallet);

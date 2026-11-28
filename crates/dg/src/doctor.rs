@@ -1640,7 +1640,12 @@ mod tests {
     fn an_unlimited_key_is_a_warning() {
         use crate::auth::{KeyReport, PrivateAccess};
         let access = PrivateAccess::for_test(&[4], true);
-        let unlimited = keys_check(&Network::Mainnet, &KeyReport::for_test(3, false), &access, 0);
+        let unlimited = keys_check(
+            &Network::Mainnet,
+            &KeyReport::for_test(3, false),
+            &access,
+            0,
+        );
         assert!(
             matches!(unlimited.status, Status::Warn),
             "{}",

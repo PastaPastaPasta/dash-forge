@@ -49,7 +49,8 @@ const SCAN_HOW: &str =
     "open DashPay or Dash Wallet → More → Tools → Connections → Scan QR, or open the link on the phone";
 /// Signing in without a wallet: what a network where released DashPay builds can't sign in
 /// points to.
-pub(crate) const FILE_OR_WORDS: &str = "`dg auth login <identity file>` or `dg auth login --mnemonic`";
+pub(crate) const FILE_OR_WORDS: &str =
+    "`dg auth login <identity file>` or `dg auth login --mnemonic`";
 
 /// Why released DashPay builds can't sign in on `network`, as a clause (no protocol numbers: the
 /// web's copy lint bans them).
