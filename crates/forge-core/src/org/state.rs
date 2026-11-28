@@ -57,6 +57,26 @@ pub struct Ceremony {
 }
 
 impl Ceremony {
+    /// A ceremony known complete without its transcript (an organization's published roster).
+    pub fn completed(cid: String, config: Config, result: CeremonyResult) -> Self {
+        Self {
+            cid,
+            config,
+            config_at: String::new(),
+            accepts: BTreeSet::new(),
+            raw_commits: BTreeMap::new(),
+            raw_reveals: BTreeMap::new(),
+            raw_completes: BTreeMap::new(),
+            reveals: BTreeMap::new(),
+            result: Some(result),
+        }
+    }
+
+    /// Whether this member's shares can be recomputed from the transcript (a roster has none).
+    pub fn has_transcript(&self) -> bool {
+        !self.reveals.is_empty()
+    }
+
     pub fn is_complete(&self) -> bool {
         self.result.is_some()
     }
@@ -160,6 +180,16 @@ impl Proposal {
 
     pub fn network(&self) -> &str {
         self.body["network"].as_str().unwrap_or_default()
+    }
+
+    /// The decoded transition's action (`create`, `replace`, `delete`, …), empty when it does
+    /// not decode.
+    pub fn action(&self) -> String {
+        hex::decode(self.unsigned_hex())
+            .ok()
+            .and_then(|b| crate::platform::org::decode_unsigned(&b).ok())
+            .map(|d| d.action)
+            .unwrap_or_default()
     }
 
     pub fn note(&self) -> Option<&str> {
@@ -276,9 +306,25 @@ struct Message {
 /// Reduce a room's envelopes to its state. Invalid, duplicate and other-room envelopes are
 /// ignored.
 pub fn reduce(messages: &[Value], room: Option<&str>) -> RoomState {
+    reduce_with(messages, &[], room, Vec::new())
+}
+
+/// [`reduce`] over the key ceremony's envelopes, `timed` envelopes from Platform (each ordered
+/// at its earliest document's time instead of its own `at`), and `known` ceremonies that need no
+/// transcript (a published roster).
+pub fn reduce_with(
+    messages: &[Value],
+    timed: &[super::transport::Timed],
+    room: Option<&str>,
+    known: Vec<Ceremony>,
+) -> RoomState {
     let mut seen = HashSet::new();
     let mut list = Vec::new();
-    for m in messages {
+    let all = messages
+        .iter()
+        .map(|m| (m, None))
+        .chain(timed.iter().map(|t| (&t.envelope, Some(t.at.as_str()))));
+    for (m, at) in all {
         let Ok(id) = envelope::id(m) else {
             continue;
         };
@@ -292,7 +338,10 @@ pub fn reduce(messages: &[Value], room: Option<&str>) -> RoomState {
             id,
             kind: m["type"].as_str().unwrap_or_default().to_string(),
             from: m["from"].as_str().unwrap_or_default().to_string(),
-            at: m["at"].as_str().unwrap_or_default().to_string(),
+            at: at
+                .or_else(|| m["at"].as_str())
+                .unwrap_or_default()
+                .to_string(),
             value: m.clone(),
         });
     }
@@ -308,6 +357,9 @@ pub fn reduce(messages: &[Value], room: Option<&str>) -> RoomState {
         message_count: seen.len(),
         ..RoomState::default()
     };
+    for c in known {
+        state.ceremonies.entry(c.cid.clone()).or_insert(c);
+    }
     for m in &list {
         apply(&mut state, m);
     }

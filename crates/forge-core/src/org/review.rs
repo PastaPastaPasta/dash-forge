@@ -42,6 +42,8 @@ pub struct Expect<'a> {
 pub struct Reviewed {
     pub decoded: Option<DecodedWrite>,
     pub problems: Vec<String>,
+    /// Review step 4: the nonce is used or too far ahead (status reads it as `expired`).
+    pub nonce: Option<String>,
 }
 
 impl Reviewed {
@@ -75,6 +77,7 @@ pub fn review_offline(expect: &Expect<'_>, proposal: &Proposal) -> Reviewed {
             return Reviewed {
                 decoded: None,
                 problems,
+                nonce: None,
             };
         }
     };
@@ -82,6 +85,7 @@ pub fn review_offline(expect: &Expect<'_>, proposal: &Proposal) -> Reviewed {
     Reviewed {
         decoded: Some(decoded),
         problems,
+        nonce: None,
     }
 }
 

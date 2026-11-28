@@ -17,7 +17,10 @@ pub mod request;
 pub mod review;
 pub mod session;
 pub mod state;
+pub mod transport;
 
+#[cfg(test)]
+mod platform_vector_tests;
 #[cfg(test)]
 mod vector_tests;
 
@@ -99,6 +102,9 @@ pub struct OrgRecord {
     pub label: String,
     pub threshold: usize,
     pub members: Vec<MemberRecord>,
+    /// Requests this member dismissed on this computer (§11.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed: Vec<String>,
 }
 
 impl OrgRecord {

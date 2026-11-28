@@ -47,7 +47,7 @@ impl Seed {
         Self(Zeroizing::new(bytes))
     }
 
-    fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         self.0.as_slice()
     }
 }

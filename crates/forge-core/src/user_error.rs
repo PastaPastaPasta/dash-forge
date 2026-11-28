@@ -189,6 +189,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         "choose who can read the environment",
     ),
     (codes::NOT_SHARED_YET, "environment not shared with you yet"),
+    (codes::ORG_REFUSED, "Forge won't sign this request"),
     (codes::BANNED, "banned from this repository"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
@@ -338,6 +339,9 @@ pub mod codes {
     /// An environment in the repository was not shared with this member (not in its audience,
     /// or in its group and not saved since).
     pub const NOT_SHARED_YET: &str = "E612";
+    /// An organization request Forge won't sign or finish: it does not form a request, or its
+    /// review found problems (organizations design §11.1).
+    pub const ORG_REFUSED: &str = "E613";
     /// A maintainer banned the signer from the repository (a client rule: the tools refuse the
     /// banned identity's writes there).
     pub const BANNED: &str = "E610";

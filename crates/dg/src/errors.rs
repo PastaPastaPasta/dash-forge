@@ -281,6 +281,8 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
                 crate::org::OrgCommand::Sign { .. } => "request not signed",
                 crate::org::OrgCommand::Decline { .. } => "request not declined",
                 crate::org::OrgCommand::Finish { .. } => "request not finished",
+                crate::org::OrgCommand::Dismiss { .. } => "request not dismissed",
+                crate::org::OrgCommand::Migrate { .. } => "nothing copied to Platform",
             },
             None,
         ),
