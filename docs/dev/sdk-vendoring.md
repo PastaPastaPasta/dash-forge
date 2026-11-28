@@ -38,9 +38,9 @@ Only when a Platform tag the app needs is unpublished on npm (check `npm view @d
 
 1. If the tag's recipe pins different tool versions, update the workflow's `env` block. Compare `.github/actions/npm-release-build/action.yaml` and `rust-toolchain.toml` at the tag, fetch each binary, and record its `sha256sum`. Merge that change first: a dispatch runs the workflow as it is on the chosen branch.
 2. Actions → *Vendor the Platform JS SDK* → Run workflow on master, `platform_tag: v4.2.0-beta.N`, `expected_commit:` the tag's commit (`git ls-remote https://github.com/dashpay/platform refs/tags/v4.2.0-beta.N`). Most of the run is the wasm compile. A dispatch from another branch builds and checks but does not publish.
-3. Point the three consumers at the release (see "What is where"), then refresh the lockfiles:
+3. Point the four consumers at the release (see "What is where"), then refresh the lockfiles:
    - forge-web: in `package.json` and `pnpm-workspace.yaml` `overrides`, swap the URLs, then `pnpm install`;
-   - tools/mint-identity and forge-contracts/sdk-v2: in `package.json`, swap the URLs, then `npm install`.
+   - tools/mint-identity, forge-contracts/sdk-v2 and tools/org-vectors: in `package.json`, swap the URLs, then `npm install` (tools/org-vectors' `evo-sdk-503` alias stays: it is the old SDK it compares against).
 4. Update the other places that name the version: `forge-contracts/scripts/deploy-v2.mjs` (`v2.sdk`), docs, and `BACKLOG.md`.
 5. Run the web unit suite, typecheck and `next build` (`next.config.js` fails the build if evo-sdk and forge-web resolve different wasm-sdk versions), plus the Playwright read-only suite against the devnet.
 
@@ -63,7 +63,7 @@ Only when a Platform tag the app needs is unpublished on npm (check `npm view @d
 
    `dist/sdk.d.ts` (wasm-sdk) and the `dist/**/*.d.ts` and facade modules (evo-sdk) must be identical. The inlined `sdk.js`/`evo-sdk.module.js` embed the wasm and will differ with it.
 2. In forge-web, set both dependencies back to the plain version, delete the `overrides` entry from `pnpm-workspace.yaml`, and add both to `minimumReleaseAgeExclude` while the release is newer than pnpm's minimum release age. Then `pnpm install`.
-3. In tools/mint-identity and forge-contracts/sdk-v2, set `"@dashevo/evo-sdk"` to the version, drop the `@dashevo/wasm-sdk` dependency and the `overrides` block, then `npm install`.
+3. In tools/mint-identity, forge-contracts/sdk-v2 and tools/org-vectors, set `"@dashevo/evo-sdk"` to the version, drop the `@dashevo/wasm-sdk` dependency and the `overrides` block, then `npm install`.
 4. Run the checks from step 5 above. Leave the pre-release in place (older commits' lockfiles still name it) and note in its description that npm now has the version.
 
 ## API notes for the contract rework (4.2.0-beta.6, beta.7 and 5.0.0-beta.1)

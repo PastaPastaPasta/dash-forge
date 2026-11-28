@@ -59,7 +59,7 @@ jobs:
       - name: test (dash)
         run: dash tests/backend/test-backend.sh
 
-  # The Platform SDK version is pinned in six manifests and four lockfiles; a bump that misses
+  # The Platform SDK version is pinned in seven manifests and six lockfiles; a bump that misses
   # one builds clients at different rs-dpp versions (HYGI-18).
   sdk-pins:
     name: sdk pins agree
@@ -111,6 +111,29 @@ jobs:
       - run: pnpm lint:copy
       - run: pnpm test
       - run: pnpm build
+
+  # Organization transitions are byte-identical under evo-sdk 5.0.3 and Forge's pin, and each
+  # SDK reads the other's (docs/design/organizations.md §9, forge-contracts/fixtures/org/cross-sdk.json).
+  org-vectors:
+    name: org-vectors
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: tools/org-vectors
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/org-vectors/package-lock.json
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - run: npm test
 
   # The headless minting CLI the QA harness and the web e2e fund identities with: its offline
   # tests (tx building, the funding ledger, the Insight → DAPI Core fallback).
