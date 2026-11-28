@@ -312,5 +312,17 @@
     "deployedAt": "2026-11-25T00:49:30Z",
     "sourceFile": "forge-contracts/contracts/user/forge-user.json",
     "feeDash": "0.20 registration (0.1 base + 3 types x 0.02 + 4 indexes x 0.01, rs-platform-version fee v3) + storage/processing; balance delta not captured (read lagged)"
+  },
+  "org": {
+    "contractId": "61dAELEsWbi1Nz9kyVo4WY2GGAUBzMw8AzNn74vhJHjx",
+    "ownerId": "3pjHaytsQJg5aKZj3VeqwBPccN7uN3bCJiUNkT8KUBwM",
+    "identityNonce": "6",
+    "contractGroupId": "EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC",
+    "sizeBytes": 2455,
+    "status": "registered",
+    "reservedAt": "2026-11-28T19:13:07.553Z",
+    "sourceFile": "forge-contracts/contracts/org/forge-org.json",
+    "deployedAt": "2026-11-28T19:13:09.800Z",
+    "costCredits": "24220725020"
   }
 }
