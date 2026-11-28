@@ -129,39 +129,43 @@ export interface StoredWrite {
   readonly fields: Readonly<Record<string, unknown>>
 }
 
+export interface PartWrite {
+  /** Its write is visible on Platform. */
+  readonly landed: boolean
+  /** It can never land: a replace whose document is not at the revision it replaces, or a delete whose document is gone. */
+  readonly superseded: boolean
+  /** Its document is not on Platform. */
+  readonly absent: boolean
+}
+
 /**
- * Whether a part's write is visible on Platform (§11.6): a create's document is there; a replace's
- * is at its revision with the same fields, or later once its nonce is spent and a member reported
- * it sent; a delete's is gone, its nonce spent and a member reported it sent.
+ * What Platform shows of one part's write (§9, §11.6): a create landed once its document exists
+ * with its fields; a replace once its document is at its revision with its fields, or later with
+ * its nonce spent and a member's claim; a delete once its document is gone with its nonce spent and
+ * a claim. Until then a replace waits only while its document is at the revision it replaces, and
+ * a delete only while its document is there.
  */
-export function landed(
+export function partWrite(
   action: string,
   stored: StoredWrite | null,
   want: { readonly revision: bigint | null; readonly fields: Readonly<Record<string, unknown>> },
   spent: boolean,
   claimed: boolean,
-): boolean {
-  if (action === 'delete') return stored === null && spent && claimed
-  if (stored === null) return false
-  if (action === 'create') return true
+): PartWrite {
+  const absent = stored === null
+  if (action === 'create') return { landed: !absent && sameFields(want.fields, stored.fields), superseded: false, absent }
+  if (action === 'delete') {
+    const landed = stored === null && spent && claimed
+    return { landed, superseded: !landed && absent, absent }
+  }
   const revision = want.revision ?? 0n
-  if (stored.revision === revision) return sameFields(want.fields, stored.fields)
-  return stored.revision > revision && spent && claimed
-}
-
-/**
- * A write that can never land (§9, §11.6): a replace whose document is past its revision, or a delete
- * whose document is gone, without this part's nonce spent and a member's claim.
- */
-export function supersededWrite(action: string, stored: StoredWrite | null, revision: bigint | null, spent: boolean, claimed: boolean): boolean {
-  if (spent && claimed) return false
-  if (action === 'delete') return stored === null
-  return action === 'replace' && stored !== null && stored.revision > (revision ?? 0n)
+  const landed = stored !== null && ((stored.revision === revision && sameFields(want.fields, stored.fields)) || (stored.revision > revision && spent && claimed))
+  return { landed, superseded: !landed && stored?.revision !== revision - 1n, absent }
 }
 
 /** A create a member reported done, its nonce spent and no other request's write on it, whose document is gone. */
-export const goneCreate = (action: string, claimed: boolean, spent: boolean, isLanded: boolean | undefined, takenByOther: boolean): boolean =>
-  action === 'create' && claimed && spent && isLanded === false && !takenByOther
+export const goneCreate = (action: string, claimed: boolean, spent: boolean, absent: boolean | undefined, takenByOther: boolean): boolean =>
+  action === 'create' && claimed && spent && absent === true && !takenByOther
 
 /**
  * A request's status: problems in its shape or review make it `invalid`, which wins over
