@@ -178,7 +178,7 @@ This section supersedes the relay transport of §4, §5 and §9 for Forge reques
 
 ### 10.3 Writing
 
-Posting a request, a signature, a decline or a broadcast record is one `orgMessage` (one document per part) created by the member's own signed-in Forge identity, with its ordinary key. Measured on testnet (2026-11-28, [evidence](../../forge-contracts/evidence/testnet/forge-org-2026-11-28.md)): an approve about 0.0005 DASH, a full 5,120-byte proposal part about 0.0017 DASH, an `orgMember` about 0.0009 and an `orgShare` about 0.0004 (a member's first forge-org write adds about 0.0002 for its contract nonce); never refunded, since the log is permanent. The organization pays only for its own writes when a request finishes. A member therefore needs a Forge identity on that network.
+Posting a request, a signature, a decline or a broadcast record is one `orgMessage` (one document per part) created by the member's own signed-in Forge identity, with its ordinary key. Measured on testnet (2026-11-28, [evidence](../../forge-contracts/evidence/testnet/forge-org-2026-11-28.md)): an approve or a broadcast record about 0.0004 DASH, a small proposal about 0.0006 DASH (a full 5,120-byte proposal part about 0.0017 DASH), connecting (`orgMember` and `orgShare`) about 0.0012 DASH (a member's first forge-org write adds about 0.0002 for its contract nonce); dg and forge-web measured the same. Never refunded, since the log is permanent. The organization pays only for its own writes when a request finishes, as any identity does (publishing the roster and profile about 0.0007 DASH, a runner about 0.0006, a profile edit about 0.00004). A member therefore needs a Forge identity on that network.
 
 ### 10.4 The key ceremony
 
