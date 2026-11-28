@@ -361,7 +361,7 @@ The clone box shows the HTTPS URL only when the web build names a gateway:
 NEXT_PUBLIC_GATEWAY_URL=https://git-forge.dashhq.org NEXT_PUBLIC_GATEWAY_LABEL="dashhq gateway" pnpm build
 ```
 
-`dash://` stays first. The HTTPS line sits under **More options** and reads "Centralized mirror on dashhq gateway: plain git, read only, optional. The Dash remote above needs no server · Verify". Without the variable there is no HTTPS line.
+On a public repository the Clone card then shows two lines: **Dash remote** first (the `dash://` command, "Verified from Dash Platform, no server. Needs git-remote-dash · Install"), then **Plain git** (the `git clone https://…` command, "Read-only copy on dashhq gateway (centralized) · Verify · About"). Without the variable there is no HTTPS line and no labels.
 
 The same variable turns **Copy link** on a public repository's pages into a [share link](#share-links-preview-cards) (`https://git-forge.dashhq.org/og/alice/project/issues/7`), which unfurls with a preview card and opens the page. The gateway sends people to its own `GATEWAY_WEB_URL`, so point a build at a gateway whose `GATEWAY_WEB_URL` is that build's site.
 

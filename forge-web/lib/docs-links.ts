@@ -12,6 +12,8 @@ export const DOCS = {
   guides: '/docs/',
   quickStart: '/docs/quick-start/',
   install: '/docs/install/',
+  /** Plain-git HTTPS clones through dashhq's read-only gateway (the Clone card's About). */
+  plainGitClone: '/docs/faq/#can-i-clone-with-plain-git',
   identity: '/docs/identity-and-keys/',
   costs: '/docs/costs/',
   movingFromGithub: '/docs/moving-from-github/',

@@ -11,6 +11,7 @@
  */
 
 import { useId, useRef, useState } from 'react'
+import Link from 'next/link'
 import { Check, ChevronDown, Copy, Download, TerminalSquare } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -25,6 +26,7 @@ import { formatBytes, isPublicRef, plural, selectedTip, tipOidOf, type RepoHome,
 import { dgNetworkFlags, repoCommands } from '@/lib/view/repo-commands'
 import { resolveTip } from '@/lib/view/tip'
 import { repoKey } from '@/lib/repo'
+import { DOCS } from '@/lib/docs-links'
 import {
   compressInWorker,
   planArchive,
@@ -37,6 +39,8 @@ import {
   ZipTooLargeError,
   type ZipProgress,
 } from '@/lib/view/zip'
+
+const ROW_LABEL = 'text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400'
 
 const HELP_LINK = 'hit-area font-medium text-forge-700 underline underline-offset-2 hover:text-forge-800 dark:text-forge-400 dark:hover:text-forge-300'
 
@@ -65,10 +69,17 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
         </h2>
       </div>
       <div className="space-y-2.5 p-3">
+        {gateway !== null ? <p className={ROW_LABEL}>Dash remote</p> : null}
         <CommandBox text={cmd.gitClone} what="git clone command" />
         <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
-          Needs git-remote-dash · {install}
+          {gateway !== null ? 'Verified from Dash Platform, no server. ' : null}Needs git-remote-dash · {install}
         </p>
+        {gateway !== null ? (
+          <div className="space-y-1 pt-1">
+            <p className={ROW_LABEL}>Plain git</p>
+            <GatewayRow key={home.repo.repoId} gateway={gateway} home={home} addr={addr} />
+          </div>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <ZipDownload home={home} addr={addr} selected={selected} />
           <button
@@ -85,19 +96,13 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
         </div>
         <div id={moreId} hidden={!moreOpen} className="space-y-3 border-t border-anvil-100 pt-3 dark:border-anvil-850" data-testid="clone-more-panel">
           <div className="space-y-1">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">Remote URL</p>
+            <p className={ROW_LABEL}>Remote URL</p>
             <CommandBox text={cmd.remote} what="clone URL" />
           </div>
           <div className="space-y-1">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">dg CLI</p>
+            <p className={ROW_LABEL}>dg CLI</p>
             <CommandBox text={cmd.dgClone} what="dg repo clone command" />
           </div>
-          {gateway !== null ? (
-            <div className="space-y-1">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-anvil-500 dark:text-anvil-400">HTTPS</p>
-              <GatewayRow key={home.repo.repoId} gateway={gateway} home={home} addr={addr} />
-            </div>
-          ) : null}
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="clone-default-branch">
             Checks out <span className="font-mono">{home.defaultBranch}</span>.
           </p>
@@ -163,7 +168,7 @@ export function provedRefs(home: RepoHome): ProvedRef[] {
   })
 }
 
-type VerifyState = { kind: 'idle' } | { kind: 'checking' } | { kind: 'done'; check: GatewayCheck } | { kind: 'error'; message: string }
+type VerifyState = { kind: 'idle' } | { kind: 'checking' } | { kind: 'done'; check: GatewayCheck } | { kind: 'unreachable' } | { kind: 'error'; message: string }
 
 const short = (oid: string | null): string => (oid === null ? '-' : oid.slice(0, 10))
 
@@ -184,17 +189,23 @@ export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; ho
       const check = await verifyGateway(url, proved, { repoId: home.repo.repoId, network: ACTIVE_NETWORK.key }, { inScope })
       setState({ kind: 'done', check })
     } catch (e) {
-      setState({ kind: 'error', message: errorMessage(e) })
+      // A fetch the browser blocked or that never connected (a reply without CORS headers, such as
+      // the gateway's first-copy 503) is a TypeError with no detail worth showing.
+      setState(e instanceof TypeError ? { kind: 'unreachable' } : { kind: 'error', message: errorMessage(e) })
     }
   }
   return (
     <div data-testid="gateway-clone">
       <CommandBox text={`git clone ${url}`} what="HTTPS clone command" />
       <p className="mt-1.5 text-[12px] text-anvil-600 dark:text-anvil-300">
-        Centralized mirror on {gateway.label}: plain git, read only, optional. The Dash remote above needs no server ·{' '}
+        Read-only copy on {gateway.label} (centralized) ·{' '}
         <button type="button" onClick={() => void verify()} disabled={state.kind === 'checking'} className={HELP_LINK} data-testid="gateway-verify">
           Verify
-        </button>
+        </button>{' '}
+        ·{' '}
+        <Link href={DOCS.plainGitClone} className={HELP_LINK} aria-label="About plain git clones" data-testid="gateway-about">
+          About
+        </Link>
       </p>
       <GatewayVerdict state={state} url={url} />
     </div>
@@ -211,10 +222,12 @@ function GatewayVerdict({ state, url }: { state: VerifyState; url: string }): JS
       </p>
     )
   }
-  if (state.kind === 'error') {
+  if (state.kind === 'unreachable' || state.kind === 'error') {
     return (
       <p role="status" className={`${base} text-caution-700 dark:text-caution-400`} data-testid="gateway-verdict">
-        The gateway could not be checked ({state.message}). The Dash remote does not need it.
+        {state.kind === 'unreachable'
+          ? "Couldn't reach the gateway for this repo. One it hasn't copied before can take a minute: try again shortly. The Dash remote doesn't need it."
+          : `The gateway could not be checked (${state.message}). The Dash remote doesn't need it.`}
       </p>
     )
   }

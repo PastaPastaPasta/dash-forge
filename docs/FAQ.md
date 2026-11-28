@@ -80,7 +80,7 @@ Forge is not a GitHub clone, and it does not need you to leave GitHub.
 - **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj push and fetch work too; see the [quick start](guides/quick-start.md#jj) for the one setup step that differs.
 - **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. The Mirror Action keeps code, issues, PRs, releases and labels in sync on every GitHub event.
 - **CI can listen.** `dg webhook add` and a relay you run deliver GitHub-shaped webhooks, so existing CI receivers work ([Collaborating](guides/collaborating.md#webhooks-and-ci)).
-- **It is not at feature parity.** No hosted CI (bring your own: [forge-runner](guides/self-host-runner.md) runs GitHub Actions workflows on your machine and reports checks with a runner key), and no wiki, discussions or global search; organizations are on testnet only. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. The web app opens, reviews and merges PRs and forks repositories, but some merges still need `dg`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. See [Collaborating](guides/collaborating.md#from-the-web-app). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists what has no equivalent, and the workarounds.
+- **It is not at feature parity.** No hosted CI (bring your own: [forge-runner](guides/self-host-runner.md) runs GitHub Actions workflows on your machine and reports checks with a runner key), and no wiki, discussions or global search; organizations are on testnet only. No pushing over `https://`; read-only `https://` clones of public repositories go through dashhq's [centralized gateway](#can-i-clone-with-plain-git), and the web app offers a zip download. No shallow clones: use `git clone --filter=blob:none` instead. The web app opens, reviews and merges PRs and forks repositories, but some merges still need `dg`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. See [Collaborating](guides/collaborating.md#from-the-web-app). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists what has no equivalent, and the workarounds.
 
 ## What doesn't Forge do (yet)?
 
@@ -106,6 +106,23 @@ Also not available, and by design: hosted CI (bring a [runner](guides/self-host-
 ## Can I use a username instead of the long identity id?
 
 Yes: register a DPNS username in the web app (Settings → Choose a username), with `dg auth name register <label>`, or in the Dash bridge. Then `forge.dashhq.org/alice/project`, `@alice` in the web header's jump box, `git clone dash://alice/project` and `dg … alice/project` all resolve it, with a proof-verified DPNS read. `dg repo list --owner` and granting access (`dg collab add`) still take the identity id.
+
+## Can I clone with plain git?
+
+Yes, for public repositories. dashhq runs a read-only mirror, so plain `git` works without git-remote-dash:
+
+```sh
+git clone https://git-forge.dashhq.org/<owner>/<repo>.git          # mainnet
+git clone https://testnet-git-forge.dashhq.org/<owner>/<repo>.git  # testnet
+```
+
+`<owner>` is the identity id or the DPNS name. A repository's Clone card shows its line under **Plain git**.
+
+- **It is centralized.** One server, run by dashhq, copies each repository from Dash Platform and serves it. It is a convenience, not part of Forge: `git clone dash://…` with git-remote-dash reads Platform directly and needs no server.
+- **Read only.** Push with `dash://`.
+- **Public repositories only.** A private one answers "no public repository".
+- **The first clone of a repository it hasn't copied yet** can take a minute; until then the server says so and you can retry.
+- **Check it** against Dash Platform with **Verify** in the Clone card, or `dg verify-mirror <url> --network mainnet` (`--network testnet` for the testnet gateway). Anyone can run their own: [forge-gateway](hosting/forge-gateway.md).
 
 ## I lost my laptop. Is my code gone?
 
