@@ -19,20 +19,50 @@ use forge_core::user_sync::{
 
 use crate::context::Ctx;
 
-/// The one line shown when sync is off on a network that has it.
+/// The line after a wallet sign-in that left sync off, on a network that has it.
 pub const OFF_HINT: &str =
     "storage on this computer only: sign in with your wallet again (`dg auth login --wallet`) to sync storage across devices";
+
+/// The line shown when sync is off for an identity signed in some other way.
+pub const SIGNED_IN_OFF_HINT: &str =
+    "storage on this computer only: sign in with your wallet (`dg auth login --wallet`) to sync storage across devices";
 
 /// The line shown before anyone signed in on this computer, on a network that has sync.
 pub const NOT_SIGNED_IN_HINT: &str =
     "after you sign in with your wallet (`dg auth login --wallet`), storage settings follow your identity across devices";
 
-/// [`OFF_HINT`], or [`NOT_SIGNED_IN_HINT`] when no identity is signed in.
-pub fn off_hint(ctx: &Ctx) -> &'static str {
-    if ctx.identity_id_hint().is_some() {
-        OFF_HINT
+/// In dg only a wallet sign-in starts settings sync (`dg storage sync add-key` adds the key of an
+/// identity that already syncs): the line for a network where released DashPay builds can't sign
+/// in.
+fn no_wallet_sync(network: &str) -> String {
+    format!(
+        "settings sync starts with a wallet sign-in, and {} (an identity that already syncs: `dg storage sync add-key`)",
+        crate::auth::wallet::no_released_wallet(network)
+    )
+}
+
+/// Sync is off for this run: [`SIGNED_IN_OFF_HINT`], [`NOT_SIGNED_IN_HINT`] when no identity is
+/// signed in, or, where released DashPay builds can't sign in, why sync can't start.
+pub fn off_hint(ctx: &Ctx) -> String {
+    if !crate::auth::wallet::leads(ctx.network()) {
+        format!(
+            "storage on this computer only: {}",
+            no_wallet_sync(&ctx.network_label())
+        )
+    } else if ctx.identity_id_hint().is_some() {
+        SIGNED_IN_OFF_HINT.to_string()
     } else {
-        NOT_SIGNED_IN_HINT
+        NOT_SIGNED_IN_HINT.to_string()
+    }
+}
+
+/// The fix that turns sync on: a wallet sign-in, or where released DashPay builds can't sign in,
+/// why sync can't start.
+pub fn start_sync_fix(ctx: &Ctx) -> String {
+    if crate::auth::wallet::leads(ctx.network()) {
+        "sign in with your wallet (`dg auth login --wallet`) to start syncing".to_string()
+    } else {
+        no_wallet_sync(&ctx.network_label())
     }
 }
 
@@ -467,7 +497,7 @@ async fn key_run(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<KeyRun> 
         PhraseCheck::Keys(k) => k,
         PhraseCheck::NotSyncing => {
             return Err(UserError::new(codes::UNSUPPORTED, rotate::NOT_SYNCING)
-                .fix("sign in with your wallet (`dg auth login --wallet`) to start syncing")
+                .fix(start_sync_fix(ctx))
                 .note("nothing was changed")
                 .into())
         }

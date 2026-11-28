@@ -31,6 +31,21 @@ use crate::network::{ForgeIds, Network};
 pub const LABEL: &str = "Dash Forge";
 /// The App Connect contract and v2 requests exist from protocol 14.
 pub const MIN_PROTOCOL: u32 = 14;
+/// The newest protocol a released DashPay build reads: forge-web's
+/// `RELEASED_WALLET_MAX_PROTOCOL` (`forge-web/lib/auth/app-connect-v2.ts`). DashPay for Android
+/// 11.9.2 and the 12.0.2 pre-release fail on testnet's protocol 15; mainnet runs 14. Raise both
+/// (and [`released_wallet_reads`]'s testnet fallback) once a released build reads a newer one.
+pub const RELEASED_WALLET_MAX_PROTOCOL: u32 = 14;
+
+/// Whether released DashPay builds sign in on `network`: by the `protocol` it runs when that was
+/// read, else by the network (testnet runs a protocol they don't read; the others did not).
+pub fn released_wallet_reads(network: &Network, protocol: Option<u32>) -> bool {
+    match protocol {
+        Some(p) => p <= RELEASED_WALLET_MAX_PROTOCOL,
+        None => !matches!(network, Network::Testnet),
+    }
+}
+
 /// How long the poll keeps reading after the first answer, for a competing one.
 pub const SETTLE_MS: u64 = 3_000;
 
@@ -549,6 +564,18 @@ mod tests {
 
     const CHAIN_T0: u64 = T0 - 5_000;
     const DAY: u64 = 24 * 60 * 60 * 1000;
+
+    /// forge-web's `releasedWalletReads`: by the protocol when it was read, else testnet is past
+    /// released wallets and the other networks are not.
+    #[test]
+    fn released_wallets_read_up_to_protocol_14() {
+        for n in [Network::Testnet, Network::Mainnet] {
+            assert!(released_wallet_reads(&n, Some(14)));
+            assert!(!released_wallet_reads(&n, Some(15)));
+        }
+        assert!(!released_wallet_reads(&Network::Testnet, None));
+        assert!(released_wallet_reads(&Network::Mainnet, None));
+    }
 
     fn forge() -> ForgeIds {
         ForgeIds {

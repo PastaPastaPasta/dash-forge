@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use forge_core::app_connect::forge::{
-    await_forge_grant, new_connection_id, LoginError, LoginParams, LoginRequest, PollOptions,
-    PollStatus, WalletGrant, MIN_PROTOCOL, SETTLE_MS,
+    await_forge_grant, new_connection_id, released_wallet_reads, LoginError, LoginParams,
+    LoginRequest, PollOptions, PollStatus, WalletGrant, MIN_PROTOCOL, SETTLE_MS,
 };
 use forge_core::app_connect::poll::ResponsePort;
 use forge_core::app_connect::verify::IdentityPort;
@@ -47,8 +47,22 @@ const WALLET_MAX_DAYS: u64 = 365;
 /// Where to find the scanner in DashPay (Android) or Dash Wallet (iOS).
 const SCAN_HOW: &str =
     "open DashPay or Dash Wallet → More → Tools → Connections → Scan QR, or open the link on the phone";
-/// Testnet needs DashPay's testnet build.
-const TESTNET_WALLET: &str = "on testnet, use DashPay's testnet build: the `-testnet.apk` on https://github.com/dashpay/dash-wallet/releases/latest (installs beside the store app)";
+/// Signing in without a wallet: what a network where released DashPay builds can't sign in
+/// points to.
+pub(crate) const FILE_OR_WORDS: &str = "`dg auth login <identity file>` or `dg auth login --mnemonic`";
+
+/// Why released DashPay builds can't sign in on `network`, as a clause (no protocol numbers: the
+/// web's copy lint bans them).
+pub(crate) fn no_released_wallet(network: &str) -> String {
+    format!("released DashPay builds can't sign in on {network} since its latest Platform upgrade")
+}
+
+/// Whether wallet sign-in leads on `network` when its protocol was not read
+/// ([`released_wallet_reads`]'s network fallback): where it doesn't, hints name the identity file
+/// or the recovery phrase instead.
+pub(crate) fn leads(network: &Network) -> bool {
+    released_wallet_reads(network, None)
+}
 /// The fix a JSON field and `dg auth status` name for a wallet key.
 pub(crate) const RENEW: &str = "dg auth login";
 /// How long a key a wallet added stays usable (#664).
@@ -255,8 +269,9 @@ impl Proposal {
 pub(crate) trait LoginUi: Sync {
     /// This machine's clock (ms).
     fn now_ms(&self) -> u64;
-    /// Show a new request (its QR code and link).
-    fn show(&self, req: &LoginRequest);
+    /// Show a new request (its QR code and link). `released_wallet`: whether released DashPay
+    /// builds sign in at the protocol the network runs.
+    fn show(&self, req: &LoginRequest, released_wallet: bool);
     /// After each poll round: what it saw, and how long the code has left (ms).
     fn waiting(&self, status: PollStatus, left_ms: u64);
     /// The code expired unanswered: whether to show a new one.
@@ -285,6 +300,7 @@ pub(crate) async fn request_grant<C: WalletChain>(
         .protocol_version()
         .await
         .context("reading the network's protocol version")?;
+    let released_wallet = released_wallet_reads(network, Some(protocol));
     if protocol < MIN_PROTOCOL {
         return Err(UserError::new(
             codes::UNSUPPORTED,
@@ -315,7 +331,7 @@ pub(crate) async fn request_grant<C: WalletChain>(
                 sync,
             },
         )?;
-        ui.show(&req);
+        ui.show(&req, released_wallet);
         let expires = req.expires_at_ms();
         let on_status = |s| ui.waiting(s, expires.saturating_sub(ui.now_ms()));
         let opts = PollOptions {
@@ -327,7 +343,15 @@ pub(crate) async fn request_grant<C: WalletChain>(
         match await_forge_grant(chain, req, forge, &opts).await {
             Ok(grant) => return Ok(grant),
             Err(LoginError::Expired(_)) if ui.again()? => {}
-            Err(e) => return Err(login_error(network, &e, renewing, sync_asked)),
+            Err(e) => {
+                return Err(login_error(
+                    network,
+                    &e,
+                    renewing,
+                    sync_asked,
+                    released_wallet,
+                ))
+            }
         }
     }
 }
@@ -348,8 +372,8 @@ fn login_error(
     e: &LoginError,
     renewing: bool,
     sync_asked: bool,
+    released_wallet: bool,
 ) -> anyhow::Error {
-    let testnet = matches!(network, Network::Testnet);
     let u = match e {
         LoginError::Expired(read_error) => {
             let mut u = UserError::new(codes::TIMED_OUT, "no wallet answered the sign-in code")
@@ -358,8 +382,11 @@ fn login_error(
                 u = u.fix(format!("if you answered as another identity: `{ANY_IDENTITY}` (this code renewed the identity signed in here, so dg read only its answer)"));
             }
             u = u.fix(format!("run `{RENEW}` again and scan the new code: {SCAN_HOW}"));
-            if testnet {
-                u = u.fix(TESTNET_WALLET);
+            if !released_wallet {
+                u = u.fix(format!(
+                    "only a newer wallet build answers the code, as {}; without one, sign in with {FILE_OR_WORDS}",
+                    no_released_wallet(&network.key())
+                ));
             }
             if sync_asked {
                 u = u.fix(format!("if your wallet showed an error for the code, it may not know the settings-sync request yet: `{RENEW} --wallet --no-sync`"));
@@ -535,7 +562,7 @@ impl LoginUi for Terminal<'_> {
         super::now_ms()
     }
 
-    fn show(&self, req: &LoginRequest) {
+    fn show(&self, req: &LoginRequest, released_wallet: bool) {
         eprint!(
             "{}",
             request_text(req.uri(), &self.ctx.network_label(), self.renews.is_some())
@@ -543,8 +570,11 @@ impl LoginUi for Terminal<'_> {
         if let Some(shown_as) = &self.renews {
             eprint!("{}", renew_text(shown_as));
         }
-        if matches!(self.ctx.network(), Network::Testnet) {
-            eprintln!("({TESTNET_WALLET})");
+        if !released_wallet {
+            eprintln!(
+                "(Only a newer wallet build answers this code: {}. Without one, Ctrl-C and run {FILE_OR_WORDS}.)",
+                no_released_wallet(&self.ctx.network_label())
+            );
         }
         eprintln!(
             "The code expires in {}. Waiting for your wallet… (Ctrl-C to stop)",
@@ -791,9 +821,13 @@ fn confirm_identity(
     )
 }
 
-/// `dg auth login --wallet`.
+/// `dg auth login --wallet`, over `client` when the caller already connected.
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
+pub(crate) async fn login(
+    ctx: &Ctx,
+    args: &LoginArgs,
+    client: Option<PlatformClient>,
+) -> Result<()> {
     let forge = ctx.target.require_v2()?;
     let proposal = Proposal::from_args(&args.limits)?;
     preflight(ctx, store::can_store(args.storage.insecure_plaintext))?;
@@ -807,7 +841,10 @@ pub(crate) async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .as_deref()
         .and_then(forge_core::app_connect::decode_id);
     let renewing = renew.is_some();
-    let client = ctx.connect().await?;
+    let client = match client {
+        Some(c) => c,
+        None => ctx.connect().await?,
+    };
     let checked =
         super::check_group(ctx, &client, &forge.group, args.limits.strict_group()).await?;
     checked.print_notice(ctx, "");
@@ -1287,7 +1324,7 @@ mod tests {
         fn now_ms(&self) -> u64 {
             T0 + u64::try_from(self.start.elapsed().as_millis()).unwrap()
         }
-        fn show(&self, req: &LoginRequest) {
+        fn show(&self, req: &LoginRequest, _released_wallet: bool) {
             let mut n = self.shown.lock().unwrap();
             assert!(req.uri().starts_with("dashpay://connect?v=2&n="));
             self.world.shown.lock().unwrap().push(req.request().clone());
@@ -1426,8 +1463,27 @@ mod tests {
             fixes.contains("More → Tools → Connections → Scan QR"),
             "{fixes}"
         );
-        assert!(fixes.contains("-testnet.apk"), "{fixes}");
+        assert!(!fixes.contains("released DashPay builds"), "{fixes}");
         assert!(fixes.contains(RENEW), "{fixes}");
+    }
+
+    /// Where released wallets don't read the chain, an expired code says so and names the file
+    /// or the words, and no download.
+    #[tokio::test(start_paused = true)]
+    async fn an_expired_code_past_released_wallets_names_the_file_or_words() {
+        let world = World {
+            protocol: 15,
+            ..World::new()
+        };
+        let (out, _) = run(&world, false, &|_, _, _| {}).await;
+        let fixes = user_error(&out.unwrap_err()).fix.join("\n");
+        assert!(
+            fixes.contains("released DashPay builds can't sign in on testnet since its latest Platform upgrade"),
+            "{fixes}"
+        );
+        assert!(fixes.contains(FILE_OR_WORDS), "{fixes}");
+        assert!(!fixes.contains("apk"), "{fixes}");
+        assert!(!fixes.contains("protocol 15"), "{fixes}");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1834,6 +1890,7 @@ mod tests {
             &LoginError::Ambiguous(vec!["A".into(), "B".into()]),
             true,
             true,
+            true,
         );
         assert!(user_error(&err)
             .note
@@ -1858,6 +1915,7 @@ mod tests {
                 &LoginError::Expired(None),
                 renewing,
                 false,
+                true,
             ))
             .fix
             .clone()

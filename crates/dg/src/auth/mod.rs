@@ -57,7 +57,9 @@ pub enum AuthCommand {
     /// Registers a limited key for this computer. The master key is used once and not stored,
     /// unless --full-key. With --wallet, scan the code dg prints in DashPay for Android or Dash
     /// Wallet for iOS (More → Tools → Connections → Scan QR): the wallet adds the limited key,
-    /// and the master key never leaves it.
+    /// and the master key never leaves it. Released DashPay builds can't sign in on testnet
+    /// since its latest Platform upgrade, so there a bare `dg auth login` asks for your identity
+    /// file or recovery phrase instead.
     Login(LoginArgs),
     /// Show the identity, its key, budget left, expiry, balance and where the key is stored.
     Status,
@@ -138,21 +140,24 @@ pub struct StorageArgs {
 }
 
 /// `dg auth login` arguments. With nothing to sign in from (no file, --mnemonic, --full-key or
-/// --replace), it signs in with a DashPay wallet, as `--wallet` does.
-#[derive(Debug, clap::Args)]
+/// --replace), it signs in with a DashPay wallet, as `--wallet` does, where released DashPay
+/// builds read the chain; elsewhere it asks for the file or the words ([`file_or_words`]).
+#[derive(Debug, Clone, clap::Args)]
 #[allow(clippy::struct_excessive_bools)] // independent clap flags
 pub struct LoginArgs {
     /// The identity file (bridge export, `dg auth export`, or mint-identity output). Also
-    /// accepted via --identity. Without one (or --mnemonic), dg signs in with your wallet.
+    /// accepted via --identity. Without one (or --mnemonic), dg signs in with your wallet, or on
+    /// testnet asks for the file or the words.
     pub file: Option<PathBuf>,
     /// Type the 12-word recovery phrase instead of giving a file (read without echo).
     #[arg(long, conflicts_with = "file")]
     pub mnemonic: bool,
     /// Sign in with DashPay or Dash Wallet (App Connect): dg prints a QR code and a
     /// `dashpay://connect` link, the wallet adds a limited key (proposed: 0.25 DASH for 180 days,
-    /// or --budget/--expires; the wallet may change them) and dg stores it. Testnet needs
-    /// DashPay for Android's testnet build.
-    /// The default in a terminal; without one (or with --json) it must be asked for.
+    /// or --budget/--expires; the wallet may change them) and dg stores it. Released DashPay
+    /// builds can't sign in on testnet since its latest Platform upgrade: there --wallet is for a
+    /// newer wallet build. The default in a terminal elsewhere; without one (or with --json) it
+    /// must be asked for.
     #[arg(long, conflicts_with_all = ["file", "mnemonic", "full_key", "replace"])]
     pub wallet: bool,
     /// Keep the full identity (master key included) instead of registering a limited key.
@@ -962,10 +967,25 @@ async fn login_source(
 /// that key and the identity's encryption keys (or, with `--full-key`, the whole identity).
 #[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
-    if args.wallet || args.any_identity || signs_in_with_wallet(ctx, args)? {
-        return wallet::login(ctx, args).await;
+    if args.wallet || args.any_identity {
+        return wallet::login(ctx, args, None).await;
     }
-    let client = ctx.connect().await?;
+    let (client, chosen) = if signs_in_with_wallet(ctx, args)? {
+        let client = ctx.connect().await?;
+        let protocol = client.refresh_protocol_version().await.ok();
+        if forge_core::app_connect::forge::released_wallet_reads(ctx.network(), protocol) {
+            return wallet::login(ctx, args, Some(client)).await;
+        }
+        let chosen = file_or_words(
+            &ctx.network_label(),
+            args,
+            &mut crate::prompt::TtyPrompter,
+        )?;
+        (client, Some(chosen))
+    } else {
+        (ctx.connect().await?, None)
+    };
+    let args = chosen.as_ref().unwrap_or(args);
     let master = login_source(ctx, &client, args).await?;
     let network = ctx.network_label();
     let on_chain = client
@@ -1137,22 +1157,74 @@ fn signs_in_with_wallet(ctx: &Ctx, args: &LoginArgs) -> Result<bool> {
         return Ok(false);
     }
     if ctx.json || !ctx.stdin_tty {
-        return Err(UserError::new(
+        let wallet = wallet::leads(ctx.network());
+        let mut u = UserError::new(
             codes::CONFIRMATION_REQUIRED,
-            "`dg auth login` signs in with your wallet, which needs a terminal",
+            if wallet {
+                "`dg auth login` signs in with your wallet, which needs a terminal"
+            } else {
+                "`dg auth login` asks for your identity file or recovery phrase, which needs a terminal"
+            },
         )
-        .cause(if ctx.json {
-            "--json mode: no QR code is shown without --wallet"
-        } else {
-            "stdin is not a terminal: no QR code is shown without --wallet"
+        .cause(match (ctx.json, wallet) {
+            (true, true) => "--json mode: no QR code is shown without --wallet",
+            (false, true) => "stdin is not a terminal: no QR code is shown without --wallet",
+            (true, false) => "--json mode: nothing is asked for",
+            (false, false) => "stdin is not a terminal: nothing can be asked for",
         })
-        .fix("sign in from your identity file: `dg auth login <identity file>` (`--mnemonic` asks for the words on a terminal, so it needs one too)")
-        .fix("wait for your wallet anyway: `dg auth login --wallet --yes`")
-        .fix("in CI, set DASH_FORGE_KEY to a dfk1 key (`dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1`): no login needed")
-        .note("nothing was shown or stored")
-        .into());
+        .fix("sign in from your identity file: `dg auth login <identity file>` (`--mnemonic` asks for the words on a terminal, so it needs one too)");
+        if wallet {
+            u = u.fix("wait for your wallet anyway: `dg auth login --wallet --yes`");
+        }
+        return Err(u
+            .fix("in CI, set DASH_FORGE_KEY to a dfk1 key (`dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1`): no login needed")
+            .note("nothing was shown or stored")
+            .into());
     }
     Ok(true)
+}
+
+/// Where released DashPay builds can't sign in, a bare `dg auth login` in a terminal asks what to
+/// sign in from instead of showing a code nobody can answer: an identity file, or (an empty
+/// answer) the recovery phrase, as `<file>` or `--mnemonic` would. The answer is never echoed:
+/// someone may paste a key.
+fn file_or_words(
+    network: &str,
+    args: &LoginArgs,
+    p: &mut dyn crate::prompt::Prompter,
+) -> Result<LoginArgs> {
+    p.say(&format!(
+        "{}: sign in with your identity file or recovery phrase.",
+        crate::repo_settings::capitalize(&wallet::no_released_wallet(network))
+    ));
+    let answer = crate::prompt::text_valid(
+        p,
+        "Identity file (Enter to type your 12-word recovery phrase instead)",
+        "a bridge `dash-identity-<id>.json` or a `dg auth export` file; no identity yet? Ctrl-C and run `dg auth new`",
+        Some(""),
+        |a| {
+            if a.is_empty() || home_path(a).is_file() {
+                Ok(())
+            } else {
+                Err("no file there: type its path, or press Enter for the recovery phrase".into())
+            }
+        },
+    )?;
+    let mut chosen = args.clone();
+    if answer.is_empty() {
+        chosen.mnemonic = true;
+    } else {
+        chosen.file = Some(home_path(&answer));
+    }
+    Ok(chosen)
+}
+
+/// `~/…` under the home directory, as a shell would expand it.
+fn home_path(p: &str) -> PathBuf {
+    match (p.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => p.into(),
+    }
 }
 
 /// After a limited key is registered: the master key it came from is not kept here, so say
@@ -1353,9 +1425,15 @@ async fn status(ctx: &Ctx) -> Result<()> {
             json!({ "network": network, "authenticated": false, "keyOrigin": null, "renew": null, "orgRequestsWaiting": org_waiting }),
             || {
                 println!("Network:  {network}");
-                println!(
-                    "Identity: none — `dg auth login` signs in with your wallet, `dg auth new` creates one"
-                );
+                if wallet::leads(ctx.network()) {
+                    println!(
+                        "Identity: none — `dg auth login` signs in with your wallet, `dg auth new` creates one"
+                    );
+                } else {
+                    println!(
+                        "Identity: none — `dg auth login <identity file>` (or `--mnemonic`) signs in, `dg auth new` creates one"
+                    );
+                }
                 org_waiting_line(org_waiting);
             },
         );
@@ -1442,14 +1520,20 @@ async fn status(ctx: &Ctx) -> Result<()> {
             }
             println!(
                 "Key:      {}",
-                key_line(report.as_ref(), unopened.as_deref(), reached, from_wallet)
+                key_line(
+                    ctx.network(),
+                    report.as_ref(),
+                    unopened.as_deref(),
+                    reached,
+                    from_wallet
+                )
             );
             if let Some(o) = key_origin {
                 println!("Origin:   {}", o.describe());
             } else if matches!(kind, "sealed-file" | "plaintext-file") {
                 println!("Origin:   not recorded (a key file an earlier dg stored)");
             }
-            if let Some(line) = renew_line(report.as_ref(), from_wallet, key_origin) {
+            if let Some(line) = renew_line(ctx.network(), report.as_ref(), from_wallet, key_origin) {
                 println!("          {line}");
             }
             let key_id = report.as_ref().and_then(|r| r.key_id);
@@ -1506,8 +1590,10 @@ fn key_origin(
 }
 
 /// How to renew the status's key: in the wallet for a key it granted (and live); a Forge
-/// limited key from the master key can move to the wallet the same way.
+/// limited key from the master key can move to the wallet the same way. Where released DashPay
+/// builds can't sign in (`network`), with the identity file or the words instead.
 fn renew_line(
+    network: &forge_core::platform::Network,
     report: Option<&KeyReport>,
     from_wallet: bool,
     key_origin: Option<origin::KeyOrigin>,
@@ -1516,6 +1602,19 @@ fn renew_line(
     r.key_id?;
     if key_origin == Some(origin::KeyOrigin::Dfk1) {
         return None;
+    }
+    if !wallet::leads(network) {
+        return (from_wallet || r.limited).then(|| {
+            format!(
+                "renew: {} registers a new key with your master key (used once){}",
+                wallet::FILE_OR_WORDS,
+                if from_wallet {
+                    "; `dg auth login --wallet` renews in a wallet build that still signs in here"
+                } else {
+                    ""
+                }
+            )
+        });
     }
     if from_wallet {
         Some(format!(
@@ -1553,6 +1652,7 @@ async fn status_from_chain(
 /// The status's `Key:` line: the key's limits, or why they were not checked (the key was not
 /// opened, or Platform was not `reached`).
 pub(crate) fn key_line(
+    network: &forge_core::platform::Network,
     report: Option<&KeyReport>,
     unopened: Option<&str>,
     reached: bool,
@@ -1560,6 +1660,10 @@ pub(crate) fn key_line(
 ) -> String {
     match (report, unopened) {
         (Some(r), _) if r.key_id.is_none() => match r.disabled_id {
+            Some(id) if !wallet::leads(network) => format!(
+                "#{id} DISABLED: it can no longer sign; {} registers a new one",
+                wallet::FILE_OR_WORDS
+            ),
             Some(id) if from_wallet => format!(
                 "#{id} DISABLED: it can no longer sign; `{}` gets a new key from your wallet",
                 wallet::RENEW
@@ -2065,6 +2169,8 @@ mod tests {
     use super::*;
     use forge_core::network::NetworkSettings;
 
+    const MAINNET: forge_core::platform::Network = forge_core::platform::Network::Mainnet;
+
     /// F19: a `--mnemonic` login used no file, so it does not mention one.
     #[test]
     fn a_mnemonic_login_does_not_mention_an_identity_file() {
@@ -2371,7 +2477,7 @@ mod tests {
             remaining: Some(49_000_000_000),
             expires_at: None,
         };
-        let line = key_line(Some(&report(false, Some("checkRun"))), None, true, false);
+        let line = key_line(&MAINNET, Some(&report(false, Some("checkRun"))), None, true, false);
         assert!(
             line.starts_with(
                 "#6 bound to checkRun documents only (a CI runner key) — 0.49 of 0.5 DASH left"
@@ -2379,7 +2485,7 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("unlimited"), "{line}");
-        assert!(key_line(Some(&report(true, None)), None, true, false).starts_with("#6 limited — "));
+        assert!(key_line(&MAINNET, Some(&report(true, None)), None, true, false).starts_with("#6 limited — "));
         // doctor fails a key that signs nothing any more
         let mut r = report(true, None);
         assert_eq!(r.spent_or_expired(1_000), None);
@@ -2388,7 +2494,7 @@ mod tests {
         r.remaining = Some(0);
         assert_eq!(r.spent_or_expired(0), Some("its budget is spent"));
         assert_eq!(
-            key_line(Some(&report(false, None)), None, true, false),
+            key_line(&MAINNET, Some(&report(false, None)), None, true, false),
             "#6 unlimited (not a Forge limited key)"
         );
         // QW3-070: a runner key with a budget is spend-capped in --json too.
@@ -2397,12 +2503,12 @@ mod tests {
         let mut gone = report(true, None);
         gone.key_id = None;
         gone.disabled_id = Some(7);
-        let line = key_line(Some(&gone), None, true, false);
+        let line = key_line(&MAINNET, Some(&gone), None, true, false);
         assert!(
             line.starts_with("#7 DISABLED: it can no longer sign"),
             "{line}"
         );
-        let line = key_line(Some(&gone), None, true, true);
+        let line = key_line(&MAINNET, Some(&gone), None, true, true);
         assert!(
             line.contains("`dg auth login` gets a new key from your wallet"),
             "{line}"
@@ -2413,7 +2519,7 @@ mod tests {
         gone.limited = false;
         assert!(gone.is_capped());
         gone.disabled_id = None;
-        let line = key_line(Some(&gone), None, true, false);
+        let line = key_line(&MAINNET, Some(&gone), None, true, false);
         assert!(line.starts_with("not a key of this identity"), "{line}");
     }
 
@@ -2564,23 +2670,118 @@ mod tests {
         assert_eq!(key_origin(false, "sealed-file", None), None);
         assert_eq!(key_origin(false, "pasted", None), None);
         assert_eq!(key_origin(false, "pasted", Some(O::Phrase)), None);
-        let wallet = renew_line(Some(&r(Some(9), true)), true, Some(O::Wallet)).unwrap();
+        let wallet = renew_line(&MAINNET, Some(&r(Some(9), true)), true, Some(O::Wallet)).unwrap();
         assert!(
             wallet.starts_with("Renew in your wallet: `dg auth login`"),
             "{wallet}"
         );
-        let limited = renew_line(Some(&r(Some(9), true)), false, Some(O::Phrase)).unwrap();
+        let limited = renew_line(&MAINNET, Some(&r(Some(9), true)), false, Some(O::Phrase)).unwrap();
         assert!(limited.contains("from your DashPay wallet"), "{limited}");
         assert!(limited.contains("dg auth keys add"), "{limited}");
-        assert_eq!(renew_line(Some(&r(Some(9), false)), false, None), None);
+        assert_eq!(renew_line(&MAINNET, Some(&r(Some(9), false)), false, None), None);
         assert_eq!(
-            renew_line(Some(&r(Some(9), true)), false, Some(O::Dfk1)),
+            renew_line(&MAINNET, Some(&r(Some(9), true)), false, Some(O::Dfk1)),
             None
         );
         assert_eq!(
-            renew_line(Some(&r(None, true)), true, Some(O::Wallet)),
+            renew_line(&MAINNET, Some(&r(None, true)), true, Some(O::Wallet)),
             None
         );
-        assert_eq!(renew_line(None, true, Some(O::Wallet)), None);
+        assert_eq!(renew_line(&MAINNET, None, true, Some(O::Wallet)), None);
+    }
+
+    fn on_testnet(yes: bool, json: bool, stdin_tty: bool) -> Ctx {
+        let mut ctx = Ctx::scripted(yes, json, stdin_tty, None);
+        ctx.target = NetworkSettings::from_flags(Some("testnet".into()), None, None)
+            .resolve()
+            .unwrap();
+        ctx
+    }
+
+    fn login_args(extra: &[&str]) -> LoginArgs {
+        use clap::Parser as _;
+        let mut argv = vec!["dg", "auth", "login"];
+        argv.extend_from_slice(extra);
+        let cli = crate::Cli::try_parse_from(argv).unwrap();
+        let crate::Command::Auth(AuthCommand::Login(a)) = cli.command else {
+            panic!("not auth login")
+        };
+        a
+    }
+
+    /// Where released DashPay builds can't sign in, a bare login asks for the file (re-asking for
+    /// one that isn't there, without echoing it) or, on an empty answer, the words; every other
+    /// flag is kept.
+    #[test]
+    fn a_bare_login_past_released_wallets_asks_for_the_file_or_the_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("id.json");
+        std::fs::write(&file, "{}").unwrap();
+        let file_s = file.to_string_lossy().into_owned();
+        let args = login_args(&["--budget", "1"]);
+
+        let mut p = crate::prompt::Scripted::new(&["dfk1:testnet:Id:6:secret", &file_s]);
+        let chosen = file_or_words("testnet", &args, &mut p).unwrap();
+        assert_eq!(chosen.file.as_deref(), Some(file.as_path()));
+        assert!(!chosen.mnemonic);
+        assert_eq!(chosen.limits.budget, Some(1.0));
+        assert_eq!(p.asked.len(), 2);
+        assert_eq!(
+            p.said[0],
+            "Released DashPay builds can't sign in on testnet since its latest Platform upgrade: sign in with your identity file or recovery phrase."
+        );
+        assert!(p.said.iter().all(|l| !l.contains("secret")), "{:?}", p.said);
+        assert!(p.said.iter().all(|l| !l.contains("protocol")), "{:?}", p.said);
+
+        let mut p = crate::prompt::Scripted::new(&[""]);
+        let chosen = file_or_words("testnet", &args, &mut p).unwrap();
+        assert!(chosen.mnemonic);
+        assert_eq!(chosen.file, None);
+    }
+
+    /// Without a terminal a bare login still stops with E802 on testnet, naming the file or the
+    /// words and no wallet.
+    #[test]
+    fn a_bare_login_without_a_terminal_on_testnet_names_no_wallet() {
+        for (json, stdin_tty) in [(false, false), (true, true)] {
+            let err = signs_in_with_wallet(&on_testnet(false, json, stdin_tty), &login_args(&[]))
+                .unwrap_err();
+            let u = forge_core::user_error::classify(
+                err.chain(),
+                &forge_core::user_error::ErrorContext::default(),
+            );
+            assert_eq!(u.code, codes::CONFIRMATION_REQUIRED, "{u:?}");
+            assert!(u.message.contains("identity file or recovery phrase"), "{u:?}");
+            assert!(!u.fix.iter().any(|f| f.contains("--wallet")), "{u:?}");
+            assert!(u.fix.iter().any(|f| f.contains("<identity file>")), "{u:?}");
+        }
+        assert!(!signs_in_with_wallet(&on_testnet(false, true, false), &login_args(&["id.json"])).unwrap());
+        assert!(signs_in_with_wallet(&on_testnet(false, false, true), &login_args(&[])).unwrap());
+    }
+
+    /// `dg auth status` on testnet renews with the file or the words, not the wallet.
+    #[test]
+    fn the_status_on_testnet_renews_with_the_file_or_the_words() {
+        let testnet = forge_core::platform::Network::Testnet;
+        let r = |key_id: Option<u32>| KeyReport {
+            key_id,
+            disabled_id: key_id.is_none().then_some(9),
+            limited: true,
+            doc_type: None,
+            total: Some(25_000_000_000),
+            remaining: Some(24_000_000_000),
+            expires_at: Some(1),
+        };
+        let wallet = renew_line(&testnet, Some(&r(Some(9))), true, Some(origin::KeyOrigin::Wallet)).unwrap();
+        assert!(wallet.starts_with("renew: `dg auth login <identity file>`"), "{wallet}");
+        assert!(wallet.contains("dg auth login --wallet"), "{wallet}");
+        let limited = renew_line(&testnet, Some(&r(Some(9))), false, Some(origin::KeyOrigin::Phrase)).unwrap();
+        assert!(!limited.contains("wallet"), "{limited}");
+        for from_wallet in [true, false] {
+            let line = key_line(&testnet, Some(&r(None)), None, true, from_wallet);
+            assert!(line.starts_with("#9 DISABLED"), "{line}");
+            assert!(!line.contains("wallet"), "{line}");
+            assert!(line.contains("--mnemonic"), "{line}");
+        }
     }
 }

@@ -1008,6 +1008,24 @@ fn insufficient_detail(needed: u64, available: u64) -> String {
     )
 }
 
+/// Whether released DashPay builds sign in on `network` (else the one [`set_network`] recorded);
+/// an unknown network counts as one where they do.
+fn wallet_leads(network: Option<&Network>) -> bool {
+    network
+        .or_else(|| PROCESS_NETWORK.get())
+        .is_none_or(|n| crate::app_connect::forge::released_wallet_reads(n, None))
+}
+
+/// `{lead}: ` how to get a fresh limited key: from the wallet where released DashPay builds sign
+/// in, else from the identity file or recovery phrase.
+fn fresh_key_fix(network: Option<&Network>, lead: &str) -> String {
+    if wallet_leads(network) {
+        format!("{lead}: `dg auth login` (your DashPay wallet approves a new key), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once)")
+    } else {
+        format!("{lead}: `dg auth login <identity file>` or `dg auth login --mnemonic` (uses your master key once)")
+    }
+}
+
 /// Map the SDK's text (a flattened `dash_sdk::Error`) — consensus codes are only available
 /// as their messages at this boundary.
 fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
@@ -1019,7 +1037,7 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         return Some(
             UserError::new(codes::KEY_BUDGET_SPENT, ctx.headline("this key's budget is used up"))
                 .cause(one_line(msg))
-                .fix("get a fresh limited key: `dg auth login` (your DashPay wallet approves a new key), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once)")
+                .fix(fresh_key_fix(ctx.network, "get a fresh limited key"))
                 .note("the identity's balance is untouched; only this key can no longer sign"),
         );
     }
@@ -1027,7 +1045,7 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         return Some(
             UserError::new(codes::KEY_EXPIRED, ctx.headline("this key has expired"))
                 .cause(one_line(msg))
-                .fix("get a fresh limited key: `dg auth login` (your DashPay wallet approves a new key), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once)"),
+                .fix(fresh_key_fix(ctx.network, "get a fresh limited key")),
         );
     }
     // A contract-bound key used outside its bounds: ContractBoundedKeyOutOfBoundsError (20014),
@@ -1054,7 +1072,10 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         return Some(
             UserError::new(codes::KEY_EXPIRED, ctx.headline("this key was disabled"))
                 .cause(one_line(msg))
-                .fix("sign in again with a live key: `dg auth login` (your DashPay wallet approves a new key), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once); `dg auth keys list` shows which are live"),
+                .fix(format!(
+                    "{}; `dg auth keys list` shows which are live",
+                    fresh_key_fix(ctx.network, "sign in again with a live key")
+                )),
         );
     }
     // 40210 IdentityInsufficientBalance / 30000 BalanceIsNotEnough.
@@ -1937,7 +1958,11 @@ fn identity_unreadable_with(msg: &str, env_key: bool) -> UserError {
         "could not load your identity file",
     )
     .cause(msg)
-    .fix("`dg auth login` stores a key again (from your wallet; `dg auth login <file>` or `--mnemonic` from your identity)")
+    .fix(if wallet_leads(None) {
+        "`dg auth login` stores a key again (from your wallet; `dg auth login <file>` or `--mnemonic` from your identity)"
+    } else {
+        "`dg auth login <file>` or `dg auth login --mnemonic` stores a key again, from your identity"
+    })
     .fix("pass `--identity <file>` / set DASH_FORGE_KEY for one command (the helper reads DASH_FORGE_KEY)")
 }
 

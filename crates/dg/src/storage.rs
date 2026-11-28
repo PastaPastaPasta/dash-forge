@@ -452,7 +452,7 @@ fn owner_sync_key(ctx: &Ctx, me: &str) -> Result<forge_core::user_sync::SyncKey>
             codes::USAGE,
             "settings sync is off on this computer",
         )
-        .fix("sign in with your wallet: `dg auth login --wallet`")
+        .fix(crate::sync::start_sync_fix(ctx))
         .into()),
     }
 }

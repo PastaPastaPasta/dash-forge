@@ -521,7 +521,11 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
         out.push(Check::warn(
             "identity",
             "none configured (reads work; writes need one)",
-            "`dg auth login` signs in with your DashPay wallet (or `<file>` / `--mnemonic`); `dg auth new` creates one",
+            if crate::auth::wallet::leads(ctx.network()) {
+                "`dg auth login` signs in with your DashPay wallet (or `<file>` / `--mnemonic`); `dg auth new` creates one"
+            } else {
+                "`dg auth login <identity file>` (or `--mnemonic`) signs in; `dg auth new` creates one"
+            },
         ));
         return out;
     };
@@ -560,7 +564,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
                     forge_core::keystore::describe_key_source(&path),
                     e
                 ),
-                "sign in again: `dg auth login` (your wallet), or `dg auth login <file>` / `--mnemonic`",
+                sign_in_again(ctx.network()),
             ));
             return out;
         }
@@ -593,7 +597,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
             (Ok(c), Some(Ok(identity))) => {
                 let report = crate::auth::key_report(c, identity, &bridge, ctx).await;
                 let access = crate::auth::private_access(ctx, &bridge, Some(identity));
-                keys_check(&report, &access, crate::auth::now_ms())
+                keys_check(ctx.network(), &report, &access, crate::auth::now_ms())
             }
             // Not on chain, or not reachable: the balance row says which; what the key file
             // holds is all that can be said.
@@ -652,11 +656,22 @@ fn balance_of(
     }
 }
 
+/// The fix for a key that can't sign: a new sign-in, from the wallet where released DashPay
+/// builds sign in.
+fn sign_in_again(network: &Network) -> &'static str {
+    if crate::auth::wallet::leads(network) {
+        "sign in again: `dg auth login` (your wallet), or `dg auth login <file>` / `--mnemonic`"
+    } else {
+        "sign in again: `dg auth login <identity file>` or `dg auth login --mnemonic`"
+    }
+}
+
 /// The `keys` row: what the key in use can sign, as the chain says (QW2-005: a CI runner key
 /// bound to `checkRun` passed as "HIGH/CRITICAL auth key for writes"), whether it still can
 /// (budget, expiry, `now_ms`), and whether private repositories open with it (an `ENCRYPTION`
 /// key held beside it).
 fn keys_check(
+    network: &Network,
     report: &crate::auth::KeyReport,
     access: &crate::auth::PrivateAccess,
     now_ms: u64,
@@ -666,13 +681,9 @@ fn keys_check(
             Some(id) => format!("the key in use (#{id}) is disabled: it can no longer sign"),
             None => "the key in use is not a key of this identity (never registered, or another identity's)".into(),
         };
-        return Check::fail(
-            "keys",
-            what,
-            "sign in again: `dg auth login` (your wallet), or `dg auth login <file>` / `--mnemonic`",
-        );
+        return Check::fail("keys", what, sign_in_again(network));
     };
-    let line = crate::auth::key_line(Some(report), None, true, false);
+    let line = crate::auth::key_line(network, Some(report), None, true, false);
     if let Some(why) = report.spent_or_expired(now_ms) {
         let fix = if report.doc_type.is_some() {
             "`dg ci runner new` registers a fresh runner key".to_string()
@@ -1040,7 +1051,11 @@ async fn check_storage(ctx: &Ctx) -> Vec<Check> {
         crate::sync::SyncState::Locked => Some(Check::warn(
             "settings sync",
             "its key is in a passphrase-sealed file, so this run uses this computer's storage only",
-            "set DASH_FORGE_PASSPHRASE, or sign in with your wallet again where a keychain is available",
+            if crate::auth::wallet::leads(ctx.network()) {
+                "set DASH_FORGE_PASSPHRASE, or sign in with your wallet again where a keychain is available"
+            } else {
+                "set DASH_FORGE_PASSPHRASE"
+            },
         )),
         crate::sync::SyncState::On { key, contract } => {
             let moved = match ctx.connect().await {
@@ -1625,7 +1640,7 @@ mod tests {
     fn an_unlimited_key_is_a_warning() {
         use crate::auth::{KeyReport, PrivateAccess};
         let access = PrivateAccess::for_test(&[4], true);
-        let unlimited = keys_check(&KeyReport::for_test(3, false), &access, 0);
+        let unlimited = keys_check(&Network::Mainnet, &KeyReport::for_test(3, false), &access, 0);
         assert!(
             matches!(unlimited.status, Status::Warn),
             "{}",
@@ -1640,7 +1655,7 @@ mod tests {
             .fix
             .as_deref()
             .is_some_and(|f| f.contains("dg auth login")));
-        let limited = keys_check(&KeyReport::for_test(5, true), &access, 0);
+        let limited = keys_check(&Network::Mainnet, &KeyReport::for_test(5, true), &access, 0);
         assert!(matches!(limited.status, Status::Ok), "{}", limited.detail);
     }
 
