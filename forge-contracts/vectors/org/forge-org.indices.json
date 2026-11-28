@@ -1,0 +1,88 @@
+[
+ {
+  "item": "ORG",
+  "name": "one binding per organization and member identity",
+  "type": "orgMember",
+  "index": "byOrg",
+  "expect": "present",
+  "properties": [
+   "org",
+   "$ownerId"
+  ],
+  "has": {
+   "unique": true
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "an organization's identities for one participant key, earliest first",
+  "type": "orgMember",
+  "index": "byKey",
+  "expect": "present",
+  "properties": [
+   "org",
+   "authPub",
+   "$createdAt"
+  ],
+  "has": {
+   "unique": false
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "a member identity's organizations",
+  "type": "orgMember",
+  "index": "byOwner",
+  "expect": "present",
+  "properties": [
+   "$ownerId",
+   "org"
+  ],
+  "has": {
+   "unique": false
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "one sealed share per member identity and ceremony",
+  "type": "orgShare",
+  "index": "byCeremony",
+  "expect": "present",
+  "properties": [
+   "org",
+   "$ownerId",
+   "cid"
+  ],
+  "has": {
+   "unique": true
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "one roster per organization",
+  "type": "org",
+  "index": "owner",
+  "expect": "present",
+  "properties": [
+   "$ownerId"
+  ],
+  "has": {
+   "unique": true
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "one member's messages for an organization, by time",
+  "type": "orgMessage",
+  "index": "log",
+  "expect": "present",
+  "properties": [
+   "org",
+   "$ownerId",
+   "$createdAt"
+  ],
+  "has": {
+   "unique": false
+  }
+ }
+]

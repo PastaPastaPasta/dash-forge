@@ -23,7 +23,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { FORGE_CONTRACT_KINDS, forgeContractIds, type GroupTrust } from '../deployments'
+import { FORGE_CONTRACT_KINDS, forgeContractIds, isGroupExtra, type GroupTrust } from '../deployments'
 
 /** What the chain says owns the group. */
 export interface GroupOwnership {
@@ -59,7 +59,7 @@ function refuse(cause: string): Error {
 }
 
 function isKnown(trust: GroupTrust, contractId: string): boolean {
-  return forgeContractIds(trust).includes(contractId) || trust.user === contractId || trust.superseded.includes(contractId)
+  return forgeContractIds(trust).includes(contractId) || isGroupExtra(trust, contractId) || trust.superseded.includes(contractId)
 }
 
 /** Every member contract (whole, or through a document type or token) Forge does not know. */

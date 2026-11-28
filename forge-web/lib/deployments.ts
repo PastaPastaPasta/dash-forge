@@ -27,6 +27,13 @@ export interface SupersededRecord {
   readonly contractGroupId?: string | null
 }
 
+/** An extra contract a deploy script registered into the forge group (forge-user, forge-org). */
+export interface GroupContractRecord {
+  readonly contractId?: string | null
+  readonly ownerId?: string | null
+  readonly contractGroupId?: string | null
+}
+
 /** The fields forge-web reads from a deployment file. */
 export interface DeploymentFile {
   /** The Platform chain id a devnet reports (`dash-devnet-sakura`); not derivable from its name. */
@@ -49,7 +56,13 @@ export interface DeploymentFile {
    * of the forge group, registered by `forge-contracts/scripts/deploy-user.mjs`; absent where it is
    * not registered (a devnet without it), and then nothing syncs.
    */
-  readonly user?: { readonly contractId?: string | null; readonly ownerId?: string | null; readonly contractGroupId?: string | null }
+  readonly user?: GroupContractRecord
+  /**
+   * forge-org (docs/design/organizations.md §10): organizations' members, rosters and request
+   * logs. A member of the forge group, registered by `forge-contracts/scripts/deploy-org.mjs`;
+   * absent where it is not registered (mainnet), and organizations then have nothing to read.
+   */
+  readonly org?: GroupContractRecord
   /** The forge-v2 record `forge-contracts/scripts/deploy-v2.mjs` read-modify-writes. */
   readonly v2?: {
     /**
@@ -110,6 +123,8 @@ export interface ForgeIds {
    * and settings sync. Not one of {@link FORGE_CONTRACT_KINDS}: nothing else is stored there.
    */
   readonly user?: string
+  /** forge-org, when the file records it in this group: organizations (`lib/org`). */
+  readonly org?: string
 }
 
 /** One of Forge's contracts, by role. */
@@ -123,6 +138,11 @@ export const FORGE_CONTRACT_KINDS: readonly ForgeContractKind[] = ['core', 'coll
 export function contractKind(forge: ForgeIds, contractId: string | undefined): ForgeContractKind | null {
   if (contractId === undefined) return null
   return FORGE_CONTRACT_KINDS.find((k) => forge[k] === contractId) ?? null
+}
+
+/** Whether `contractId` is forge-user or forge-org: group members that are not {@link FORGE_CONTRACT_KINDS}. */
+export function isGroupExtra(ids: Pick<ForgeIds, 'user' | 'org'>, contractId: string | undefined): contractId is string {
+  return contractId !== undefined && (contractId === ids.user || contractId === ids.org)
 }
 
 /** Forge's contract ids on `forge`: three, or four with forge-meta (parity with forge-core `ForgeIds::all`). */
@@ -151,8 +171,18 @@ export function forgeV2Ids(file: DeploymentFile | undefined): ForgeIds | null {
   const meta = metaRecord == null ? undefined : registeredId(metaRecord)
   const group = file?.v2?.contractGroupId || null
   if (!(core && collab && community && group) || meta === null) return null
-  const user = file?.user?.contractId && file.user.contractGroupId === group ? file.user.contractId : undefined
-  return { core, collab, community, ...(meta === undefined ? {} : { meta }), group, ...(user === undefined ? {} : { user }) }
+  const inGroup = (r: GroupContractRecord | undefined): string | undefined => (r?.contractId && r.contractGroupId === group ? r.contractId : undefined)
+  const user = inGroup(file?.user)
+  const org = inGroup(file?.org)
+  return {
+    core,
+    collab,
+    community,
+    ...(meta === undefined ? {} : { meta }),
+    group,
+    ...(user === undefined ? {} : { user }),
+    ...(org === undefined ? {} : { org }),
+  }
 }
 
 /**
@@ -172,6 +202,8 @@ export interface GroupTrust {
   readonly superseded: readonly string[]
   /** forge-user, when the file records it in this group. */
   readonly user?: string
+  /** forge-org, when the file records it in this group. */
+  readonly org?: string
 }
 
 /**

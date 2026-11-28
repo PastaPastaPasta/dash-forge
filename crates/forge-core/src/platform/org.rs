@@ -630,6 +630,7 @@ mod tests {
             superseded_in_group: Vec::new(),
             group_owner: None,
             user: None,
+            org: None,
         }
     }
 
