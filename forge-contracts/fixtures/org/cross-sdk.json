@@ -1,0 +1,559 @@
+{
+  "about": "Organization transitions for every request type Forge makes (docs/design/organizations.md §9). tools/org-vectors builds them with forge-web's builder under evo-sdk 5.0.3 and under Forge's pin, and both must give these bytes; forge-core's org tests rebuild them byte for byte; dtiReview records what dash-threshold-identity's `dti review` rebuild from the intent says (tools/org-vectors/cross-sdk/dti-review.mjs).",
+  "platformVersions": [
+    14,
+    15
+  ],
+  "sdks": [
+    "5.0.3",
+    "5.1.0"
+  ],
+  "dtiReview": {
+    "6ab3c47 (evo-sdk 5.1.0)": "dash-threshold-identity 6ab3c47, src/platform/transitions.mjs buildTransition (what `dti review` rebuilds with)",
+    "0cf86d3 (evo-sdk 5.0.3)": "dash-threshold-identity 0cf86d3, src/platform/transitions.mjs buildTransition (what `dti review` rebuilds with)"
+  },
+  "vectors": [
+    {
+      "label": "repo create: repo",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "5",
+        "document": {
+          "action": "create",
+          "documentType": "repo",
+          "properties": {
+            "name": "widgets",
+            "visibility": "public",
+            "description": "Widgets for everyone",
+            "defaultBranch": "main"
+          },
+          "entropy": "4141414141414141414141414141414141414141414141414141414141414141"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "3nseySkGPwt73HAdtLL5z9Dg7jqTB3HxL9B3wmSjifkB"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000012977c92536d26eef48677366aeea773f00cc7f56b08d9744bce0a035bd1846c805047265706fb2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a2594004141414141414141414141414141414141414141414141414141414141414141040d64656661756c744272616e636812046d61696e0b6465736372697074696f6e12145769646765747320666f722065766572796f6e65046e616d651207776964676574730a7669736962696c69747912067075626c696300000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000012977c92536d26eef48677366aeea773f00cc7f56b08d9744bce0a035bd1846c805047265706fb2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a2594004141414141414141414141414141414141414141414141414141414141414141040d64656661756c744272616e636812046d61696e0b6465736372697074696f6e12145769646765747320666f722065766572796f6e65046e616d651207776964676574730a7669736962696c69747912067075626c69630000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "pass",
+        "0cf86d3 (evo-sdk 5.0.3)": "pass"
+      }
+    },
+    {
+      "label": "repo create: owner maintainer",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "6",
+        "document": {
+          "action": "create",
+          "documentType": "maintainer",
+          "properties": {
+            "repoId": "0909090909090909090909090909090909090909090909090909090909090909",
+            "memberId": "676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb",
+            "vis": "public"
+          },
+          "entropy": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "3uJv9ZzmL8RaHJg75s58X8zEDjNgj7eJns2BmAs6wz3h"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000012b1dd580b5c951f861f8ba38532223422cf938bb055566a737e5c3007aceb6e0060a6d61696e7461696e6572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400424242424242424242424242424242424242424242424242424242424242424203086d656d62657249640a20676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090376697312067075626c696300000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000012b1dd580b5c951f861f8ba38532223422cf938bb055566a737e5c3007aceb6e0060a6d61696e7461696e6572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400424242424242424242424242424242424242424242424242424242424242424203086d656d62657249640a20676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090376697312067075626c69630000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "bytes differ; bytes to sign differ",
+        "0cf86d3 (evo-sdk 5.0.3)": "bytes differ; bytes to sign differ"
+      }
+    },
+    {
+      "label": "repo create: first config",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "7",
+        "document": {
+          "action": "create",
+          "documentType": "config",
+          "properties": {
+            "repoId": "0909090909090909090909090909090909090909090909090909090909090909",
+            "defaultBranch": "main",
+            "backend": {
+              "mode": 0
+            },
+            "protectedPatterns": [
+              "main",
+              "release/*"
+            ],
+            "vis": "public"
+          },
+          "entropy": "4343434343434343434343434343434343434343434343434343434343434343"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "HwnBCFzhzYoFQZPT7CkTrc5BrGsDddz3TjyUNKscwGfT"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001fbc36f5610c6045cc4c827be35ffff2ad7995ac6b3f0dfa159f38906d6c8c4b20706636f6e666967b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400434343434343434343434343434343434343434343434343434343434343434305076261636b656e64160112046d6f646502000d64656661756c744272616e636812046d61696e1170726f7465637465645061747465726e73150212046d61696e120972656c656173652f2a067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090376697312067075626c696300000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001fbc36f5610c6045cc4c827be35ffff2ad7995ac6b3f0dfa159f38906d6c8c4b20706636f6e666967b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400434343434343434343434343434343434343434343434343434343434343434305076261636b656e64160112046d6f646502000d64656661756c744272616e636812046d61696e1170726f7465637465645061747465726e73150212046d61696e120972656c656173652f2a067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090376697312067075626c69630000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "bytes differ; bytes to sign differ",
+        "0cf86d3 (evo-sdk 5.0.3)": "bytes differ; bytes to sign differ"
+      }
+    },
+    {
+      "label": "maintainer create",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "8",
+        "document": {
+          "action": "create",
+          "documentType": "maintainer",
+          "properties": {
+            "repoId": "0909090909090909090909090909090909090909090909090909090909090909",
+            "memberId": "0505050505050505050505050505050505050505050505050505050505050505",
+            "vis": "public",
+            "consentBy": "0505050505050505050505050505050505050505050505050505050505050505"
+          },
+          "entropy": "4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "4CuzhJMYa9rANhaN4B1AqgmMQyGj8tGduFSMY9yNnJLe"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000012fa05efb30d226801ba09ec69bddb23f70df5249230fbf93ccaa6387726d17af080a6d61696e7461696e6572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940044444444444444444444444444444444444444444444444444444444444444440409636f6e73656e7442790a200505050505050505050505050505050505050505050505050505050505050505086d656d62657249640a200505050505050505050505050505050505050505050505050505050505050505067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090376697312067075626c696300000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000012fa05efb30d226801ba09ec69bddb23f70df5249230fbf93ccaa6387726d17af080a6d61696e7461696e6572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940044444444444444444444444444444444444444444444444444444444444444440409636f6e73656e7442790a200505050505050505050505050505050505050505050505050505050505050505086d656d62657249640a200505050505050505050505050505050505050505050505050505050505050505067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090376697312067075626c69630000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "bytes differ; bytes to sign differ",
+        "0cf86d3 (evo-sdk 5.0.3)": "bytes differ; bytes to sign differ"
+      }
+    },
+    {
+      "label": "maintainer delete",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "9",
+        "document": {
+          "action": "delete",
+          "documentType": "maintainer",
+          "id": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000200011111111111111111111111111111111111111111111111111111111111111111090a6d61696e7461696e6572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000200011111111111111111111111111111111111111111111111111111111111111111090a6d61696e7461696e6572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "pass",
+        "0cf86d3 (evo-sdk 5.0.3)": "pass"
+      }
+    },
+    {
+      "label": "writer create",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "10",
+        "document": {
+          "action": "create",
+          "documentType": "writer",
+          "properties": {
+            "repoId": "0909090909090909090909090909090909090909090909090909090909090909",
+            "memberId": "0505050505050505050505050505050505050505050505050505050505050505",
+            "vis": "public",
+            "consentBy": "0505050505050505050505050505050505050505050505050505050505050505",
+            "role": 2
+          },
+          "entropy": "4545454545454545454545454545454545454545454545454545454545454545"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "9TJH4tBuUqn3UpRoDHkgSQVTAwaPU2aJpHRi7hrUKg1P"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000017d9a21b29680d2a099b7baa4fdf50030008bcdd0aa72ee17badef70db88a55b20a06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940045454545454545454545454545454545454545454545454545454545454545450509636f6e73656e7442790a200505050505050505050505050505050505050505050505050505050505050505086d656d62657249640a200505050505050505050505050505050505050505050505050505050505050505067265706f49640a20090909090909090909090909090909090909090909090909090909090909090904726f6c6502020376697312067075626c696300000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000017d9a21b29680d2a099b7baa4fdf50030008bcdd0aa72ee17badef70db88a55b20a06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940045454545454545454545454545454545454545454545454545454545454545450509636f6e73656e7442790a200505050505050505050505050505050505050505050505050505050505050505086d656d62657249640a200505050505050505050505050505050505050505050505050505050505050505067265706f49640a20090909090909090909090909090909090909090909090909090909090909090904726f6c6502020376697312067075626c69630000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "bytes differ; bytes to sign differ",
+        "0cf86d3 (evo-sdk 5.0.3)": "bytes differ; bytes to sign differ"
+      }
+    },
+    {
+      "label": "writer delete",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "11",
+        "document": {
+          "action": "delete",
+          "documentType": "writer",
+          "id": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "2DYKaRPBeNM5WdW8rNsYEktjPrnd89Mm4Lzp3qonSzoj"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010002000112121212121212121212121212121212121212121212121212121212121212120b06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010002000112121212121212121212121212121212121212121212121212121212121212120b06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "pass",
+        "0cf86d3 (evo-sdk 5.0.3)": "pass"
+      }
+    },
+    {
+      "label": "role change: revoke",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "12",
+        "document": {
+          "action": "delete",
+          "documentType": "writer",
+          "id": "2HTciirCEfeJeikeHgCTXdfVe1zpoD3ackfU7DrPCL8S"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "2HTciirCEfeJeikeHgCTXdfVe1zpoD3ackfU7DrPCL8S"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010002000113131313131313131313131313131313131313131313131313131313131313130c06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a259400000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010002000113131313131313131313131313131313131313131313131313131313131313130c06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "pass",
+        "0cf86d3 (evo-sdk 5.0.3)": "pass"
+      }
+    },
+    {
+      "label": "role change: grant",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "13",
+        "document": {
+          "action": "create",
+          "documentType": "writer",
+          "properties": {
+            "repoId": "0909090909090909090909090909090909090909090909090909090909090909",
+            "memberId": "0505050505050505050505050505050505050505050505050505050505050505",
+            "vis": "public",
+            "consentBy": "0505050505050505050505050505050505050505050505050505050505050505",
+            "role": 3
+          },
+          "entropy": "4646464646464646464646464646464646464646464646464646464646464646"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "FEPqhunRtBzc4fgNbg2GmH14KqRsG7ektNqouvCG9LwR"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001d371fe129db8333d3bcab0a5fe8ae58db6f42a4819911bc4ef114aa94e38e0500d06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940046464646464646464646464646464646464646464646464646464646464646460509636f6e73656e7442790a200505050505050505050505050505050505050505050505050505050505050505086d656d62657249640a200505050505050505050505050505050505050505050505050505050505050505067265706f49640a20090909090909090909090909090909090909090909090909090909090909090904726f6c6502030376697312067075626c696300000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001d371fe129db8333d3bcab0a5fe8ae58db6f42a4819911bc4ef114aa94e38e0500d06777269746572b2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940046464646464646464646464646464646464646464646464646464646464646460509636f6e73656e7442790a200505050505050505050505050505050505050505050505050505050505050505086d656d62657249640a200505050505050505050505050505050505050505050505050505050505050505067265706f49640a20090909090909090909090909090909090909090909090909090909090909090904726f6c6502030376697312067075626c69630000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "bytes differ; bytes to sign differ",
+        "0cf86d3 (evo-sdk 5.0.3)": "bytes differ; bytes to sign differ"
+      }
+    },
+    {
+      "label": "repo replace (listing edit)",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "D2ZLdgghZTKGpES35a3KVDp5necSfZqqRHLSknjRPAV9",
+        "identityContractNonce": "14",
+        "document": {
+          "action": "replace",
+          "documentType": "repo",
+          "properties": {
+            "name": "widgets",
+            "visibility": "public",
+            "description": "New words",
+            "defaultBranch": "main",
+            "topics": [
+              "rust",
+              "cli"
+            ]
+          },
+          "id": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN",
+          "revision": "2"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010001000109090909090909090909090909090909090909090909090909090909090909090e047265706fb2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940003050d64656661756c744272616e636812046d61696e0b6465736372697074696f6e12094e657720776f726473046e616d6512077769646765747306746f7069637315021204727573741203636c690a7669736962696c69747912067075626c6963000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010001000109090909090909090909090909090909090909090909090909090909090909090e047265706fb2b263a0e5247e20115bd374a979f25ab193966a09301b853bfc0cf38c4a25940003050d64656661756c744272616e636812046d61696e0b6465736372697074696f6e12094e657720776f726473046e616d6512077769646765747306746f7069637315021204727573741203636c690a7669736962696c69747912067075626c696300",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "derived differs ({\"documentId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"newRevision\":\"3\"})",
+        "0cf86d3 (evo-sdk 5.0.3)": "derived differs ({\"documentId\":\"cGfHiC6Kgg3FpFZvgwGcswsCRtp4aBP2fzuXRQPizuN\",\"newRevision\":\"3\"})"
+      }
+    },
+    {
+      "label": "topic create",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93",
+        "identityContractNonce": "3",
+        "document": {
+          "action": "create",
+          "documentType": "topic",
+          "properties": {
+            "repoId": "0909090909090909090909090909090909090909090909090909090909090909",
+            "name": "rust"
+          },
+          "entropy": "4747474747474747474747474747474747474747474747474747474747474747"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "5kVAQCsAYVMkiHTXygPZwWdgWvszdXVFocmBBi7CVacP"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001469290c155ec7683298a1a74fd36782e2cfb0849a18652da5f431266c4f14eb80305746f70696352f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa00474747474747474747474747474747474747474747474747474747474747474702046e616d65120472757374067265706f49640a20090909090909090909090909090909090909090909090909090909090909090900000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb0100000001469290c155ec7683298a1a74fd36782e2cfb0849a18652da5f431266c4f14eb80305746f70696352f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa00474747474747474747474747474747474747474747474747474747474747474702046e616d65120472757374067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "bytes differ; bytes to sign differ",
+        "0cf86d3 (evo-sdk 5.0.3)": "bytes differ; bytes to sign differ"
+      }
+    },
+    {
+      "label": "topic delete",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93",
+        "identityContractNonce": "4",
+        "document": {
+          "action": "delete",
+          "documentType": "topic",
+          "id": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010002000114141414141414141414141414141414141414141414141414141414141414140405746f70696352f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa00000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb010002000114141414141414141414141414141414141414141414141414141414141414140405746f70696352f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa0000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "pass",
+        "0cf86d3 (evo-sdk 5.0.3)": "pass"
+      }
+    },
+    {
+      "label": "runner create",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "4heUXTZDrbDsy3tqVYJJP2wLCNkqUXRZzF9VQNaRq28o",
+        "identityContractNonce": "2",
+        "document": {
+          "action": "create",
+          "documentType": "runner",
+          "properties": {
+            "repoId": "0909090909090909090909090909090909090909090909090909090909090909",
+            "memberId": "0606060606060606060606060606060606060606060606060606060606060606"
+          },
+          "entropy": "4848484848484848484848484848484848484848484848484848484848484848"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "tUwCWiHup4n4rELT9qxf2KnnKGKtYy4FkZeucRC5rMK"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000010d3034f45d152c146341d3f89fb5a5e5a1c24104fd39724883bbb76f167b758e020672756e6e657236fcaa70398aeef5da67066d1d29ffc0ce4bf39479cab4dd2a0b9caee113da4800484848484848484848484848484848484848484848484848484848484848484802086d656d62657249640a200606060606060606060606060606060606060606060606060606060606060606067265706f49640a20090909090909090909090909090909090909090909090909090909090909090900000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000010d3034f45d152c146341d3f89fb5a5e5a1c24104fd39724883bbb76f167b758e020672756e6e657236fcaa70398aeef5da67066d1d29ffc0ce4bf39479cab4dd2a0b9caee113da4800484848484848484848484848484848484848484848484848484848484848484802086d656d62657249640a200606060606060606060606060606060606060606060606060606060606060606067265706f49640a2009090909090909090909090909090909090909090909090909090909090909090000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "bytes differ; bytes to sign differ",
+        "0cf86d3 (evo-sdk 5.0.3)": "bytes differ; bytes to sign differ"
+      }
+    },
+    {
+      "label": "runner delete",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "4heUXTZDrbDsy3tqVYJJP2wLCNkqUXRZzF9VQNaRq28o",
+        "identityContractNonce": "3",
+        "document": {
+          "action": "delete",
+          "documentType": "runner",
+          "id": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "2RJD1KnDRGEkvuFfAGrJ7PD28LRE9LRDjZznDywagzmr"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000200011515151515151515151515151515151515151515151515151515151515151515030672756e6e657236fcaa70398aeef5da67066d1d29ffc0ce4bf39479cab4dd2a0b9caee113da4800000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000200011515151515151515151515151515151515151515151515151515151515151515030672756e6e657236fcaa70398aeef5da67066d1d29ffc0ce4bf39479cab4dd2a0b9caee113da480000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "pass",
+        "0cf86d3 (evo-sdk 5.0.3)": "pass"
+      }
+    },
+    {
+      "label": "profile create",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93",
+        "identityContractNonce": "5",
+        "document": {
+          "action": "create",
+          "documentType": "profile",
+          "properties": {
+            "displayName": "Acme",
+            "bio": "We make widgets.",
+            "links": [
+              "https://multisig.dashhq.org/"
+            ]
+          },
+          "entropy": "4949494949494949494949494949494949494949494949494949494949494949"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "6rtMkTWNcXgxu3Nvpa9WZPmGsLsnZarVXYDWpxTwz7Ud"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000015711f6f44595ca912d9a91f7dad677e42f62abd3c89854a21c00c2adcd01a1e2050770726f66696c6552f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa004949494949494949494949494949494949494949494949494949494949494949030362696f12105765206d616b6520776964676574732e0b646973706c61794e616d65120441636d65056c696e6b731501121c68747470733a2f2f6d756c74697369672e6461736868712e6f72672f00000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000000015711f6f44595ca912d9a91f7dad677e42f62abd3c89854a21c00c2adcd01a1e2050770726f66696c6552f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa004949494949494949494949494949494949494949494949494949494949494949030362696f12105765206d616b6520776964676574732e0b646973706c61794e616d65120441636d65056c696e6b731501121c68747470733a2f2f6d756c74697369672e6461736868712e6f72672f0000",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "pass",
+        "0cf86d3 (evo-sdk 5.0.3)": "pass"
+      }
+    },
+    {
+      "label": "profile replace",
+      "intent": {
+        "type": "document",
+        "userFeeIncrease": 0,
+        "ownerId": "7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL",
+        "contractId": "6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93",
+        "identityContractNonce": "6",
+        "document": {
+          "action": "replace",
+          "documentType": "profile",
+          "properties": {
+            "displayName": "Acme Inc",
+            "bio": "We make widgets.",
+            "links": [
+              "https://multisig.dashhq.org/",
+              "https://acme.example/"
+            ]
+          },
+          "id": "2VDW9dFE1ZXz4zWAbaBDQFynNVdRpQ73HyfSHMzBSL6Z",
+          "revision": "1"
+        },
+        "signer": {
+          "keyId": 2,
+          "cid": "72ece530e62e2438fb706becea302983dd06aa6f57653dbf930c6b1775944964",
+          "slot": "high"
+        }
+      },
+      "derived": {
+        "documentId": "2VDW9dFE1ZXz4zWAbaBDQFynNVdRpQ73HyfSHMzBSL6Z"
+      },
+      "unsigned": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000100011616161616161616161616161616161616161616161616161616161616161616060770726f66696c6552f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa0002030362696f12105765206d616b6520776964676574732e0b646973706c61794e616d65120841636d6520496e63056c696e6b731502121c68747470733a2f2f6d756c74697369672e6461736868712e6f72672f121568747470733a2f2f61636d652e6578616d706c652f000200",
+      "signable": "0201676fead90056accbb6b46c02ed6836b234f7fcb69da10793cceb954547a2d5fb01000100011616161616161616161616161616161616161616161616161616161616161616060770726f66696c6552f675c75ba2810cde4d0deca52e41f4c1c69898e411da75586ccc0b1d3ce5fa0002030362696f12105765206d616b6520776964676574732e0b646973706c61794e616d65120841636d6520496e63056c696e6b731502121c68747470733a2f2f6d756c74697369672e6461736868712e6f72672f121568747470733a2f2f61636d652e6578616d706c652f00",
+      "dtiReview": {
+        "6ab3c47 (evo-sdk 5.1.0)": "derived differs ({\"documentId\":\"2VDW9dFE1ZXz4zWAbaBDQFynNVdRpQ73HyfSHMzBSL6Z\",\"newRevision\":\"2\"})",
+        "0cf86d3 (evo-sdk 5.0.3)": "derived differs ({\"documentId\":\"2VDW9dFE1ZXz4zWAbaBDQFynNVdRpQ73HyfSHMzBSL6Z\",\"newRevision\":\"2\"})"
+      }
+    }
+  ]
+}

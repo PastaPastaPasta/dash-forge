@@ -830,69 +830,133 @@ mod tests {
             .any(|p| p.contains("re-encode")));
     }
 
-    fn field_of(key: &str, v: &Json) -> FieldValue {
+    fn field_of(v: &Json, bytes: bool) -> FieldValue {
         match v {
-            Json::String(h) if matches!(key, "repoId" | "memberId") => {
-                FieldValue::Identifier(hex::decode(h).unwrap().try_into().unwrap())
+            Json::String(h) if bytes => {
+                let raw = hex::decode(h).unwrap();
+                <[u8; 32]>::try_from(raw.as_slice())
+                    .map_or(FieldValue::Bytes(raw.clone()), FieldValue::Identifier)
             }
             Json::String(t) => FieldValue::text(t),
             Json::Number(n) => FieldValue::Integer(n.as_u64().unwrap()),
             Json::Bool(b) => FieldValue::Bool(*b),
-            Json::Array(items) => FieldValue::List(items.iter().map(|i| field_of("", i)).collect()),
-            Json::Object(m) => {
-                FieldValue::Object(m.iter().map(|(k, v)| (k.clone(), field_of(k, v))).collect())
+            Json::Array(items) => {
+                FieldValue::List(items.iter().map(|i| field_of(i, false)).collect())
             }
+            Json::Object(m) => FieldValue::Object(
+                m.iter()
+                    .map(|(k, v)| (k.clone(), field_of(v, false)))
+                    .collect(),
+            ),
             Json::Null => panic!("null property"),
         }
     }
 
+    /// Rebuild a proposal's write from its intent as dg builds it: a text property the document
+    /// type does not declare a string is bytes (an intent carries bytes as hex text).
+    async fn rebuild(intent: &Json, version: &'static PlatformVersion) -> UnsignedWrite {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType;
+        let doc = &intent["document"];
+        let doc_type = doc["documentType"].as_str().unwrap();
+        let home = ForgeContract::of(doc_type).unwrap();
+        let mut dc = (*rc1::loaded(home).0).clone();
+        dc.set_id(parse_id(intent["contractId"].as_str().unwrap(), "contract").unwrap());
+        let props: BTreeMap<String, FieldValue> = {
+            let schema = dc.document_type_for_name(doc_type).unwrap();
+            doc["properties"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, v)| {
+                    let bytes = schema.properties().get(k).is_some_and(|p| {
+                        !matches!(p.property_type, DocumentPropertyType::String(_))
+                    });
+                    (k.clone(), field_of(v, bytes))
+                })
+                .collect()
+        };
+        let nonce: u64 = intent["identityContractNonce"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let key = key();
+        let build = Build {
+            dc: Arc::new(dc),
+            owner: parse_id(intent["ownerId"].as_str().unwrap(), "owner").unwrap(),
+            key: &key,
+            version,
+        };
+        let id = || doc["id"].as_str().unwrap();
+        match doc["action"].as_str().unwrap() {
+            "create" => {
+                let entropy: [u8; 32] = hex::decode(doc["entropy"].as_str().unwrap())
+                    .unwrap()
+                    .try_into()
+                    .unwrap();
+                build.create(doc_type, props, nonce, entropy).await
+            }
+            "replace" => {
+                let stored = doc["revision"].as_str().unwrap().parse().unwrap();
+                build.replace(doc_type, id(), stored, props, nonce).await
+            }
+            "delete" => build.delete(doc_type, id(), nonce).await,
+            other => panic!("unknown action {other}"),
+        }
+        .unwrap()
+    }
+
+    /// forge-web's transitions: built on testnet (`web-built.json`) and, for every request type,
+    /// under evo-sdk 5.0.3 and Forge's pin (`cross-sdk.json`, tools/org-vectors).
     #[tokio::test]
     async fn rebuilds_forge_web_transitions_byte_for_byte() {
-        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
-        let text = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../forge-contracts/fixtures/org/web-built.json"
-        ))
-        .unwrap();
-        let fixture: Json = serde_json::from_str(&text).unwrap();
-        let key = key();
-        for p in fixture["proposals"].as_array().unwrap() {
-            let intent = &p["intent"];
-            let doc = &intent["document"];
-            let mut dc = (*rc1::loaded(ForgeContract::Core).0).clone();
-            dc.set_id(parse_id(intent["contractId"].as_str().unwrap(), "contract").unwrap());
-            let owner = parse_id(intent["ownerId"].as_str().unwrap(), "owner").unwrap();
-            let props = doc["properties"]
-                .as_object()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| (k.clone(), field_of(k, v)))
-                .collect();
-            let entropy: [u8; 32] = hex::decode(doc["entropy"].as_str().unwrap())
-                .unwrap()
-                .try_into()
-                .unwrap();
-            let nonce: u64 = intent["identityContractNonce"]
-                .as_str()
-                .unwrap()
-                .parse()
-                .unwrap();
-            let w = Build {
-                dc: Arc::new(dc),
-                owner,
-                key: &key,
-                version: version(),
-            }
-            .create(doc["documentType"].as_str().unwrap(), props, nonce, entropy)
-            .await
-            .unwrap();
-            assert_eq!(
-                hex::encode(&w.unsigned),
-                p["unsigned"].as_str().unwrap(),
-                "{} differs from forge-web's",
-                doc["documentType"]
+        for name in ["web-built.json", "cross-sdk.json"] {
+            let path = format!(
+                "{}/../../forge-contracts/fixtures/org/{name}",
+                env!("CARGO_MANIFEST_DIR")
             );
-            assert_eq!(w.intent["document"]["properties"], doc["properties"]);
+            let fixture: Json =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let versions: Vec<u32> = fixture["platformVersions"]
+                .as_array()
+                .map_or(vec![14], |v| {
+                    v.iter()
+                        .map(|n| u32::try_from(n.as_u64().unwrap()).unwrap())
+                        .collect()
+                });
+            let entries = fixture
+                .get("vectors")
+                .unwrap_or(&fixture["proposals"])
+                .as_array()
+                .unwrap();
+            assert!(entries.len() >= 3, "{name} holds no vectors");
+            for p in entries {
+                let intent = &p["intent"];
+                let label = p
+                    .get("label")
+                    .unwrap_or(&intent["document"]["documentType"]);
+                for v in &versions {
+                    let w = rebuild(intent, PlatformVersion::get(*v).unwrap()).await;
+                    assert_eq!(
+                        hex::encode(&w.unsigned),
+                        p["unsigned"].as_str().unwrap(),
+                        "{name} {label} at protocol {v} differs from forge-web's"
+                    );
+                    if let Some(signable) = p.get("signable") {
+                        assert_eq!(hex::encode(&w.signable), signable.as_str().unwrap());
+                    }
+                    if let Some(derived) = p.get("derived") {
+                        assert_eq!(w.document_id, derived["documentId"].as_str().unwrap());
+                    }
+                    assert_eq!(w.intent["document"], intent["document"], "{name} {label}");
+                    assert_eq!(
+                        decode_unsigned(&w.unsigned).unwrap().document_id,
+                        w.document_id
+                    );
+                }
+            }
         }
     }
 
