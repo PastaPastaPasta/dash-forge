@@ -75,7 +75,7 @@ pub struct Owner<'a> {
     pub label: &'a str,
 }
 
-/// A request to make: its title and its writes, in order.
+/// A request to make: its title and its writes, in order. No writes: nothing to change.
 #[derive(Debug, Clone)]
 pub struct Planned {
     pub title: String,
@@ -296,6 +296,9 @@ pub async fn revoke(
     })
 }
 
+/// The longest relay URL an `org` document holds (a longer one is left out).
+const MAX_RELAY: usize = 200;
+
 /// "Publish organization" (§10.5): the `org` roster of the signing ceremony, and the
 /// organization's `profile` with the declared link (other profile fields kept), each only when
 /// it differs from what is stored.
@@ -334,9 +337,11 @@ pub async fn publish(
     let current = stored
         .as_ref()
         .and_then(|d| Roster::from_props(&d.fields))
-        .is_some_and(|r| r.same_key(roster) && r.relay == roster.relay);
+        .is_some_and(|r| r.same_key(roster));
     if !current {
-        let props = roster.props();
+        let mut published = roster.clone();
+        published.relay = roster.relay.clone().filter(|r| r.len() <= MAX_RELAY);
+        let props = published.props();
         let nonce = nonces.take(org_contract).await?;
         writes.push(match &stored {
             Some(d) => {
@@ -365,13 +370,17 @@ pub async fn publish(
         .map(|d| crate::profile::profile_from_doc(d).fields)
         .unwrap_or_default();
     let before = fields.links.clone().unwrap_or_default();
-    let mut links: Vec<String> = before
+    let declared: Vec<&String> = before
         .iter()
-        .filter(|l| super::owner::parse_declared_org(l, &network).is_none())
-        .cloned()
+        .filter(|l| super::owner::parse_declared_org(l, &network).is_some())
         .collect();
-    links.push(link);
-    if links != before {
+    if declared != [&link] {
+        let mut links: Vec<String> = before
+            .iter()
+            .filter(|l| super::owner::parse_declared_org(l, &network).is_none())
+            .cloned()
+            .collect();
+        links.push(link);
         if links.len() > crate::rules::profile::MAX_LINKS {
             return Err(Error::Config(format!(
                 "{label}'s profile already has {} links: remove one first (`dg profile set --owner {label}`)",
@@ -380,11 +389,6 @@ pub async fn publish(
         }
         fields.links = Some(links);
         writes.push(profile_write(owner, nonces, &forge, doc.as_ref(), &fields).await?);
-    }
-    if writes.is_empty() {
-        return Err(Error::Config(format!(
-            "{label} has already published its roster and declared itself in its profile"
-        )));
     }
     Ok(Planned {
         title: format!("Publish {label} on Platform"),
@@ -441,14 +445,15 @@ pub async fn profile_set(
 ) -> Result<Planned> {
     let forge = forge_of(owner.client)?;
     let doc = crate::profile::read_profile_doc(owner.client, &forge, &owner.org.id()).await?;
-    if doc
-        .as_ref()
-        .is_some_and(|d| crate::profile::profile_from_doc(d).fields == *fields)
-    {
-        return Err(Error::Config(format!(
-            "{}'s profile already holds these fields",
-            owner.label
-        )));
+    let unchanged = match &doc {
+        Some(d) => crate::profile::profile_from_doc(d).fields == *fields,
+        None => *fields == crate::rules::profile::ProfileFields::default(),
+    };
+    if unchanged {
+        return Ok(Planned {
+            title: format!("Update {}'s profile", owner.label),
+            writes: Vec::new(),
+        });
     }
     let write = profile_write(owner, nonces, &forge, doc.as_ref(), fields).await?;
     Ok(Planned {
@@ -470,10 +475,10 @@ pub async fn runner_add(
         .await?
         .is_some()
     {
-        return Err(Error::Config(format!(
-            "{member_name} is already a runner of {}",
-            owner.label
-        )));
+        return Ok(Planned {
+            title: format!("Add {member_name} as a CI runner of {}", owner.label),
+            writes: Vec::new(),
+        });
     }
     owner
         .client
@@ -513,10 +518,10 @@ pub async fn runner_remove(
         .get(repo, member)
         .await?
     else {
-        return Err(Error::Config(format!(
-            "{member_name} is not a runner of {}",
-            owner.label
-        )));
+        return Ok(Planned {
+            title: format!("Remove the CI runner {member_name} from {}", owner.label),
+            writes: Vec::new(),
+        });
     };
     let community = owner.client.fetch_contract(&repo.forge().community).await?;
     let write = owner

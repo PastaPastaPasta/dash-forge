@@ -946,6 +946,11 @@ impl Org {
                 if let Some(problem) = self.member_change_problem(client, &d).await? {
                     r.problems.push(problem);
                 }
+                if d.document_type == "profile" {
+                    let stored = review::stored_target(client, &d).await?;
+                    r.problems
+                        .extend(review::protected_profile_problem(&d, stored.as_ref()));
+                }
             }
             out.push(r);
         }
@@ -1139,6 +1144,33 @@ impl Org {
             }
         }
         out
+    }
+
+    /// The problems the other members' review would find in `writes`, checked before they are
+    /// posted (so a request every other member refuses is never paid for).
+    pub async fn review_writes(
+        &self,
+        client: &PlatformClient,
+        forge: &ForgeIds,
+        writes: &[UnsignedWrite],
+    ) -> Result<Vec<String>> {
+        let network = client.network().key();
+        let expect = self.expect(&network, forge);
+        let mut out: Vec<String> = Vec::new();
+        for w in writes {
+            let d = decode_unsigned(&w.unsigned)?;
+            let mut problems = review::decoded_problems(&expect, &d, &w.signable);
+            if d.document_type == "profile" {
+                let stored = review::stored_target(client, &d).await?;
+                problems.extend(review::protected_profile_problem(&d, stored.as_ref()));
+            }
+            for p in problems {
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Post `writes` as one request, then sign it with this member's share (§9 "Creating a

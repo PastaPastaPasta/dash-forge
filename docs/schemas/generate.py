@@ -764,9 +764,9 @@ cmd('org decline', 'A request declined.', {
 cmd('org finish', 'A fully signed request put on Platform. A request that cannot finish yet exits with an error instead.', {
     'status': E('done'), 'org': S, 'id': S, 'broadcast': I, 'collected': I, 'threshold': I,
 }, ['status', 'id'])
-cmd('org publish', 'The request that publishes the organization on Platform: its roster and the N-of-M link in its profile.', {
-    **ORG_REQUESTED, 'status': E('requested'),
-}, ['status', 'requestId'])
+cmd('org publish', 'The request that publishes the organization on Platform: its roster and the N-of-M link in its profile (`unchanged`: both are already there, nothing posted).', {
+    **ORG_REQUESTED, 'status': E('requested', 'unchanged'),
+}, ['status'])
 cmd('org dismiss', 'A request hidden on this computer (nothing is written).', {
     'status': E('dismissed'), 'org': S, 'id': S,
 }, ['status', 'id'])

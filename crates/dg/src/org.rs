@@ -943,6 +943,12 @@ async fn post_request(
     Ok(())
 }
 
+enum Kind {
+    RunnerAdd,
+    RunnerRemove,
+    Other,
+}
+
 /// An owner action an organization's members sign.
 pub enum Action<'a> {
     RepoCreate(&'a forge_core::create::CreateRepoOpts),
@@ -978,6 +984,11 @@ pub async fn request_action(
         writer: &writer,
         label,
     };
+    let action_kind = match action {
+        Action::RunnerAdd(..) => Kind::RunnerAdd,
+        Action::RunnerRemove(..) => Kind::RunnerRemove,
+        _ => Kind::Other,
+    };
     let planned = match action {
         Action::RepoCreate(opts) => {
             let p = actions::repo_create(&owner, &mut nonces, opts).await?;
@@ -1005,6 +1016,36 @@ pub async fn request_action(
             actions::publish(&owner, &mut nonces, &org_contract(ctx)?, &roster).await?
         }
     };
+    if planned.writes.is_empty() {
+        let status = match action_kind {
+            Kind::RunnerAdd => "exists",
+            Kind::RunnerRemove => "not_a_runner",
+            Kind::Other => "unchanged",
+        };
+        extra["status"] = json!(status);
+        extra["org"] = json!(org.record.label);
+        ctx.emit(extra, || {
+            println!(
+                "Nothing to ask {}: {}.",
+                line(label),
+                match status {
+                    "exists" => "that runner is already enrolled",
+                    "not_a_runner" => "that identity is not a runner",
+                    _ => "it is already that way",
+                }
+            );
+        });
+        return Ok(());
+    }
+    let forge = ctx.target.require_v2()?.clone();
+    let problems = org.review_writes(client, &forge, &planned.writes).await?;
+    if !problems.is_empty() {
+        return Err(
+            UserError::new(codes::ORG_REFUSED, request::refused_text(&problems))
+                .note("checked before posting: nothing was written")
+                .into(),
+        );
+    }
     let engine = member.engine(client)?;
     post_request(ctx, client, &engine, &mut org, &seed, &keys, planned, extra).await
 }

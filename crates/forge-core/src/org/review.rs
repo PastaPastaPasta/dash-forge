@@ -270,7 +270,16 @@ pub fn describe(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) 
                 _ => ", not protected",
             }
         ),
-        ("profile", "create") => "Create the organization's profile".into(),
+        ("profile", "create") => {
+            let blank = DecodedWrite {
+                properties: BTreeMap::new(),
+                ..d.clone()
+            };
+            format!(
+                "Create the organization's profile{}",
+                changes(d, Some(&blank), names)
+            )
+        }
         ("profile", "replace") => format!(
             "Update the organization's profile{}",
             changes(d, stored, names)
@@ -323,6 +332,9 @@ fn same(a: &FieldValue, b: &FieldValue) -> bool {
         (FieldValue::List(x), FieldValue::List(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same(x, y))
         }
+        (FieldValue::Object(x), FieldValue::Object(y)) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w)))
+        }
         _ => match (a.as_bytes(), b.as_bytes()) {
             (Some(x), Some(y)) => x == y,
             _ => match (a.as_i64(), b.as_i64()) {
@@ -331,6 +343,32 @@ fn same(a: &FieldValue, b: &FieldValue) -> bool {
             },
         },
     }
+}
+
+/// Profile properties an organization's request never sets or changes: signing keys and bot
+/// claims stay what the organization's members put there by other means (none today).
+pub const PROTECTED_PROFILE_FIELDS: [&str; 3] = ["pubkeys", "bot", "keyProofs"];
+
+/// An organization `profile` write that sets or changes a protected property against `stored`
+/// (none for a create).
+pub fn protected_profile_problem(
+    d: &DecodedWrite,
+    stored: Option<&DecodedWrite>,
+) -> Option<String> {
+    if d.document_type != "profile" {
+        return None;
+    }
+    let before = |k: &str| stored.and_then(|s| s.properties.get(k));
+    PROTECTED_PROFILE_FIELDS
+        .iter()
+        .find(|k| match (d.properties.get(**k), before(k)) {
+            (None, None) => false,
+            (Some(a), Some(b)) => !same(a, b),
+            _ => true,
+        })
+        .map(|k| {
+            format!("it changes the profile's {k}, which an organization's request never does")
+        })
 }
 
 /// Whether two documents carry the same fields, system (`$`) fields aside.
@@ -552,5 +590,51 @@ mod tests {
             None,
             "another network's link is not checked"
         );
+    }
+
+    #[test]
+    fn an_org_profile_write_never_touches_signing_keys_or_bot_claims() {
+        let mut create = write("create", &[("displayName", FieldValue::text("Acme"))]);
+        create.document_type = "profile".into();
+        assert_eq!(protected_profile_problem(&create, None), None);
+        assert!(describe(&create, None, &Names::default()).contains("set displayName to “Acme”"));
+        create.properties.insert(
+            "pubkeys".into(),
+            FieldValue::text_list(vec!["ssh-ed25519 AAAA".to_string()]),
+        );
+        assert!(protected_profile_problem(&create, None)
+            .unwrap()
+            .contains("pubkeys"));
+
+        let bot = |b: u8| {
+            FieldValue::Object(BTreeMap::from([(
+                "operator".to_string(),
+                FieldValue::Bytes(vec![b; 32]),
+            )]))
+        };
+        let mut stored = write(
+            "replace",
+            &[(
+                "bot",
+                FieldValue::Object(BTreeMap::from([(
+                    "operator".to_string(),
+                    FieldValue::Identifier([4; 32]),
+                )])),
+            )],
+        );
+        stored.document_type = "profile".into();
+        let mut kept = stored.clone();
+        kept.properties.insert("bot".into(), bot(4));
+        assert_eq!(
+            protected_profile_problem(&kept, Some(&stored)),
+            None,
+            "same value, other encoding"
+        );
+        let mut moved = stored.clone();
+        moved.properties.insert("bot".into(), bot(5));
+        assert!(protected_profile_problem(&moved, Some(&stored)).is_some());
+        let mut dropped = stored.clone();
+        dropped.properties.remove("bot");
+        assert!(protected_profile_problem(&dropped, Some(&stored)).is_some());
     }
 }

@@ -230,6 +230,11 @@ async fn set_for_org(ctx: &Ctx, owner: &str, args: &SetArgs) -> Result<()> {
     let none = ProfileFields::default();
     let input = args.input(stored.as_ref().map_or(&none, |p| &p.fields))?;
     let fields = core_profile::normalize(&input).map_err(|why| refusal(&why))?;
+    if stored.is_none() && fields == ProfileFields::default() {
+        return Err(crate::errors::usage(
+            "there is nothing to write: the organization has no profile, and every field given is empty",
+        ));
+    }
     let label = record.label.clone();
     let extra = json!({ "fields": fields_json(&fields) });
     Box::pin(crate::org::request_action(
