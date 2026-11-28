@@ -121,7 +121,7 @@ def index(label, t, name, properties, unique):
                     "properties": properties, "has": {"unique": unique}})
 
 
-index("one binding per organization and member identity", 'orgMember', 'byOrg', ['org', '$ownerId'], True)
+index("one binding per organization, member identity and participant key", 'orgMember', 'byOrg', ['org', '$ownerId', 'authPub'], True)
 index("an organization's identities for one participant key, earliest first", 'orgMember', 'byKey', ['org', 'authPub', '$createdAt'], False)
 index("a member identity's organizations", 'orgMember', 'byOwner', ['$ownerId', 'org'], False)
 index('one sealed share per member identity and ceremony', 'orgShare', 'byCeremony', ['org', '$ownerId', 'cid'], True)
