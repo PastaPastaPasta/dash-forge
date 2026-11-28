@@ -1,7 +1,13 @@
 // Regenerate forge-contracts/fixtures/org/dti-2of3.json:
 //   node tools/org-vectors/gen.mjs <path to dash-threshold-identity> <its commit> > forge-contracts/fixtures/org/dti-2of3.json
+// and forge-contracts/fixtures/org/platform-v1.json (built on dti-2of3.json, deterministic):
+//   node tools/org-vectors/gen.mjs <path to dash-threshold-identity> <its commit> platform > forge-contracts/fixtures/org/platform-v1.json
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+if (process.argv[4] === 'platform') {
+  const { platformVectors } = await import('./platform.mjs');
+  process.stdout.write(JSON.stringify(await platformVectors(process.argv[2], process.argv[3]), null, 1) + '\n');
+} else {
 const dti = (p) => import(pathToFileURL(resolve(process.argv[2], p)).href);
 const { people, runCeremony, MNEMONICS } = await dti('test/helpers.mjs');
 const { reduce } = await dti('src/state.mjs');
@@ -61,3 +67,4 @@ const out = {
   },
 };
 process.stdout.write(JSON.stringify(out, null, 1) + '\n');
+}
