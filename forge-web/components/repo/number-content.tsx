@@ -31,7 +31,10 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const router = useRouter()
   const valid = Number.isSafeInteger(number) && number > 0
-  const source = mirrorRepo(home.description)
+  // A fork's description may be a mirror's, copied with it (QW3-011): only imported content's
+  // #N trusts it there.
+  const isFork = home.v2.forkOf !== null
+  const described = upstream || !isFork ? mirrorRepo(home.description) : null
   // Imported content's `#N` is the source's number: the native item a trusted writer recorded
   // with that `upstreamNumber` (whatever the description says). Elsewhere any row at N is.
   const checkUpstream = upstream
@@ -50,13 +53,14 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   const issue = data?.issue ?? null
   const pull = data?.pull ?? null
   // Nothing here at N in a repo that mirrors another forge: a `#N` in a mirrored commit message
-  // is the source's number, so offer it there. The description names the source without a read;
-  // else the repo's imported issues and PRs may (one read, cached).
+  // (or imported content) is the source's number, so offer it there. The description names the
+  // source without a read; else the repo's imported issues and PRs may (one read, cached).
   const missing = data !== null && issue === null && pull === null
-  const readSource = useAsync(() => readMirrorSourceCached(sdk!, home.repo, home.description, 'issue', network), [ready, contentKey(home.repo), network], {
-    enabled: ready && sdk !== null && missing && !checkUpstream && source === null,
+  const readsSource = ready && sdk !== null && missing && described === null && (checkUpstream || !isFork)
+  const readSource = useAsync(() => readMirrorSourceCached(sdk!, home.repo, home.description, 'issue', network), [ready, contentKey(home.repo), home.description, network], {
+    enabled: readsSource,
   })
-  const mirrorOf = source ?? forgeRepoOf(readSource.data?.label ?? null)
+  const mirrorOf = described ?? forgeRepoOf(readSource.data?.label ?? null)
   const only = issue !== null && pull === null ? issueHref(addr, issue) : pull !== null && issue === null ? pullHref(addr, pull) : null
   useEffect(() => {
     if (only !== null) router.replace(only)
@@ -64,10 +68,9 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
 
   if (!valid) return <EmptyState icon={Hash} title="No number addressed" body="Add &number= to the URL." />
   if (error) return <ErrorState message={error} onRetry={reload} />
-  if (data === null || only !== null) return <LoadingBlock label={`Finding #${number}`} />
+  if (data === null || only !== null || (readsSource && !readSource.settled)) return <LoadingBlock label={`Finding #${number}`} />
   // The source's own page, only for a source number (a native #N has nothing to do with it)
-  const missingCopy = numberMissing(number, checkUpstream ? source : mirrorOf, checkUpstream)
-  const upstreamUrl = missingCopy.url
+  const missingCopy = numberMissing(number, mirrorOf, checkUpstream)
   if (issue !== null && pull !== null) {
     return (
       <EmptyState
@@ -88,9 +91,9 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
       title={`#${number} is not in this repo`}
       body={missingCopy.body}
       action={
-        upstreamUrl !== null ? (
-          <a href={upstreamUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400" data-testid="upstream-link">
-            Open #{number} on {source?.host} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+        missingCopy.url !== null ? (
+          <a href={missingCopy.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400" data-testid="upstream-link">
+            {missingCopy.link} <ExternalLink className="h-3.5 w-3.5" aria-hidden />
           </a>
         ) : undefined
       }
@@ -102,10 +105,11 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
  * What the page says when nothing here has number `n`, and where it sends the reader: the item on
  * the forge `source` (the one this repo's import copied from, or the one it mirrors), if any.
  */
-export function numberMissing(n: number, source: ForgeRepo | null, imported: boolean): { readonly body: string; readonly url: string | null } {
+export function numberMissing(n: number, source: ForgeRepo | null, imported: boolean): { readonly body: string; readonly url: string | null; readonly link: string } {
   const url = upstreamItemUrl(source, n)
-  if (url === null || source === null) return { body: `No issue or PR has number ${n} here.`, url: null }
-  return { body: imported ? `Its import did not copy #${n}.` : `No issue or PR has number ${n} here. This repo mirrors ${source.host}/${source.path}.`, url }
+  if (url === null || source === null) return { body: `No issue or PR has number ${n} here.`, url: null, link: '' }
+  const link = `Open #${n} on ${source.host}`
+  return { body: imported ? `Its import did not copy #${n}.` : `No issue or PR has number ${n} here. This repo mirrors ${source.host}/${source.path}.`, url, link }
 }
 
 /**
