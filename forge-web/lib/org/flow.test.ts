@@ -13,6 +13,9 @@ import { approveEnvelope, connect, createRequest, myShare, declineRequest, finis
 import { fakeOrgPort, type FakeOrgPort } from './fake-port'
 import { encodeMessage } from './platform'
 import { rosterFields, rosterFromIdentity } from './roster'
+import { publishRequest } from './actions'
+import { declaredOrgLink } from './gate'
+import type { WriteSpec } from './transition'
 import { envelopeId, sealEnvelope, type Envelope } from './envelope'
 import type { WriteAuth } from '../sdk/write'
 import type { OrgRecord } from './store'
@@ -348,6 +351,28 @@ describe('organization requests on Platform', () => {
     const after = await loadOrg(sdk, r1, readOpts())
     expect(after.requests.find((r) => r.request.id === next)!.status).toBe('done')
     expect(after.requests.find((r) => r.request.id === id)!.status).toBe('declined')
+  })
+
+  it('Publish organization: one request for the roster and the declared link that signers check against the ceremony (§10.5)', async () => {
+    const ORGC = base58Encode(new Uint8Array(32).fill(77))
+    const withOrg = { ...forge, org: ORGC }
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const roster = (await loadOrg(sdk, r1, readOpts())).roster
+    const input = (await publishRequest(sdk, withOrg, port, roster, 'testnet', 'Acme'))!
+    expect(input.specs.map((x) => ('documentType' in x ? `${x.documentType}:${x.action}` : ''))).toEqual(['org:create', 'profile:create'])
+    const id = await createRequest(sdk, r1, people[0]!, input, { ...opts(0), forge: withOrg })
+    const v2 = await loadOrg(sdk, r2, { ...readOpts(), forge: withOrg })
+    const req = v2.requests.find((r) => r.request.id === id)!
+    expect(req.proposals.flatMap((p) => p.problems)).toEqual([])
+    expect(req.proposals[0]!.sentence).toBe("Publish the organization's roster: 2 of 3 members must sign")
+    expect(req.proposals[1]!.sentence).toContain(declaredOrgLink('testnet', 2, 3))
+    const done = await signRequest(sdk, v2, req, people[1]!, { ...opts(1), forge: withOrg })
+    expect(done?.status).toBe('done')
+
+    const bad = { ...input, specs: [{ ...(input.specs[0] as WriteSpec & { action: 'create' }), data: { ...rosterFields(roster), threshold: 3 } }] }
+    const badId = await createRequest(sdk, r1, people[0]!, bad, { ...opts(0), forge: withOrg }).catch((e: Error) => e.message)
+    expect(badId).toMatch(/does not match the organization's key ceremony \(threshold\)/)
   })
 
   it('signing re-runs the member-change checks: a repository that turned members-only refuses it (§11.4)', async () => {

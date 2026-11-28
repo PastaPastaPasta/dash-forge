@@ -13,6 +13,11 @@ import { ROLE_LABEL } from '../rules/roles'
 import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof } from '../sdk'
 import type { CreateRequestInput, LaterSpec } from './service'
+import { declaredOrgLink, isDeclaredLink } from './gate'
+import { DOC_ORG } from './platform'
+import { rosterFields, rosterMismatch, type Roster } from './roster'
+import { OrgUnavailableError, orgContractOf, type OrgPort } from './transport'
+import { MAX_LINKS } from '../rules/profile'
 import type { DecodedTransition, WriteSpec } from './transition'
 
 interface StoredDoc {
@@ -141,4 +146,45 @@ export async function listingRequest(sdk: EvoSDK, repo: RepoRef, edit: RepoDocEd
     for (const name of added) specs.push({ action: 'create', contractId: topicContract, documentType: DOC.topic, data: await topicDocData(sdk, repo, name) })
   }
   return { title: `Edit the listing of ${repo.name}`, specs }
+}
+
+/** Whether the organization's profile carries exactly the declared link its roster calls for. */
+export function declaresRoster(links: readonly unknown[], network: string, roster: Roster): boolean {
+  const declared = links.filter(isDeclaredLink)
+  return declared.length === 1 && declared[0] === declaredOrgLink(network, roster.threshold, roster.members.length)
+}
+
+/**
+ * "Publish organization" (§10.5): one request that writes the `org` roster (create, or replace a
+ * stale one) and adds the declared link to the organization's profile, keeping its other fields.
+ * Null when both are already published.
+ */
+export async function publishRequest(sdk: EvoSDK, forge: ForgeIds, port: OrgPort, roster: Roster, network: string, label: string): Promise<CreateRequestInput | null> {
+  const orgContract = orgContractOf(forge)
+  if (orgContract === null) throw new OrgUnavailableError()
+  const profileContract = contractOf(forge, DOC.profile)
+  const [current, found] = await Promise.all([
+    port.orgDoc(roster.orgId),
+    queryDocumentsWithProof(sdk, { dataContractId: profileContract, documentTypeName: DOC.profile, where: [['$ownerId', '==', roster.orgId]], limit: 1 }),
+  ])
+  const specs: WriteSpec[] = []
+  const data: Record<string, unknown> = { ...rosterFields(roster) }
+  if (current === null) specs.push({ action: 'create', contractId: orgContract, documentType: DOC_ORG, data })
+  else if (rosterMismatch(roster, { ...current.fields }) !== null) specs.push({ action: 'replace', contractId: orgContract, documentType: DOC_ORG, documentId: current.id, revision: current.revision, data })
+  const link = declaredOrgLink(network, roster.threshold, roster.members.length)
+  const profileId = found.documents[0]?.['$id']
+  const stored = typeof profileId === 'string' ? await documentsOf(sdk).get(profileContract, DOC.profile, profileId) : null
+  if (stored) {
+    const props: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(stored.toObject())) if (!k.startsWith('$')) props[k] = v
+    const links = Array.isArray(props['links']) ? (props['links'] as unknown[]) : []
+    if (!declaresRoster(links, network, roster)) {
+      const kept = links.filter((l) => !isDeclaredLink(l))
+      if (kept.length >= MAX_LINKS) throw new Error(`${label}'s profile already has ${MAX_LINKS} links; remove one first, then publish.`)
+      specs.push({ action: 'replace', contractId: profileContract, documentType: DOC.profile, documentId: profileId as string, revision: stored.revision ?? 1n, data: { ...props, links: [...kept, link] } })
+    }
+  } else {
+    specs.push({ action: 'create', contractId: profileContract, documentType: DOC.profile, data: { links: [link] } })
+  }
+  return specs.length === 0 ? null : { title: `Publish ${label} as an organization`, specs }
 }
