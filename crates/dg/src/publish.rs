@@ -5,7 +5,8 @@
 //! Everything that can refuse runs **before anything is spent** ([`plan`]): the identity,
 //! the local repository and its remote, then the storage — `--storage` > git config
 //! `dash.storage` (this repo's, then the global one) > the user's only storage profile (one
-//! external profile, or with none, synced ones included, a saved Platform profile) > a picker (in a terminal) > stop with E508, pricing what Platform storage would cost — and,
+//! external profile, or with none, synced ones included, a saved Platform profile) > a
+//! picker (in a terminal) > stop with E508, pricing what Platform storage would cost — and,
 //! for a push, that every storage secret resolves and that `git-remote-dash` gets the key this
 //! run unlocked (a sealed key's passphrase is asked once; the key reaches the helper over an
 //! inherited pipe, never the environment).
