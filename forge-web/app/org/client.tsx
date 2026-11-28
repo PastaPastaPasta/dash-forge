@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react'
 import { ConnectFlow, NewOrganizationSteps } from '@/components/org/connect-flow'
 import { CopyRequestLink, RequestCard } from '@/components/org/request-card'
 import { OwnerChip } from '@/components/org/owner-chip'
+import { PublishOrg } from '@/components/org/publish-org'
 import { RepoCard } from '@/components/repo-card'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useAsync } from '@/hooks/use-async'
@@ -123,6 +124,8 @@ function OrgPage({ orgId }: { orgId: string }): JSX.Element {
           <CopyRequestLink orgId={orgId} requestId={focused?.request.id ?? requestId} />
         </div>
       ) : null}
+
+      {view !== null ? <PublishOrg view={view} /> : null}
 
       <section className="space-y-3" aria-label="Open requests">
         <h2 className="text-prose">Open requests</h2>
