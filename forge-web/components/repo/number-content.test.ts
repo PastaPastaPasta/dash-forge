@@ -7,7 +7,7 @@ const gh = { host: 'github.com', path: 'PastaPastaPasta/dash-forge' }
 describe('numberMissing', () => {
   it('a mirror sends a #N it does not hold to the source forge', () => {
     expect(numberMissing(779, gh, false)).toEqual({
-      body: 'No issue or PR has number 779 here. This repo mirrors github.com/PastaPastaPasta/dash-forge.',
+      body: 'No issue or PR has number 779 here. This repo says it mirrors github.com/PastaPastaPasta/dash-forge.',
       url: 'https://github.com/PastaPastaPasta/dash-forge/issues/779',
       link: 'Open #779 on github.com',
     })

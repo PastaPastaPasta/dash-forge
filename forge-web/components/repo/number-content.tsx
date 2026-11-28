@@ -109,7 +109,7 @@ export function numberMissing(n: number, source: ForgeRepo | null, imported: boo
   const url = upstreamItemUrl(source, n)
   if (url === null || source === null) return { body: `No issue or PR has number ${n} here.`, url: null, link: '' }
   const link = `Open #${n} on ${source.host}`
-  return { body: imported ? `Its import did not copy #${n}.` : `No issue or PR has number ${n} here. This repo mirrors ${source.host}/${source.path}.`, url, link }
+  return { body: imported ? `Its import did not copy #${n}.` : `No issue or PR has number ${n} here. This repo says it mirrors ${source.host}/${source.path}.`, url, link }
 }
 
 /**
