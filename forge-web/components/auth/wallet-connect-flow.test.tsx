@@ -156,9 +156,12 @@ beforeEach(() => {
   document.body.appendChild(host)
   root = createRoot(host)
 })
+let userAgent: { mockRestore: () => void } | undefined
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
+  userAgent?.mockRestore()
+  userAgent = undefined
 })
 
 /** What the verified v2 grant is: the identity and its group-bound key (budget 0.05 DASH). */
@@ -217,6 +220,23 @@ describe('WalletConnectFlow: App Connect v2 sign-in', () => {
     expect(q('wallet-support')!.textContent).toMatch(/App Connect v2/)
     expect(host.textContent).not.toMatch(/older code/i)
     expect(v2.awaited).toBe(1)
+  })
+
+  it.each([
+    ['a desktop browser', 'Mozilla/5.0 (X11; Linux x86_64) Chrome/131.0 Safari/537.36', false],
+    ['a phone browser', 'Mozilla/5.0 (Linux; Android 14; Pixel 7) Chrome/131.0 Mobile Safari/537.36', true],
+  ])('on %s, shows the QR, "Open in wallet" and "Copy link" together', async (_device, ua, phone) => {
+    userAgent = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(ua)
+    v2.available = true
+    act(() => root.render(<WalletConnectFlow onDone={vi.fn()} />))
+    await flush()
+    expect(q('qr-value')!.textContent).toBe('dashpay://connect?v=2&n=d&r=qr')
+    expect(q('wallet-deep-link')!.getAttribute('href')).toBe('dashpay://connect?v=2&n=d&r=link&cb=x')
+    expect(q('wallet-copy-link')).not.toBeNull()
+    expect(host.querySelector('details [data-testid="qr-value"]')).toBeNull()
+    // A phone leads with the button; a computer with the QR.
+    const linkFirst = q('wallet-deep-link')!.compareDocumentPosition(q('qr-value')!) & Node.DOCUMENT_POSITION_FOLLOWING
+    expect(Boolean(linkFirst)).toBe(phone)
   })
 
   it('at a protocol no released wallet reads, the code still shows and Details says released DashPay builds cannot sign in', async () => {

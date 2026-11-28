@@ -108,12 +108,13 @@ test.describe('v2 request (read-only)', () => {
     await expect(page.getByTestId('wallet-support')).toContainText(/app connect v2/i)
     await expect(page.getByTestId('scan-warning')).toBeVisible()
     await expect(page.getByTestId('wallet-copy-link')).toBeVisible()
+    await expect(page.getByTestId('wallet-deep-link')).toBeVisible()
     await expect(page.locator('figcaption', { hasText: 'dashpay:' })).toHaveCount(0)
     await expect(page.getByText(/older code/i)).toHaveCount(0)
     await shot(page, 'wallet-login-v2-01-request')
   })
 
-  test('r2. phone: "Open in wallet" is the v2 link, with the QR behind a disclosure', async ({ browser }) => {
+  test('r2. phone: "Open in wallet" is the v2 link, with the QR and "Copy link" shown too', async ({ browser }) => {
     const page = await (await browser.newContext({ ...devices['Pixel 7'] })).newPage()
     await openWalletRequest(page)
     const link = page.getByTestId('wallet-deep-link')
@@ -124,6 +125,8 @@ test.describe('v2 request (read-only)', () => {
     // would not reach the tab either).
     expect(href).not.toContain('cb=')
     await expect(link).toHaveText(/open in wallet/i)
+    await expect(page.getByRole('img', { name: 'Wallet login request' })).toBeVisible()
+    await expect(page.getByTestId('wallet-copy-link')).toBeVisible()
     await shot(page, 'wallet-login-v2-03-phone')
   })
 })
