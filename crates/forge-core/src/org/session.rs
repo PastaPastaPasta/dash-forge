@@ -378,7 +378,8 @@ impl Org {
         self.members = members;
         self.rebind();
         let mut docs = Vec::new();
-        for owner in self.bound.values().flatten() {
+        let owners: BTreeSet<&String> = self.bound.values().flatten().collect();
+        for owner in owners {
             let owner_id = crate::platform::decode_identifier(owner)?;
             let found = client
                 .query_all_documents(
@@ -443,18 +444,62 @@ impl Org {
         seed: &Seed,
         keys: &MemberKeys,
     ) -> Result<bool> {
-        let wrote_member = self.ensure_bound(engine, keys).await?;
+        self.read_shares(client, &engine.owner_id()).await?;
+        self.load_my_shares(client, &keys.auth_pub).await?;
+        self.my_share(seed, keys)?;
+        let wrote_member = self.ensure_bound(client, engine, keys).await?;
         let wrote_share = self.ensure_share(client, engine, seed, keys).await?;
         Ok(wrote_member || wrote_share)
     }
 
-    async fn ensure_bound(&mut self, engine: &WriteEngine<'_>, keys: &MemberKeys) -> Result<bool> {
+    async fn ensure_bound(
+        &mut self,
+        client: &PlatformClient,
+        engine: &WriteEngine<'_>,
+        keys: &MemberKeys,
+    ) -> Result<bool> {
         let owner = engine.owner_id();
         if self.is_bound(&keys.auth_pub, &owner) {
             return Ok(false);
         }
-        if !self.member_keys().contains(&keys.auth_pub) {
+        let members = self.member_keys();
+        if !members.contains(&keys.auth_pub) {
             return Err(OrgError::NotAMember.into());
+        }
+        let docs = client
+            .query_documents(
+                &self.contract,
+                transport::DOC_MEMBER,
+                &[
+                    QueryFilter::eq(
+                        "$ownerId",
+                        FieldValue::identifier(crate::platform::decode_identifier(&owner)?),
+                    ),
+                    QueryFilter::eq("org", FieldValue::identifier(self.org_bytes()?)),
+                ],
+                &[],
+                MEMBER_DOCS_PAGE,
+                None,
+            )
+            .await?;
+        let mine: Vec<MemberDoc> = docs.iter().filter_map(member_doc).collect();
+        let valid = transport::bind_identities(&mine, &self.network, &self.record.org_id, &members);
+        if valid.contains_key(&keys.auth_pub) {
+            for d in mine {
+                if hex::encode(&d.auth_pub) == keys.auth_pub
+                    && !self.members.iter().any(|m| m.id == d.id)
+                {
+                    self.members.push(d);
+                }
+            }
+            self.rebind();
+            return Ok(false);
+        }
+        if !valid.is_empty() {
+            return Err(Error::Config(format!(
+                "this Forge identity is already linked to another member of {}: sign in with your own identity",
+                self.record.label
+            )));
         }
         if self.bound.get(&keys.auth_pub).map_or(0, Vec::len) >= transport::MAX_IDENTITIES_PER_KEY {
             return Err(Error::Config(format!(
@@ -501,9 +546,7 @@ impl Org {
         if self.has_share(&owner) {
             return Ok(false);
         }
-        let Ok(mine) = self.my_share(seed, keys) else {
-            return Ok(false);
-        };
+        let mine = self.my_share(seed, keys)?;
         let share = *mine.get(&self.slot).ok_or_else(|| self.no_key())?;
         let sealed = transport::seal_share_random(
             seed,
@@ -743,6 +786,18 @@ impl Org {
     /// holds none. Web holds by the same rule.
     pub fn open_nonces(&self) -> BTreeMap<String, BTreeSet<u64>> {
         let mut out: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+        for (_, d) in self.holding_parts() {
+            out.entry(d.contract_id.clone())
+                .or_default()
+                .insert(d.nonce);
+        }
+        out
+    }
+
+    /// The parts that hold their nonce: made by a member, accepted by the room, writing as the
+    /// organization, in a request not declined out.
+    fn holding_parts(&self) -> Vec<(String, DecodedWrite)> {
+        let mut out = Vec::new();
         for r in self.requests() {
             if self.unreachable(&r) {
                 continue;
@@ -754,42 +809,47 @@ impl Org {
                 if p.status == ProposalStatus::Invalid || !self.is_member(&p.from) {
                     continue;
                 }
-                if let Some(d) = self.decoded(id) {
-                    if d.owner_id == self.record.org_id {
-                        out.entry(d.contract_id.clone())
-                            .or_default()
-                            .insert(d.nonce);
-                    }
+                if let Some(d) = p.decoded().filter(|d| d.owner_id == self.record.org_id) {
+                    out.push((id.clone(), d));
                 }
             }
         }
         out
     }
 
-    /// [`Self::open_nonces`] less the nonces expired replaces release: a replace whose document
-    /// moved past its revision can no longer land (§11.6).
+    /// [`Self::open_nonces`] without the parts that can no longer land and so release their
+    /// nonce: a replace whose document is not at the revision it replaces (§11.6). Only nonces
+    /// above the tip are checked; the others are never handed out.
     pub async fn held_nonces(
         &self,
         client: &PlatformClient,
     ) -> Result<BTreeMap<String, BTreeSet<u64>>> {
-        let mut held = self.open_nonces();
-        for r in self.requests() {
-            for id in &r.proposals {
-                let Some(d) = self.decoded(id).filter(|d| d.action == "replace") else {
-                    continue;
+        let mut tips: BTreeMap<String, NonceState> = BTreeMap::new();
+        let mut out: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
+        for (id, d) in self.holding_parts() {
+            if d.action == "replace" {
+                let tip = if let Some(t) = tips.get(&d.contract_id) {
+                    *t
+                } else {
+                    let t = client
+                        .proved_contract_nonce(&self.record.org_id, &d.contract_id)
+                        .await?;
+                    tips.insert(d.contract_id.clone(), t);
+                    t
                 };
-                if d.owner_id != self.record.org_id {
-                    continue;
-                }
-                let f = facts(client, &d).await?;
-                if f.doc == DocState::Later && !(f.nonce_spent && self.claimed(id)) {
-                    if let Some(set) = held.get_mut(&d.contract_id) {
-                        set.remove(&d.nonce);
+                if !tip.spent(d.nonce) {
+                    let f = facts(client, &d).await?;
+                    if f.doc != DocState::Base && !request::landed(&d.action, &f, self.claimed(&id))
+                    {
+                        continue;
                     }
                 }
             }
+            out.entry(d.contract_id.clone())
+                .or_default()
+                .insert(d.nonce);
         }
-        Ok(held)
+        Ok(out)
     }
 
     /// The participants' auth keys of the signing key.
@@ -973,6 +1033,7 @@ impl Org {
                 if o.owner_id == d.owner_id
                     && o.contract_id == d.contract_id
                     && o.nonce == d.nonce
+                    && o.document_id != d.document_id
                     && request::landed(&o.action, &facts(client, &o).await?, self.claimed(id))
                 {
                     return Ok(true);
@@ -1133,10 +1194,8 @@ impl Org {
     ) -> Result<usize> {
         let mut posted = 0;
         for id in &req.proposals {
-            if self.state.proposals[id]
-                .approvals
-                .contains_key(&keys.auth_pub)
-            {
+            let p = &self.state.proposals[id];
+            if p.approvals.contains_key(&keys.auth_pub) || p.status.is_signed() {
                 continue;
             }
             let envelope = member::approve(shares, keys, &self.state, id, &now_iso())?;
@@ -1275,18 +1334,18 @@ impl Org {
         if parts.iter().any(|(_, s, _)| *s == PartState::Expired) {
             return Err(refused(
                 &req.id,
-                &["it was overtaken: another write used its nonce".to_string()],
+                &[
+                    "it can no longer land: another write used its nonce or changed its document"
+                        .to_string(),
+                ],
             ));
         }
         let mut blocked: Vec<String> = Vec::new();
-        for ((d, state, f), r) in parts.iter().zip(&reviews) {
+        for ((_, state, _), r) in parts.iter().zip(&reviews) {
             if state.finished() {
                 continue;
             }
             blocked.extend(r.nonce.clone());
-            if d.action == "replace" && f.doc == DocState::Different {
-                blocked.push("the document it edits changed since it was made".into());
-            }
         }
         if !blocked.is_empty() {
             return Err(refused(&req.id, &blocked));
@@ -1485,16 +1544,25 @@ async fn facts(client: &PlatformClient, d: &DecodedWrite) -> Result<PartFacts> {
         .proved_contract_nonce(&d.owner_id, &d.contract_id)
         .await?
         .spent(d.nonce);
+    let same = |x: &FetchedDocument| review::same_fields(&x.fields, &d.properties);
     let doc = match (d.action.as_str(), doc) {
         ("replace", Some(x)) if x.revision == d.revision => {
-            if review::same_fields(&x.fields, &d.properties) {
+            if same(&x) {
                 DocState::Same
             } else {
                 DocState::Different
             }
         }
         ("replace", Some(x)) if x.revision > d.revision => DocState::Later,
-        ("replace", _) => DocState::Different,
+        ("replace", Some(x)) if x.revision.map(|r| r + 1) == d.revision => DocState::Base,
+        ("replace", Some(_)) => DocState::Different,
+        ("create", Some(x)) => {
+            if same(&x) {
+                DocState::Same
+            } else {
+                DocState::Different
+            }
+        }
         (_, Some(_)) => DocState::Present,
         (_, None) => DocState::Absent,
     };
