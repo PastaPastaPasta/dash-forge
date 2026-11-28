@@ -463,8 +463,8 @@ pub struct ForgeIds {
     /// forge-user (settings that follow the identity), a member of the same group; `None`
     /// where it is not registered (a devnet without it).
     pub user: Option<String>,
-    /// forge-org (organizations' members, rosters and request logs), a member of the same
-    /// group; `None` where it is not registered (mainnet, until the owner's go).
+    /// forge-org (organizations' members, sealed shares, rosters and request logs), a member
+    /// of the same group; `None` where it is not registered (mainnet, until the owner's go).
     pub org: Option<String>,
 }
 
