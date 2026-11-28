@@ -1,6 +1,6 @@
 # Organizations: a repository owner that is an N-of-M multisig
 
-Status: design, 2026-11-24. Testnet only until the owner says go.
+Status: design, 2026-11-24; revised 2026-11-28 (requests and roster on Platform, §10; follow-up decisions, §11). Testnet only until the owner says go.
 
 ## 1. What an organization is
 
@@ -63,22 +63,24 @@ It then describes the action from the decoded content ("Give `alice.dash` Mainta
 
 **Decline.** A member can decline a request (`reject`). Declines do not block; a request that will never reach N simply stays open and can be dismissed locally. While it is still collecting (no part ready or executed), once more than M−N members decline it without having approved it, it no longer holds its nonces. A request whose nonce was overtaken is shown as expired.
 
-Requests made in Forge are visible in multisig.dashhq.org as proposals, and its members can see shares arrive there.
+Requests live on Platform (§10); multisig.dashhq.org does not show them.
 
 ## 5. Coordination and notifications
 
 - **Web.** The header shows a count of requests waiting for the signed-in user's signature across their connected organizations. The inbox gets a "Needs your signature" section. The organization page lists open requests, each with one primary action: **Sign (1 of 2 collected)**, then **Done** once broadcast. Who signed is one click away; raw bytes are collapsed.
 - **dg.** `dg org list`, `dg org requests`, `dg org show <request>`, `dg org sign <request>`, `dg org decline <request>`, `dg org finish <request>`. `dg status` prints one line when requests are waiting. Owner commands (`dg repo create --owner <org>`, `dg collab add|remove` on an org repo) create a request and print what to send to co-signers.
-- **Telling the others.** Every request has a link (`/org?id=<org>&request=<id>`). After creating one, Forge shows "Send this to your co-signers" with copy and share buttons. Members who have connected the organization also see the badge without being told, because every client polls the relay.
+- **Telling the others.** Every request has a link (`/org?id=<org>&request=<id>`). After creating one, Forge shows "Send this to your co-signers" with copy and share buttons. Members who have connected the organization also see the badge without being told, because every client polls Platform for the organization's messages (§10).
 - **Which device knows.** A client remembers, per organization, the group id, the relay and the member's public auth key. Those are public values, so the badge works without unlocking the seed phrase.
 
-The relay is the hosted one at multisig.dashhq.org by default and any `dti relay serve` otherwise. It can withhold messages but cannot forge them; it is reachable over IPv4 and IPv6.
+Requests, approvals, declines and broadcast records are on Platform (§10). The relay (multisig.dashhq.org by default, any `dti relay serve` otherwise) is read only for the key ceremony, and it can withhold messages but cannot forge them.
 
 ## 6. Contract changes
 
-**None are needed.** Everything above works with the contracts registered on mainnet and testnet today.
+Revised 2026-11-28 (owner: "it should live on platform"). Requests, signature shares and the roster live on Platform, in a new contract, `forge-org`, registered in Forge's existing contract group (§10). No existing contract is changed: forge-core, forge-collab, forge-community, forge-meta and forge-user keep their bytes, so every repository, ref, issue and pull request reads exactly as before. A separate contract was chosen over another forge-meta update because it costs one registration (about 0.2 DASH) instead of repaying forge-meta's whole fee now and on every later forge-meta update, and because it leaves the live mainnet contracts untouched (forge-user set the precedent).
 
-One optional change would make coordination zero-backend, and it is the owner's decision (see the status report): new document types in forge-meta, added by an in-place update, for an on-chain roster (`org`, written by the organization: N, M, member identities, public shares) and on-chain requests and signature shares (`orgRequest`, `orgShare`, written by members' own identities). That gives an inbox by identity on every device with no relay, a public record of who approved what, and lets a maintainer who is not a signer ask the organization for something. It costs a contract update on mainnet (the registration fee again, about 0.39 DASH) and a small fee per signature.
+The relay at multisig.dashhq.org keeps only the key ceremony that created the organization's identity. Once the organization has published its roster (§10.5), members sign from Platform alone.
+
+Testnet gets `forge-org` first. Mainnet gets it only on the owner's go; until then the mainnet gate (§7) keeps every organization feature off there.
 
 ## 7. Gating
 
@@ -116,7 +118,7 @@ Protocol reference: `dash-threshold-identity` `docs/PROTOCOL.md` and `src/{util,
 2. The signable bytes of the decoded transition equal `signable`.
 3. The data contract is one of this network's Forge contracts.
 4. The identity-contract nonce is above the current one.
-5. The (document type, action) pair is one Forge recognises: `repo` create/replace, `maintainer` create/delete, `writer` create/delete, `config` create, `profile` create/replace, `topic` create/delete, `runner` create/delete. A delete is described from the stored document (proved read).
+5. The (document type, action) pair is one Forge recognises: `org` create/replace (`forge-org`, §10.5), `repo` create/replace, `maintainer` create/delete, `writer` create/delete, `config` create, `profile` create/replace, `topic` create/delete, `runner` create/delete. A delete is described from the stored document (proved read).
 
 **Request status.** `collecting` (fewer than N valid shares on some proposal), `ready`, `done` (every proposal has a member's `broadcast` with `ok: true` and its nonce is spent, or its document write is visible on chain: a broadcast record whose nonce is still free is a claim, and Finish broadcasts it), `expired` (a proposal's nonce is spent, Platform's skipped-nonce window included, and its write is not on chain), `declined` (still collecting, but more members declined it without approving than M−N, so the rest cannot reach the threshold; nobody can sign it any more. Checked before `done` and `expired`: its nonces are free, and a later request may spend them), `invalid`.
 
@@ -128,6 +130,60 @@ Protocol reference: `dash-threshold-identity` `docs/PROTOCOL.md` and `src/{util,
 
 **Same bytes from both clients.** A transition is built the way evo-sdk builds it: document base transition version 1, identifier and byte properties as plain byte arrays, integers as 64-bit. forge-web and dg then produce identical bytes for the same write; `forge-contracts/fixtures/org/web-built.json` holds transitions forge-web built on testnet, and dg's tests rebuild them byte for byte.
 
-**multisig.dashhq.org's own review.** `dti review` rebuilds each proposal from its intent and requires identical bytes. Checked on testnet (2026-11-24): it passes a repository create, a `maintainer` or `writer` delete and other writes whose properties are text and numbers, whether forge-web or dg made them. It refuses writes that carry an identifier property (`maintainer`/`writer`/`config` create): a `dti` intent has no byte type, so its rebuild turns `repoId` and `memberId` into text. Members sign those in Forge; making them reviewable in multisig.dashhq.org needs a byte encoding for `dti` intents.
+**multisig.dashhq.org's own review** (historical: since §10, Forge requests are no longer posted there). `dti review` rebuilds each proposal from its intent and requires identical bytes. Checked on testnet (2026-11-24): it passes a repository create, a `maintainer` or `writer` delete and other writes whose properties are text and numbers, whether forge-web or dg made them. It refuses writes that carry an identifier property (`maintainer`/`writer`/`config` create): a `dti` intent has no byte type, so its rebuild turns `repoId` and `memberId` into text. Members sign those in Forge; making them reviewable in multisig.dashhq.org needs a byte encoding for `dti` intents.
 
 Shared test vector: `forge-contracts/fixtures/org/dti-2of3.json` (three members with their test phrases, the ceremony messages, proposals, approvals, the expected states and the combined signature).
+
+## 10. On Platform (the `forge-org` contract)
+
+This section supersedes the relay transport of §4, §5 and §9 for Forge requests. Everything else in §9 (proposal bodies, review, nonces, status, finishing, byte parity) is unchanged: the same `dti/1` envelopes, carried in Platform documents instead of the relay room. Forge requests are no longer visible in multisig.dashhq.org, and requests made there are not shown in Forge.
+
+### 10.1 Document types (`forge-org`, in Forge's contract group)
+
+| Type | Owner | Properties | Mutable / deletable | Indices |
+|---|---|---|---|---|
+| `orgMember` | a member's own Forge identity | `org` identifier; `room` string ≤ 64 (the dti group id); `authPub` bytes 32 (the member's dti auth key); `proof` bytes 64 | no / no | `byOrg` (`org`, `$ownerId`) unique; `byKey` (`org`, `authPub`, `$createdAt`); `byOwner` (`$ownerId`, `org`) |
+| `orgShare` | a member's own Forge identity | `org` identifier; `cid` bytes 32 (the ceremony it is a share of); `sealed` byte array 1–128 | no / no | `byCeremony` (`org`, `$ownerId`, `cid`) unique |
+| `org` | the organization (N of M) | `room` string ≤ 64; `relay` string ≤ 200, optional; `cid` bytes 32 (ceremony id); `keyId` integer; `groupKey` bytes 48; `threshold` integer 2–64; `members` byte array 64–2048 (participants' auth keys, 32 bytes each, by participant index); `pubShares` byte array 96–3072 (participants' public key shares of `groupKey`, 48 bytes each, same order) | yes / no | `owner` (`$ownerId`) unique |
+| `orgMessage` | a member's own Forge identity | `org` identifier; `digest` bytes 32; `part` integer 0–15; `parts` integer 1–16; `fmt` integer 0–1; `body` byte array 1–5120 | no / no | `log` (`org`, `$ownerId`, `$createdAt`) |
+
+`$createdAt` is required on all four and `$updatedAt` on `org`. No `refersTo` and no rule reads them, so no existing write is affected.
+
+- **`orgMember` proof**: Ed25519 by `authPub` over the UTF-8 bytes of `dash-forge/org-member/1\n<network>\n<org base58>\n<$ownerId base58>`. It binds one Forge identity to one participant key. It is never deleted: leaving is a local action, and the history stays readable.
+- **`orgShare`** (`sealed`): the member's secret share of the signing slot, encrypted so only the phrase opens it: XChaCha20-Poly1305 with key HKDF-SHA256(ikm = the member's 64-byte BIP-39 seed, salt = `dash-forge/org-share/1`, info = `<network>\n<org base58>\n<cid hex>`), a random 24-byte nonce, and stored as nonce ‖ ciphertext ‖ tag. That is the same exposure as the ceremony's encrypted shares on the relay. With it, a member signs on any device from the phrase and Platform alone. It is a separate type, one per (member identity, ceremony), so after the organization re-runs its ceremony each member writes a new one.
+- **`org`** is the public roster, written by the organization through the "Publish organization" request (§10.5). Readers trust it only while `groupKey` is the organization's enabled key `keyId` (AUTHENTICATION, HIGH, BLS12_381); otherwise it is stale and ignored.
+- **`orgMessage`**: one `dti/1` envelope (`proposal`, `approve`, `reject` or `broadcast`; other types are ignored), as canonical JSON UTF-8, deflate-raw compressed when `fmt` = 1, split into `parts` documents of at most 5,120 bytes that share `digest` = SHA-256 of the whole stored payload. A message counts when every part from the same owner is present and the digest matches. Documents are never edited or deleted, so the log is also the public record of who approved what.
+
+### 10.2 Reading an organization's log
+
+1. **Roster.** The organization's `org` document when it is current (above); before one is published, the ceremony transcript (§10.4). Both give the members, N, the group key and the public shares that `reduce` needs.
+2. **Member identities.** `orgMember` documents with `org` = the organization whose `authPub` is a member and whose `proof` verifies (at most 4 identities per `authPub`, earliest `$createdAt` first, read by `byKey` with a bound).
+3. **Messages.** For each member identity, `orgMessage` documents by `log` (`org`, that `$ownerId`), paged by `$createdAt`. Documents owned by anyone else are never read, so a stranger cannot flood the log.
+4. **State.** Each envelope must be canonical JSON, verify as a `dti/1` envelope and name the organization's room. Envelopes from all members' logs are merged, deduplicated by envelope id, ordered by (earliest `$createdAt` of the documents carrying it, envelope id), and go through the same `reduce` as before.
+
+### 10.3 Writing
+
+Posting a request, a signature, a decline or a broadcast record is one `orgMessage` (one document per part) created by the member's own signed-in Forge identity, with its ordinary key. Estimates: an approve about 0.0003 DASH, a proposal about 0.001 DASH; never refunded, since the log is permanent. The organization pays only for its own writes when a request finishes. A member therefore needs a Forge identity on that network.
+
+### 10.4 The key ceremony
+
+Before the roster is published, share recovery needs the ceremony's messages from the relay. Forge reads them when a member connects, verifies them as before and keeps them locally (dg: beside `orgs.json`; web: browser storage). Connecting also writes the member's `orgShare` for the ceremony, so from then on that member needs only the phrase and Platform. Changing members or keys stays in multisig.dashhq.org; after a re-run, the organization publishes its roster again.
+
+### 10.5 Connecting, the inbox and publishing
+
+- **Connect** (web `/org`, `dg org connect <group id or invite>`): unlock the phrase, verify the ceremony and the identity's keys (§3), write `orgMember` if this identity has none for the organization and `orgShare` if it has none for the ceremony.
+- **Inbox by identity.** A signed-in member's organizations are their `orgMember` documents (`byOwner`), on any device.
+- **Publish organization** (web: the organization page; `dg org publish <org>`): one request with two writes: the `org` roster, and the organization's `profile` with the declared link (§3) added to its links (other profile fields kept). Signers check that both match the bound ceremony exactly (room, ceremony id, key id, group key, N, the members and public shares in order, the link's N and M) and refuse otherwise. §9's review list gains `org` create/replace in `forge-org`.
+
+### 10.6 Migration from the relay
+
+Requests made before this change live in the relay room. `dg org migrate <org>` copies to Platform only the envelopes the running member made themselves (their proposals, approvals, declines and broadcast records in the room's open requests), so nobody can drop or re-time another member's messages; each member who took part runs it once. Requests nobody migrates can still be finished or declined in multisig.dashhq.org. Clients older than this change keep using the relay: their requests are invisible to new clients and may expire on a reused nonce, which loses no data (an organization write that loses its nonce simply never lands). Organizations are testnet-only, so there is no mainnet cutover.
+
+## 11. Follow-up decisions (2026-11-28)
+
+1. **Refused requests.** When review finds problems, both clients say "Forge won't sign this: <reasons>". dg reports it with its own error code (not E204 "invalid configuration", and no `dg doctor` hint). The next step for a request that can never be valid is a local Dismiss (free); Decline stays for valid requests a member disagrees with.
+2. **Phrase box.** The organization phrase is masked as typed, with a Show button to reveal it.
+3. **One wording.** Status `declined`: "Declined: too many members declined it to reach N of M." Status `invalid` (it does not form a request, or review found problems): "Forge won't sign this: <reasons>." Both clients take the review into the status the same way: structural problems and review problems give `invalid`, which wins over `declined`.
+4. **Member changes mid-request.** Signing and finishing re-run the creation checks for member changes (a repository that now has members-only content or environments is refused: "<repo> now has members-only content or environments, so an organization can't change its members; decline this request").
+5. **Backdated ids.** Every request id is `<group>-<first 16 hex of the proposer's key>`, so no member can claim another's id, by time or otherwise. A bare group id still resolves when exactly one proposer used it.
+6. **Executed once its nonce is spent.** Narrowed: a member's `broadcast` claim no longer makes a part done by itself. A replace or a delete is done only when its write is visible (a replace's document at or past its revision with the same fields, or a later revision; a delete's document gone and its nonce spent). A create is done when its document exists; when it is absent but the claim exists and the nonce is spent, it reads "Done (no longer on Platform)", since a create later deleted cannot be told apart. A part whose nonce another request's part is known to have landed with is `expired`.
