@@ -10,6 +10,7 @@ import { membershipData } from '../repo/writes'
 import type { RepoRef } from '../repo/contract'
 import { contractOf } from '../repo/source'
 import { verify } from './bls'
+import { buildUnsigned } from './transition'
 import { approveEnvelope, connect, createRequest, myShare, declineRequest, finishRequest, freeNonces, loadOrg, openNonces, resetOrgCaches, signRequest, verifyInvite, type ConnectCandidate } from './service'
 import { fakeOrgPort, type FakeOrgPort } from './fake-port'
 import { encodeMessage } from './platform'
@@ -44,6 +45,7 @@ const orgIdentity = { id: { toBase58: () => ORG }, publicKeys: [{ keyId: 2, keyT
 let relayUp = true
 let relayShows = Infinity
 let nonceDown = false
+let unreadable: string | null = null
 
 const sdk = {
   version: () => latest,
@@ -57,6 +59,7 @@ const sdk = {
   },
   documents: {
     get: async (_c: string, _t: string, id: string) => {
+      if (id === unreadable) throw new Error('DAPI unavailable')
       const doc = stored.get(id)
       return doc ? { revision: doc.revision, toObject: () => doc.data } : undefined
     },
@@ -209,6 +212,23 @@ describe('organization requests on Platform', () => {
     await signRequest(sdk, v2, v2.requests.find((r) => r.request.id === id)!, people[1]!, opts(1))
     const after = await loadOrg(sdk, r1, readOpts())
     expect(after.requests.find((r) => r.request.id === id)!.status).toBe('done')
+  })
+
+  it("another identity's write at the same contract nonce does not make the organization's done request read expired", async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'c2', specs: [writer(32)] }, opts(0))
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    expect((await signRequest(sdk, v2, v2.requests.find((r) => r.request.id === id)!, people[1]!, opts(1)))?.status).toBe('done')
+    const done = v2.requests.find((r) => r.request.id === id)!
+    const foreign = await buildUnsigned(writer(33), { ownerId: ALICE, keyId: 2, nonce: done.proposals[0]!.decoded!.nonce, platformVersion: latest })
+    stored.set(foreign.documentId, { revision: 1n, data: { ...writer(33).data } })
+    const body = { ...done.request.proposals[0]!.body, unsigned: foreign.unsigned, signable: foreign.signable, note: undefined }
+    await port.writeMessage(people[1]!.auth, ORG, encodeMessage(sealEnvelope(people[1]!.keys, V.room, 'proposal', body as unknown as Record<string, unknown>)))
+    const after = await loadOrg(sdk, r1, readOpts())
+    expect(after.requests.some((r) => r.proposals.some((q) => q.decoded?.ownerId === ALICE))).toBe(true)
+    expect(after.requests.find((r) => r.request.id === id)!.status).toBe('done')
+    stored.delete(foreign.documentId)
   })
 
   it('a new request waits while some member logs are unreadable, so it never takes a nonce they hold', async () => {
@@ -367,6 +387,10 @@ describe('organization requests on Platform', () => {
     const moved = (await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!
     expect(moved.status).toBe('invalid')
     expect(moved.proposals[0]!.problems.join()).toMatch(/changes the profile's bot/)
+    unreadable = documentId
+    const unread = (await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!
+    expect(unread.proposals[0]!.problems.join()).toMatch(/profile could not be read/)
+    unreadable = null
     stored.delete(documentId)
   })
 

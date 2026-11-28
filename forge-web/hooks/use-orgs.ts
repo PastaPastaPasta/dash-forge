@@ -9,7 +9,7 @@ import { orgNetworkName, orgsEnabled } from '@/lib/org/gate'
 import { waitingForViewer } from '@/lib/org/requests'
 import { loadOrg, membershipRecords, orgPortFor, type OrgView } from '@/lib/org/service'
 import type { OrgPort } from '@/lib/org/transport'
-import { connectedOrgs, lockAll, saveOrg, subscribeOrgs, subscribeUnlock, unlockGeneration, unlockedFor, type OrgRecord, type Unlocked } from '@/lib/org/store'
+import { connectedOrg, connectedOrgs, lockAll, saveOrg, subscribeOrgs, subscribeUnlock, unlockGeneration, unlockedFor, type OrgRecord, type Unlocked } from '@/lib/org/store'
 import { ensureSdk } from '@/lib/sdk'
 import { POLL_MS } from '@/lib/view/inbox'
 import { errorMessage } from '@/lib/utils'
@@ -108,7 +108,10 @@ export function useOrgPoller(): void {
             const view = await loadOrg(sdk, record, { network: DEFAULT_NETWORK, forge, port })
             if (cancelled) return
             if (!known.has(record.orgId)) saveOrg(view.record)
-            else if (!view.reconnect && view.record.authPub !== record.authPub) saveOrg({ ...record, authPub: view.record.authPub })
+            else if (!view.reconnect && view.record.authPub !== record.authPub) {
+              const now = connectedOrg(record.network, record.orgId)
+              if (now) saveOrg({ ...now, authPub: view.record.authPub })
+            }
             useOrgsStore.setState((s) => {
               const errors = { ...s.errors }
               delete errors[record.orgId]

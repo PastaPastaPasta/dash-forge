@@ -351,6 +351,8 @@ async function profileProblems(sdk: EvoSDK, d: DecodedTransition): Promise<strin
   return problem === null ? [] : [problem]
 }
 
+const PROFILE_UNREAD = 'its profile could not be read to check what it changes; try again'
+
 const landedParts = new Set<string>()
 const doneSentences = new Map<string, string>()
 
@@ -407,12 +409,21 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
       visible.set(p.id, d === null ? { landed: false, superseded: false, absent: false } : await writtenOnChain(sdk, p.id, d, current !== undefined && isNonceSpent(current, d.nonce), p.status === 'executed'))
     }),
   )
-  const reviews = new Map(await Promise.all(parts.map(async ({ p, d }) => [p.id, d === null ? null : [...reviewDecoded(d, p.body, ctx), ...(await profileProblems(sdk, d))]] as const)))
+  const reviews = new Map(
+    await Promise.all(
+      parts.map(async ({ p, d }) => {
+        if (d === null) return [p.id, null] as const
+        const found = reviewDecoded(d, p.body, ctx)
+        if (found.length > 0 || visible.get(p.id)?.landed === true) return [p.id, found] as const
+        return [p.id, [...found, ...(await profileProblems(sdk, d).catch(() => [PROFILE_UNREAD]))]] as const
+      }),
+    ),
+  )
+  const ownSlot = (d: DecodedTransition): string => `${d.ownerId}:${d.contractId}:${d.nonce}`
   const landedBy = new Map<string, { readonly request: string; readonly signable: string }[]>()
   for (const { r, p, d } of parts) {
-    if (!d || visible.get(p.id)?.landed !== true || p.status === 'invalid' || reviews.get(p.id)?.length !== 0) continue
-    const slot = `${d.contractId}:${d.nonce}`
-    landedBy.set(slot, [...(landedBy.get(slot) ?? []), { request: r.id, signable: d.signable }])
+    if (!d || visible.get(p.id)?.landed !== true) continue
+    landedBy.set(ownSlot(d), [...(landedBy.get(ownSlot(d)) ?? []), { request: r.id, signable: d.signable }])
   }
   const facts = new Map<string, ProposalFacts>()
   for (const { r, p, i, d } of parts) {
@@ -425,7 +436,7 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
     const spent = d !== null && current !== undefined && isNonceSpent(current, d.nonce)
     const seen = visible.get(p.id)
     const nonceUnread = d !== null && current === undefined
-    const takenByOther = slot !== null && d !== null && (landedBy.get(slot) ?? []).some((x) => x.request !== r.id && x.signable !== d.signable)
+    const takenByOther = d !== null && (landedBy.get(ownSlot(d)) ?? []).some((x) => x.request !== r.id && x.signable !== d.signable)
     const onChain = seen?.landed === true && !takenByOther
     const gone = d !== null && goneCreate(d.action, p.status === 'executed', spent, seen?.absent, takenByOther)
     const superseded = seen?.superseded === true

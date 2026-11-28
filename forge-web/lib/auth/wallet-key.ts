@@ -46,13 +46,13 @@ export function keyScope(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds): K
   return null
 }
 
+/** Whether one key covers the whole Forge group (group-bound or unbounded), as forge-user and forge-org writes need. */
+export const coversGroup = (scope: KeyScope): boolean => scope.unbounded || (scope.core && scope.collab && scope.community && scope.meta)
+
 /**
  * Whether a scope lets the key sign on `contractId`. Only Forge's contracts are ever asked
  * about; anything else is refused, whatever the key's bounds.
  */
-/** Whether one key covers the whole Forge group (group-bound or unbounded), as forge-user and forge-org writes need. */
-export const coversGroup = (scope: KeyScope): boolean => scope.unbounded || (scope.core && scope.collab && scope.community && scope.meta)
-
 export function scopeCovers(scope: KeyScope, forge: ForgeIds, contractId: string): boolean {
   // forge-user and forge-org are members of the group: a group-bound (or unbounded) key covers them, a key bound to one contract never.
   if (isGroupExtra(forge, contractId)) return coversGroup(scope)
