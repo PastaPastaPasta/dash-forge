@@ -212,7 +212,7 @@ cargo install --locked --path crates/git-remote-dash
 
 `cargo install` puts both binaries in `~/.cargo/bin`; make sure it is on your `PATH`, ahead of
 any older `dg` in `~/.local/bin`. A source build reports the version in `Cargo.toml`. To use
-mainnet, sign in with `dg auth login --network mainnet --wallet`, which records mainnet as the
+mainnet, sign in with `dg auth login --network mainnet` (your DashPay wallet), which records mainnet as the
 default for `dg` and `git`.
 
 ## For maintainers: cutting a release

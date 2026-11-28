@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/i
 Sign in with your wallet, then publish a repository:
 
 ```sh
-dg auth login --network mainnet --wallet   # prints a QR code: scan it in DashPay (More → Tools → Connections)
+dg auth login --network mainnet            # prints a QR code: scan it in DashPay (More → Tools → Connections)
 dg storage add                             # where packs go: your S3 bucket, your IPFS node, or Platform
 dg init                                    # creates the repository, adds `origin`, pushes this branch
 ```
@@ -40,7 +40,7 @@ Clone and push with plain git: `git clone dash://<owner>/<repo>`, `git push` (to
 
 Without git-remote-dash, public repositories clone over plain HTTPS: `git clone https://git-forge.dashhq.org/<owner>/<repo>.git` (testnet: `testnet-git-forge.dashhq.org`). **This mirror is centralized:** one read-only server run by dashhq, an optional convenience. `dash://` with git-remote-dash is the decentralized path, and `dg verify-mirror <url>` checks the mirror against Dash Platform ([forge-gateway](docs/hosting/forge-gateway.md)).
 
-- **Network:** `--network mainnet` on the first sign-in makes mainnet your default for `dg` and `git`. Without it the tools use testnet (free test DASH; sign in there with an identity file or recovery phrase, as no released DashPay build signs in on testnet since protocol 15).
+- **Network:** `--network mainnet` on the first sign-in makes mainnet your default for `dg` and `git`. Without it the tools use testnet (free test DASH). Released DashPay builds can't sign in on testnet since its latest Platform upgrade: there `dg auth login <identity file>` signs in, or `dg auth new` creates an identity.
 - **Other installs:** Windows, manual downloads, attestations and building from source (Rust, `protoc` 25+ and, on Linux, a C compiler, `pkg-config` and the OpenSSL headers) are in [INSTALL.md](docs/INSTALL.md#build-from-source).
 
 <details>
@@ -48,7 +48,7 @@ Without git-remote-dash, public repositories clone over plain HTTPS: `git clone 
 
 - **CI:** a pasteable `dfk1:` runner key in `DASH_FORGE_KEY` ([CI guide](docs/guides/ci.md)).
 - **Identity file:** `dg auth login <file>`, from a bridge export or `dg auth export`.
-- **Recovery phrase (developers only):** `dg auth new` and `dg auth login --mnemonic` handle the 12 words on this computer. Prefer the wallet.
+- **Recovery phrase:** `dg auth new` creates an identity and `dg auth login --mnemonic` signs in with its 12 words, both on this computer. On mainnet prefer the wallet, which keeps the words on the phone.
 
 [Identity and keys](docs/guides/identity-and-keys.md) explains every option.
 </details>

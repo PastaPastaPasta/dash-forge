@@ -160,7 +160,7 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 **No identity configured.** The command needs to sign (a push, a `dg` write) or to open a private repository, and no identity or key was found. Reading a public repository never needs one: `git clone dash://<owner>/<repo>` works anonymously, and so do `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` and `dg release list` / `download`.
 
-**What to do:** `dg auth login` signs in with an existing identity from your DashPay wallet (scan the QR code it prints); `dg auth login <file>` or `dg auth login --mnemonic` signs in from the identity file or the 12 words instead, and `dg auth new` creates an identity. Each stores a limited key for this computer. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
+**What to do:** `dg auth login` signs in with an existing identity from your DashPay wallet (scan the QR code it prints; on testnet, where released DashPay builds can't sign in since its latest Platform upgrade, it asks for the identity file or the words instead, and the fix says so); `dg auth login <file>` or `dg auth login --mnemonic` signs in from the identity file or the 12 words instead, and `dg auth new` creates an identity. Each stores a limited key for this computer. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 
 A private repository needs more than a signing key: its content is encrypted to each member's `ENCRYPTION` key. `dg auth login <file>`, `dg auth login --mnemonic` and `dg auth new` store it beside the limited signing key (never the master key), unless `--signing-only`; a key stored by an older `dg` lacks it (that would be [E306](#e306) next): sign in again with `--replace <key id>`.
 
@@ -201,7 +201,7 @@ Two cases have their own message:
 
 **This key expired or was disabled.** The limited key signing for you is past its expiry or has been disabled. Limited keys are disposable: nothing is lost.
 
-**What to do:** get a fresh one: `dg auth login` (your DashPay wallet approves it), or register one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. `dg auth keys list` shows which keys are live.
+**What to do:** get a fresh one: `dg auth login` (your DashPay wallet approves it), or register one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. On testnet the fix names only the file and the words: released DashPay builds can't sign in there since its latest Platform upgrade. `dg auth keys list` shows which keys are live.
 
 ## E306
 
@@ -296,7 +296,7 @@ Nothing was signed in either case.
 
 **This key's budget is used up.** The limited key signing for you has spent its whole budget (the identity's balance is untouched). Budgets bound what a leaked key could spend.
 
-**What to do:** get a fresh limited key: `dg auth login` (your DashPay wallet approves it), or `dg auth login <identity file>` / `dg auth login --mnemonic` (uses the master key once), with a larger `--budget` if you need one. `dg auth keys add --budget <DASH>` adds one to a signed-in identity.
+**What to do:** get a fresh limited key: `dg auth login` (your DashPay wallet approves it), or `dg auth login <identity file>` / `dg auth login --mnemonic` (uses the master key once), with a larger `--budget` if you need one. On testnet, where released DashPay builds can't sign in since its latest Platform upgrade, the fix names only the file and the words. `dg auth keys add --budget <DASH>` adds one to a signed-in identity.
 
 **Before a push uploads.** When the signing key has a budget, `git push` reads what is left and compares it with the estimate (an upper bound) before it stores anything, so a push the key cannot afford stops here before it stores anything. The estimate is an upper bound, so a budget only just above the real cost can still be refused: register a key with a bigger budget (`dg auth keys add --budget <DASH>`).
 
@@ -555,7 +555,7 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 **What to do:** pass `--yes` once you have checked what the command will do. The `cause:` line quotes the prompt, with its DASH estimate when the command prints one; `dg cost estimate` and `dg cost prices` give the rest.
 
-A bare `dg auth login` without a terminal stops with E802 too: it would wait for a wallet to scan a code. Give it an identity file, or `--wallet --yes` when a script really wants the wallet. `--mnemonic` asks for the words on the terminal, so it needs one too (and never works with `--json`). CI uses a `dfk1:` key in `DASH_FORGE_KEY` instead.
+A bare `dg auth login` without a terminal stops with E802 too: it would wait for a wallet to scan a code (on testnet, ask for the identity file or the words, so the fix there does not offer the wallet). Give it an identity file, or `--wallet --yes` when a script really wants the wallet. `--mnemonic` asks for the words on the terminal, so it needs one too (and never works with `--json`). CI uses a `dfk1:` key in `DASH_FORGE_KEY` instead.
 
 ## E803
 

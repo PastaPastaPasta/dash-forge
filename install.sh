@@ -403,13 +403,14 @@ $(case "$target" in *-linux-gnu) printf '%s' "An older glibc is the usual cause:
 
     say ""
     say "Next steps:"
-    say "  dg doctor                     check git, git-remote-dash, network and identity"
+    say "  dg doctor                         check git, git-remote-dash, network and identity"
     if [ -n "$dg_version" ] && "$dir/dg" auth --help 2>/dev/null | grep -Eq '^ +new( |$)'; then
-        say "  dg auth new                   create or import the identity dg signs with"
+        say "  dg auth login --network mainnet   sign in on mainnet with your DashPay wallet"
+        say "  dg auth login <identity file>     sign in on testnet (no identity yet: dg auth new)"
     else
-        say "  dg auth new                   create an identity (or: dg auth login <file>)"
+        say "  dg auth new                       create an identity (or: dg auth login <file>)"
     fi
-    say "  dg completions <shell>        shell completions (or rerun with DASH_FORGE_COMPLETIONS=1)"
+    say "  dg completions <shell>            shell completions (or rerun with DASH_FORGE_COMPLETIONS=1)"
     if [ "$target" != "${target%-apple-darwin}" ]; then
         say ""
         say "macOS: these binaries are not signed by Apple. install.sh downloads with curl, which"
