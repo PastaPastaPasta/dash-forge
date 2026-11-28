@@ -54,7 +54,7 @@ dg reads the key ceremony from the group's relay (`--relay`, default `https://mu
 
 Your recovery phrase is read from `--phrase-file <file>`, else `DG_ORG_PHRASE`, else a hidden prompt. A passphrase comes from `--passphrase-file`, `DG_ORG_PASSPHRASE`, or the prompt. dg never writes either to disk.
 
-`dg org list` shows the organizations connected on this computer.
+`dg org list` shows the organizations connected on this computer. On another computer, signing in with the same Forge identity is enough: `dg org list`, `dg org requests` and `dg auth status` find your organizations on Platform (signing still asks for the phrase). An organization whose current key no longer includes yours is listed with "connect again".
 
 ### Make a request
 

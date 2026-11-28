@@ -741,11 +741,12 @@ cmd('org connect', 'An organization connected on this computer.', {
     'members': A(O({'index': I, 'name': S, 'authPub': S, 'you': B}, ['index', 'name', 'authPub', 'you'])),
     'network': S, 'room': S, 'relay': S,
 }, ['status', 'orgId', 'label', 'threshold', 'members'])
-cmd('org list', 'The organizations connected on this computer for the network (public values only).', {
+cmd('org list', 'The organizations connected on this computer or found through the signed-in identity\'s orgMember documents, for the network (public values only).', {
     'network': S,
     'orgs': A(O({'network': S, 'orgId': S, 'room': S, 'relay': S, 'authPub': S, 'label': S, 'threshold': I,
                  'members': A(ORG_MEMBER), 'dismissed': D('Requests dismissed on this computer.', SA)},
                 ['network', 'orgId', 'room', 'relay', 'authPub', 'label', 'threshold', 'members'])),
+    'connectAgain': D('Organizations the signed-in identity is bound to whose current key no longer includes its member key.', SA),
 }, ['network', 'orgs'])
 cmd('org requests', 'Every request in the connected organizations.', {
     'requests': A(O(ORG_REQUEST, ORG_REQUEST_REQ)),

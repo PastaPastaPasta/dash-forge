@@ -74,12 +74,7 @@ pub async fn connect(
     engine: &WriteEngine<'_>,
 ) -> Result<(OrgRecord, Vec<Value>)> {
     let relay = Relay::new(relay_url)?;
-    let messages: Vec<Value> = relay
-        .messages(room)
-        .await?
-        .into_iter()
-        .filter(|m| CEREMONY_TYPES.contains(&m["type"].as_str().unwrap_or_default()))
-        .collect();
+    let messages = ceremony_from_relay(relay.url(), room).await?;
     let state = reduce(&messages, Some(room));
     let network = client.network().key();
     let candidates = signing_ceremonies(&state);
@@ -142,6 +137,159 @@ pub async fn connect(
     Err(Error::Config(format!(
         "no identity on {network} holds this group's key yet: create the organization's identity in multisig.dashhq.org first"
     )))
+}
+
+/// One organization a Forge identity is bound to (its `orgMember`, proof verified).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Membership {
+    pub org_id: String,
+    pub room: String,
+    pub auth_pub: String,
+}
+
+/// The organizations `owner` (a Forge identity) is bound to, read by owner (§10.5 "Inbox by
+/// identity"): its `orgMember` documents whose proof verifies.
+pub async fn memberships(
+    client: &PlatformClient,
+    org_contract: &str,
+    owner: &str,
+) -> Result<Vec<Membership>> {
+    let contract = client.fetch_contract(org_contract).await?;
+    let network = client.network().key();
+    let docs = client
+        .query_documents(
+            &contract,
+            transport::DOC_MEMBER,
+            &[QueryFilter::eq(
+                "$ownerId",
+                FieldValue::identifier(crate::platform::decode_identifier(owner)?),
+            )],
+            &[],
+            MEMBER_DOCS_PAGE,
+            None,
+        )
+        .await?;
+    let mut out: Vec<Membership> = Vec::new();
+    for d in &docs {
+        let (Some(m), Some(room)) = (member_doc(d), d.field_str("room")) else {
+            continue;
+        };
+        if !transport::verify_proof(&m.auth_pub, &network, &m.org, owner, &m.proof) {
+            continue;
+        }
+        let found = Membership {
+            org_id: m.org,
+            room,
+            auth_pub: hex::encode(&m.auth_pub),
+        };
+        if !out.contains(&found) {
+            out.push(found);
+        }
+    }
+    Ok(out)
+}
+
+/// What a fresh computer needs to know an organization a membership names: its local record,
+/// built from the published roster, else from the key ceremony on the relay (returned too, to
+/// keep). `None` when the member's key is not in the organization's current key: connect
+/// again.
+pub async fn discover(
+    client: &PlatformClient,
+    org_contract: &str,
+    m: &Membership,
+) -> Result<Option<(OrgRecord, Vec<Value>)>> {
+    let contract = client.fetch_contract(org_contract).await?;
+    let identity = client.fetch_identity(&m.org_id).await?;
+    let network = client.network().key();
+    let named = first_name(client, &m.org_id).await;
+    if let Some(r) = read_roster(client, &contract, &identity).await? {
+        if r.room != m.room || !r.members.contains(&m.auth_pub) {
+            return Ok(None);
+        }
+        let relay = r
+            .relay
+            .clone()
+            .unwrap_or_else(|| super::DEFAULT_RELAY.to_string());
+        let ceremony = ceremony_from_relay(&relay, &r.room)
+            .await
+            .unwrap_or_default();
+        let state = reduce(&ceremony, Some(&r.room));
+        let found = state.ceremonies.get(&r.cid).filter(|c| c.is_complete());
+        let label = match found {
+            Some(c) if named == m.org_id => c.config.label.clone(),
+            _ => named,
+        };
+        let ceremony = if found.is_some() {
+            ceremony
+        } else {
+            Vec::new()
+        };
+        let record = OrgRecord {
+            network,
+            org_id: m.org_id.clone(),
+            room: r.room.clone(),
+            relay,
+            auth_pub: m.auth_pub.clone(),
+            label,
+            threshold: r.threshold,
+            members: r
+                .members
+                .iter()
+                .enumerate()
+                .map(|(i, auth)| MemberRecord {
+                    index: u32::try_from(i + 1).unwrap_or(u32::MAX),
+                    name: format!("member {}", i + 1),
+                    auth_pub: auth.clone(),
+                })
+                .collect(),
+            dismissed: Vec::new(),
+        };
+        return Ok(Some((record, ceremony)));
+    }
+    let messages = ceremony_from_relay(super::DEFAULT_RELAY, &m.room).await?;
+    let state = reduce(&messages, Some(&m.room));
+    let found = signing_ceremonies(&state).into_iter().find(|c| {
+        c.config.index_of(&m.auth_pub).is_some()
+            && signing_slot(c)
+                .is_some_and(|(k, s)| holds_group_key(&identity, k.key_id, &s.group_public_key))
+    });
+    Ok(found.map(|c| {
+        let record = OrgRecord {
+            network,
+            org_id: m.org_id.clone(),
+            room: m.room.clone(),
+            relay: super::DEFAULT_RELAY.to_string(),
+            auth_pub: m.auth_pub.clone(),
+            label: if named == m.org_id {
+                c.config.label.clone()
+            } else {
+                named
+            },
+            threshold: c.config.threshold,
+            members: c
+                .config
+                .participants
+                .iter()
+                .map(|p| MemberRecord {
+                    index: p.index,
+                    name: p.name.clone(),
+                    auth_pub: p.auth_pub.clone(),
+                })
+                .collect(),
+            dismissed: Vec::new(),
+        };
+        (record, messages.clone())
+    }))
+}
+
+/// The key ceremony's envelopes in `room` on the relay at `relay_url`.
+pub async fn ceremony_from_relay(relay_url: &str, room: &str) -> Result<Vec<Value>> {
+    Ok(Relay::new(relay_url)?
+        .messages(room)
+        .await?
+        .into_iter()
+        .filter(|m| CEREMONY_TYPES.contains(&m["type"].as_str().unwrap_or_default()))
+        .collect())
 }
 
 /// The organization's published roster, when its key is still the identity's enabled group key

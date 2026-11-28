@@ -223,8 +223,8 @@ impl SetArgs {
 /// with the same rules and properties as a personal edit.
 async fn set_for_org(ctx: &Ctx, owner: &str, args: &SetArgs) -> Result<()> {
     crate::org::require_enabled(ctx)?;
-    let record = crate::org::connected_named(ctx, owner)?;
     let client = ctx.connect().await?;
+    let record = crate::org::connected_named(ctx, &client, owner).await?;
     let forge = ctx.target.require_v2()?;
     let stored = core_profile::read_profile(&client, forge, &record.org_id).await?;
     let none = ProfileFields::default();
