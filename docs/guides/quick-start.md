@@ -261,6 +261,8 @@ Anyone can clone a public repository without an identity: `git clone dash://<own
 git clone -c dash.network=testnet dash://<owner>/<repo>
 ```
 
+Without git-remote-dash, a public repository also clones with plain git from dashhq's read-only mirror: `git clone https://git-forge.dashhq.org/<owner>/<repo>.git` (testnet: `testnet-git-forge.dashhq.org`). That mirror is one server run by dashhq, so it is centralized; `dash://` needs no server. [Plain git clones](../FAQ.md#can-i-clone-with-plain-git) has the details.
+
 The repository page's **Clone** box shows this command, with the network filled in.
 
 Or start from an empty clone. `dg repo clone` runs `git clone` and records the network in the clone:

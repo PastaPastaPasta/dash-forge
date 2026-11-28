@@ -107,6 +107,23 @@ Also not available, and by design: hosted CI (bring a [runner](guides/self-host-
 
 Yes: register a DPNS username in the web app (Settings → Choose a username), with `dg auth name register <label>`, or in the Dash bridge. Then `forge.dashhq.org/alice/project`, `@alice` in the web header's jump box, `git clone dash://alice/project` and `dg … alice/project` all resolve it, with a proof-verified DPNS read. `dg repo list --owner` and granting access (`dg collab add`) still take the identity id.
 
+## Can I clone with plain git?
+
+Yes, for public repositories. dashhq runs a read-only mirror, so plain `git` works without git-remote-dash:
+
+```sh
+git clone https://git-forge.dashhq.org/<owner>/<repo>.git          # mainnet
+git clone https://testnet-git-forge.dashhq.org/<owner>/<repo>.git  # testnet
+```
+
+`<owner>` is the identity id or the DPNS name. A repository's Clone card shows its line under **Plain git**.
+
+- **It is centralized.** One server, run by dashhq, copies each repository from Dash Platform and serves it. It is a convenience, not part of Forge: `git clone dash://…` with git-remote-dash reads Platform directly and needs no server.
+- **Read only.** Push with `dash://`.
+- **Public repositories only.** A private one answers "no public repository".
+- **The first clone of a repository it hasn't copied yet** can take a minute; until then the server says so and you can retry.
+- **Check it** against Dash Platform with **Verify** in the Clone card, or `dg verify-mirror <url>`. Anyone can run their own: [forge-gateway](hosting/forge-gateway.md).
+
 ## I lost my laptop. Is my code gone?
 
 No. Your repositories are on Platform and in your storage. Your identity survives as long as you have its 12 words or a backup of the identity file. A browser key on the lost laptop can spend at most its remaining budget, only on Forge, until it expires; revoke it from another device to stop it sooner. See [Backup and recovery](guides/identity-and-keys.md#backup-and-recovery).

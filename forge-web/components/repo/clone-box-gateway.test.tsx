@@ -84,10 +84,17 @@ function advert(oid: string): string {
 }
 
 describe('CloneBox with a gateway', () => {
-  it('shows the network-pinned git clone command upfront and folds remote URL, dg CLI and HTTPS behind More options', async () => {
+  it('shows the Dash remote and the plain-git line upfront, labelled, and folds remote URL and dg CLI behind More options', async () => {
     await render()
     expect(codes()[0]).toBe(cmd.gitClone)
-    expect(host.textContent).toContain('Needs git-remote-dash')
+    expect(codes()[1]).toBe('git clone https://gw.invalid/alice/proj.git')
+    expect(host.textContent).toContain('Dash remote')
+    expect(host.textContent).toContain('Verified from Dash Platform, no server. Needs git-remote-dash')
+    expect(host.textContent).toContain('Plain git')
+    const gw = host.querySelector('[data-testid="gateway-clone"]')
+    expect(morePanel()?.contains(gw)).toBe(false)
+    expect(gw?.textContent).toContain('Read-only copy on dashhq gateway (centralized)')
+    expect(host.querySelector<HTMLAnchorElement>('[data-testid="gateway-about"]')?.getAttribute('href')).toMatch(/^\/docs\/faq\/?#can-i-clone-with-plain-git$/)
     expect(moreButton()?.getAttribute('aria-expanded')).toBe('false')
     expect(morePanel()?.hidden).toBe(true)
     await click(moreButton())
@@ -95,8 +102,7 @@ describe('CloneBox with a gateway', () => {
     expect(morePanel()?.hidden).toBe(false)
     expect(codes()).toContain(cmd.remote)
     expect(codes()).toContain(cmd.dgClone)
-    expect(morePanel()?.textContent).toContain('git clone https://gw.invalid/alice/proj.git')
-    expect(morePanel()?.textContent).toContain('Centralized mirror on dashhq gateway')
+    expect(morePanel()?.textContent).not.toContain('https://')
   })
 
   it('copies the git clone command whole and says so', async () => {
@@ -124,11 +130,11 @@ describe('CloneBox with a gateway', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))))
     await render()
     expect(codes()[0]).toBe(cmd.gitClone)
-    await click(moreButton())
     await click(host.querySelector('[data-testid="gateway-verify"]'))
     const verdict = host.querySelector('[data-testid="gateway-verdict"]')?.textContent ?? ''
-    expect(verdict).toContain('could not be checked')
-    expect(verdict).toContain('The Dash remote does not need it')
+    // A fetch the browser blocked (no CORS headers on the gateway's reply) or that never connected.
+    expect(verdict).toContain("Couldn't reach the gateway for this repo. One it hasn't copied before can take a minute: try again shortly.")
+    expect(verdict).toContain("The Dash remote doesn't need it")
     expect(codes()[0]).toBe(cmd.gitClone)
   })
 
@@ -167,9 +173,12 @@ describe('CloneBox with a gateway', () => {
 })
 
 describe('CloneBox without a gateway', () => {
-  it('shows no HTTPS row inside More options', async () => {
+  it('without a gateway: no HTTPS row and no labels, the Dash remote alone', async () => {
     g.gateway = null
     await render()
+    expect(host.textContent).not.toContain('Plain git')
+    expect(host.textContent).not.toContain('Dash remote')
+    expect(host.textContent).toContain('Needs git-remote-dash')
     await click(moreButton())
     expect(host.querySelector('[data-testid="gateway-clone"]')).toBeNull()
     expect(codes().some((c) => c.includes('https://'))).toBe(false)
