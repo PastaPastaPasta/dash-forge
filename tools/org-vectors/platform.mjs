@@ -367,6 +367,9 @@ export async function platformVectors(dtiPath, source) {
     { name: 'another request landed with its nonce', parts: [part({ claim: true, nonceSpent: true, takenByOther: true })], expect: { parts: ['expired'], status: 'expired' } },
     { name: 'another request landed with its nonce, whatever its document shows', parts: [part({ doc: 'same', claim: true, nonceSpent: true, takenByOther: true })], expect: { parts: ['expired'], status: 'expired' } },
     { name: 'a create whose document exists with other fields, nonce spent', parts: [part({ doc: 'different', nonceSpent: true, claim: true })], expect: { parts: ['expired'], status: 'expired' } },
+    { name: 'a create whose document exists with other fields, nonce free', parts: [part({ doc: 'different' })], expect: { parts: ['expired'], status: 'expired' } },
+    { name: 'a create edited since (later revision), nonce spent, claimed', parts: [part({ doc: 'later', nonceSpent: true, claim: true })], expect: { parts: ['done'], status: 'done' } },
+    { name: 'a create edited since (later revision), no claim', parts: [part({ doc: 'later', nonceSpent: true })], expect: { parts: ['expired'], status: 'expired' } },
     { name: 'a replace waiting to land: its document is at the revision it replaces', parts: [part({ action: 'replace', doc: 'base' })], expect: { parts: ['ready'], status: 'ready' } },
     { name: 'a replace whose document changed under it, nonce free', parts: [part({ action: 'replace', doc: 'different' })], expect: { parts: ['expired'], status: 'expired' } },
     { name: 'a replace whose document is gone', parts: [part({ action: 'replace', doc: 'absent' })], expect: { parts: ['expired'], status: 'expired' } },
@@ -420,6 +423,6 @@ export async function platformVectors(dtiPath, source) {
     reassembly,
     merge,
     requestIds,
-    status: { threshold: base.threshold, size: members.length, partRules: 'doc: absent; present (delete: the document exists); same / different (create: exists with / without the part\'s fields; replace: at the part\'s revision with / without them); base (replace: at the revision it replaces); later (replace: past its revision). expired: takenByOther (wins over everything below). landed: create same; replace same, or later with nonce spent and a claim; delete absent with nonce spent and a claim. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, a replace whose document is not at base, or a delete whose document is gone. ready: shares >= N. else collecting.', cases: statusCases },
+    status: { threshold: base.threshold, size: members.length, partRules: 'doc: absent; present (delete: the document exists); same / different (create: at revision 1 with / without the part\'s fields; replace: at the part\'s revision with / without them); base (replace: at the revision it replaces); later (past the part\'s revision). expired: takenByOther (wins over everything below). landed: create or replace same, or later with nonce spent and a claim; delete absent with nonce spent and a claim. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, a create whose document has other fields, a replace whose document is not at base, or a delete whose document is gone. ready: shares >= N. else collecting.', cases: statusCases },
   };
 }

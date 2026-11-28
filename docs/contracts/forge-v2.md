@@ -19,7 +19,7 @@ The ids below are copied from the deployment records, `forge-contracts/deploymen
 | forge-community | `83qUBePxmhKgajCUC8Z6hrEXRytVSsTjPgrZ2Uuxdbyv` | `4heUXTZDrbDsy3tqVYJJP2wLCNkqUXRZzF9VQNaRq28o` |
 | forge-meta | `9M8qFSM4vSsnRArtEzeFkTJb5dHso3qxfVWUGkwHguQp` (version 1, with `vaultEntry`, `board` and `card` from the start) | `6arQJW8yxf7ZfqrwJU92CtzD5JoG51uWw6koR9Haqw93` (version 3: UPDATE-2 and UPDATE-3 in place) |
 | forge-user | `hxrzsQRUwprcekNur1N9ygc1zLX8jAuBaRTvnq3HmgK` (2026-11-26) | `46phmETaASw6L1AsBc3MDTCQTMGkiVV8hGwsgi5ay6BU` (2026-11-25) |
-| forge-org | not registered (organizations are testnet-only) | not registered yet |
+| forge-org | not registered (organizations are testnet-only) | `61dAELEsWbi1Nz9kyVo4WY2GGAUBzMw8AzNn74vhJHjx` (2026-11-28) |
 | contract group | `H5gXhGVabbSdDdZMesVXevfbvNU8CgSCcHdhx6ekL2eJ` | `EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC` |
 | deployer | `CL4UTHLAyjYDvWNSgzmY7cXiBBba6fDt4BarAqt2XT3y` | `3pjHaytsQJg5aKZj3VeqwBPccN7uN3bCJiUNkT8KUBwM` |
 

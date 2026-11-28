@@ -29,30 +29,32 @@ function groupContractJson(schema, id, ownerId) {
   return { $formatVersion: '1', id, ownerId, version: 1, config: schema.config, documentSchemas: schema.documentSchemas };
 }
 
-function loadGroupSchema(schemaFile) {
-  return JSON.parse(readFileSync(join(ROOT, schemaFile), 'utf8'));
+function loadGroupSchema(schemaFile, root = ROOT) {
+  return JSON.parse(readFileSync(join(root, schemaFile), 'utf8'));
 }
 
 /**
  * `--emit <file>` writes the registered JSON under a placeholder owner (for
- * `tools/contract-validate`, which gives it its own id); otherwise registers it.
+ * `tools/contract-validate`, which gives it its own id); otherwise registers it. `injected` (tests):
+ * `evo` (an evo-sdk module), `root` (the forge-contracts directory), `settleMs` (a re-read's wait).
  */
-export async function deployGroupContract(argv, { recordKey, schemaFile, label, mainnetApproval = 'i-have-owner-approval' }) {
+export async function deployGroupContract(argv, { recordKey, schemaFile, label, mainnetApproval = 'i-have-owner-approval' }, injected = {}) {
+  const root = injected.root ?? ROOT;
   const args = parseArgs(argv);
   if ('emit' in args) {
     if (typeof args.emit !== 'string') throw new Error('--emit <file> needs a file name');
     const owner = b58encode(Buffer.alloc(32, 7));
-    writeFileSync(resolve(args.emit), `${JSON.stringify(groupContractJson(loadGroupSchema(schemaFile), contractId(owner, 1n), owner), null, 2)}\n`);
+    writeFileSync(resolve(args.emit), `${JSON.stringify(groupContractJson(loadGroupSchema(schemaFile, root), contractId(owner, 1n), owner), null, 2)}\n`);
     return;
   }
   const network = args.network || 'testnet';
   if (network === 'mainnet' && !args[mainnetApproval]) throw new Error(`mainnet registration needs the owner’s approval (--${mainnetApproval})`);
   if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
   const key = network === 'devnet' ? `devnet-${args['devnet-name'] || 'sakura'}` : network;
-  const depFile = join(ROOT, 'deployments', `${key}.json`);
+  const depFile = join(root, 'deployments', `${key}.json`);
   const lock = args['dry-run'] ? null : takeLock(depFile);
   try {
-    await register(args, { recordKey, schemaFile, label }, network, depFile);
+    await register(args, { recordKey, schemaFile, label }, network, depFile, { ...injected, root });
   } finally {
     if (lock) rmSync(lock, { force: true });
   }
@@ -65,10 +67,10 @@ function shapeOf(c) {
   return { owner, types: types.sort() };
 }
 
-async function register(args, { recordKey, schemaFile, label }, network, depFile) {
+async function register(args, { recordKey, schemaFile, label }, network, depFile, injected) {
   const readDep = () => JSON.parse(readFileSync(depFile, 'utf8'));
   const putRecord = (r) => { const fresh = readDep(); fresh[recordKey] = r; writeDep(depFile, fresh); };
-  const pause = () => new Promise((r) => setTimeout(r, 2000));
+  const pause = () => new Promise((r) => setTimeout(r, injected.settleMs ?? 2000));
   const dep = readDep();
   const groupId = dep.v2?.contractGroupId ?? dep.v2?.forgeCore?.contractGroupId;
   if (!groupId) throw new Error(`${depFile} records no contract group`);
@@ -79,7 +81,7 @@ async function register(args, { recordKey, schemaFile, label }, network, depFile
   const crit = rec.identityKeys.find((x) => x.purpose === 'AUTHENTICATION' && x.securityLevel === 'CRITICAL');
   if (!crit) throw new Error('the identity has no CRITICAL authentication key');
 
-  const { EvoSDK, DataContract, DataContractCreateTransition, PrivateKey, IdentityPublicKey } = await loadEvoSdk();
+  const { EvoSDK, DataContract, DataContractCreateTransition, PrivateKey, IdentityPublicKey } = injected.evo ?? await loadEvoSdk();
   const sdk = new EvoSDK({ network, addresses: dep.dapiAddresses, trusted: true, settings: PUT_SETTINGS, version: PROTOCOL_VERSION });
   await sdk.connect();
   const chainNonce = async () => BigInt((await sdk.identities.nonce(ownerId)) ?? 0n) & 0xFFFFFFFFFFn;
@@ -92,7 +94,7 @@ async function register(args, { recordKey, schemaFile, label }, network, depFile
     }
     return null;
   };
-  const schema = loadGroupSchema(schemaFile);
+  const schema = loadGroupSchema(schemaFile, injected.root);
   const prior = dep[recordKey];
   if (prior?.contractId && prior.contractGroupId === groupId) {
     const found = await fetchSettled(prior.contractId);
@@ -119,7 +121,9 @@ async function register(args, { recordKey, schemaFile, label }, network, depFile
   if (!group || group.ownerId !== ownerId) throw new Error(`group ${groupId} not found or not owned by ${ownerId}`);
   if (Array.isArray(group.adminIds) && group.adminIds.length > 0) throw new Error(`group ${groupId} has admins`);
 
-  const nonce = (await chainNonce()) + 1n;
+  // A reservation whose create may still land keeps its nonce: a fresh one would register a second contract
+  const reserved = prior?.status === 'broadcasting' && prior.contractGroupId === groupId && prior.identityNonce !== undefined;
+  const nonce = reserved ? BigInt(prior.identityNonce) : (await chainNonce()) + 1n;
   const id = contractId(ownerId, nonce);
   const contract = DataContract.fromJSON(groupContractJson(schema, id, ownerId), true, PROTOCOL_VERSION);
   const transition = new DataContractCreateTransition(contract, nonce, PROTOCOL_VERSION);
@@ -144,12 +148,12 @@ async function register(args, { recordKey, schemaFile, label }, network, depFile
     reservedAt: new Date().toISOString(),
     sourceFile: `forge-contracts/${schemaFile}`,
   };
-  const reserved = readDep();
-  if (reserved[recordKey] && reserved[recordKey].contractGroupId !== groupId) {
-    reserved[`${recordKey}Superseded`] = [...(reserved[`${recordKey}Superseded`] ?? []), reserved[recordKey]];
+  const fresh = readDep();
+  if (fresh[recordKey] && fresh[recordKey].contractGroupId !== groupId) {
+    fresh[`${recordKey}Superseded`] = [...(fresh[`${recordKey}Superseded`] ?? []), fresh[recordKey]];
   }
-  reserved[recordKey] = reservation;
-  writeDep(depFile, reserved);
+  fresh[recordKey] = reservation;
+  writeDep(depFile, fresh);
   await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
   if (!(await fetchSettled(id))) throw new Error(`broadcast confirmed but ${id} cannot be fetched yet: rerun to confirm the reservation`);
   let after = await sdk.identities.balance(ownerId);
