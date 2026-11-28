@@ -105,8 +105,6 @@ fn contracts() -> &'static [DataContract; 3] {
     })
 }
 
-/// A generated contract as the client loads it: for tests of what the client reads off a
-/// contract's shape (the RC2 build flags).
 /// forge-org (`contracts/org/forge-org.json`), fully validated, owned by [`OWNER`].
 #[cfg(test)]
 pub(crate) fn loaded_org() -> crate::platform::LoadedContract {
@@ -131,6 +129,8 @@ pub(crate) fn loaded_org() -> crate::platform::LoadedContract {
     crate::platform::LoadedContract::for_tests(contract.clone())
 }
 
+/// A generated contract as the client loads it: for tests of what the client reads off a
+/// contract's shape (the RC2 build flags).
 #[cfg(test)]
 pub(crate) fn loaded(c: ForgeContract) -> crate::platform::LoadedContract {
     let i = CONTRACTS

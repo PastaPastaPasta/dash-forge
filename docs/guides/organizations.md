@@ -94,7 +94,7 @@ The signature that completes a request also puts it on Platform. If that stops p
 dg org publish acme
 ```
 
-This makes one request with two writes: the organization's roster (its members, threshold and signing key, from the key ceremony) and the "N of M" link in its profile, so every visitor sees "Organization · N of M". Its other profile fields are kept. Before signing, each member's dg checks that the roster is exactly the organization's key ceremony and that the link names its real N of M. Once it is published, members sign from their phrase and Platform alone, on any computer. After the organization re-runs its key ceremony in multisig.dashhq.org, publish it again.
+This makes one request with up to two writes, each left out when it is already there (and nothing at all when both are): the organization's roster (its members, threshold and signing key, from the key ceremony) and the "N of M" link in its profile, so every visitor sees "Organization · N of M". Its other profile fields are kept. Before signing, each member's dg checks that the roster is exactly the organization's key ceremony and that the link names its real N of M. Once it is published, members sign from their phrase and Platform alone, on any computer. After the organization re-runs its key ceremony in multisig.dashhq.org, publish it again.
 
 ### Requests made before the move to Platform
 

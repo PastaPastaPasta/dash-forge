@@ -340,7 +340,10 @@ pub async fn publish(
         .is_some_and(|r| r.same_key(roster));
     if !current {
         let mut published = roster.clone();
-        published.relay = roster.relay.clone().filter(|r| r.len() <= MAX_RELAY);
+        published.relay = roster
+            .relay
+            .clone()
+            .filter(|r| !r.is_empty() && r.len() <= MAX_RELAY);
         let props = published.props();
         let nonce = nonces.take(org_contract).await?;
         writes.push(match &stored {
