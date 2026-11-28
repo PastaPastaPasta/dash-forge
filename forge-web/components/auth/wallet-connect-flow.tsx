@@ -3,8 +3,9 @@
 /**
  * "Use my Dash wallet" with App Connect v2 (`lib/auth/app-connect-v2.ts`; docs/design/wallet-login.md).
  *
- * 1. Request: an App Connect v2 QR, "Copy link" and "Open in wallet" (on a phone the link leads and
- *    the QR sits in a disclosure; the link carries a callback to `/connect/`), with a countdown. ONE
+ * 1. Request: an App Connect v2 QR, "Open in wallet" and "Copy link" on every device (a phone's
+ *    wallet may be on another phone, a computer's may be DashPay Desktop; on a phone the link leads
+ *    and the QR follows; the link carries a callback to `/connect/`), with a countdown. ONE
  *    request, one approval, one key bound to the whole Forge contract group with a budget and an
  *    expiry; those terms, the anti-phishing detail ({@link ScanSafety}) and the wallet versions are
  *    under Details, with one line ({@link ScanOnlyHere}) saying where to scan (SECU-08). The poll
@@ -28,7 +29,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Copy, Fingerprint, RefreshCw, Smartphone } from 'lucide-react'
+import { Copy, Fingerprint, RefreshCw, Wallet } from 'lucide-react'
 import { FiatNote } from '@/components/ui/fiat-note'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -143,10 +144,7 @@ function awaitGrantWithWake(
   return awaitV2Grant(sdk, req, { ...rest, trigger }).finally(stop)
 }
 
-/**
- * A phone or tablet browser: the wallet is on this device, so a link beats a QR. Dash Wallet
- * exists for Android and iOS only, so a desktop browser gets the QR alone.
- */
+/** A phone or tablet browser: "Open in wallet" leads and the QR follows. Both always show. */
 function onMobile(): boolean {
   if (typeof navigator === 'undefined') return false
   const uaData = (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData
@@ -639,7 +637,7 @@ export function WalletConnectFlow({
       data-testid="wallet-deep-link"
       className={mobile ? MOBILE_LINK : DESKTOP_LINK}
     >
-      <Smartphone className="h-4 w-4" aria-hidden /> Open in wallet
+      <Wallet className="h-4 w-4" aria-hidden /> Open in wallet
     </a>
   ) : null
   return (
@@ -648,30 +646,21 @@ export function WalletConnectFlow({
         <p className="text-center text-[15px] font-medium">{mode === 'renew' ? 'Approve in your wallet' : 'Scan with your Dash wallet'}</p>
       ) : null}
       {request ? (
-        mobile ? (
-          <>
-            {openLink}
-            <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              <summary className="cursor-pointer coarse:py-3">Wallet on another device? Show the QR code</summary>
-              <div className="pt-2">
-                <Qr value={request.uri} label="Wallet login request" size={180} caption={null} />
-              </div>
-            </details>
-          </>
-        ) : (
-          <>
-            <Qr value={request.uri} label="Wallet login request" size={220} caption={null} />
-            <p className="text-center text-dense text-anvil-600 dark:text-anvil-300">Open DashPay → Connections and scan.</p>
-          </>
-        )
+        <>
+          {mobile ? openLink : null}
+          <Qr value={request.uri} label="Wallet login request" size={mobile ? 180 : 220} caption={null} />
+          <p className="text-center text-dense text-anvil-600 dark:text-anvil-300">
+            {mobile ? 'Wallet on another device? Open DashPay → Connections and scan.' : 'Open DashPay → Connections and scan.'}
+          </p>
+        </>
       ) : error ? null : (
         <Waiting label={preparing} />
       )}
       {request ? <Countdown until={request.expiresAt} /> : null}
-      {request && !mobile ? (
+      {request ? (
         <div className="flex justify-center gap-2">
           <CopyLink uri={request.uri} />
-          {openLink}
+          {mobile ? null : openLink}
         </div>
       ) : null}
       {request ? <ScanOnlyHere /> : null}
