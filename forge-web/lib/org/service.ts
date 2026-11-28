@@ -227,17 +227,24 @@ async function loadRoster(sdk: EvoSDK, port: OrgPort, record: OrgRecord): Promis
     const named = c?.status === 'complete' ? { label: c.config.label, names: fromDoc.members.map((a) => c.config.participants.find((p) => p.authPub === a)?.name ?? '') } : {}
     return { ...fromDoc, ...named }
   }
-  if (state === null) {
-    let messages = cachedCeremony(record.network, record.orgId)
-    if (messages === null) {
-      messages = ceremonyOnly((await pullRoom(record.relay, record.room)).messages)
-      cacheCeremony(record.network, record.orgId, messages)
-    }
-    state = reduce(messages, { room: record.room })
+  const resolves = async (candidate: RoomState): Promise<OrgIdentity | null> => {
+    const found = await findOrgIdentity(sdk, candidate)
+    return found?.orgId === record.orgId ? found : null
   }
-  ceremonyStates.set(record.orgId, state)
-  const found = await findOrgIdentity(sdk, state)
-  if (found === null || found.orgId !== record.orgId) throw new Error("This group's keys no longer control the organization's identity. Reconnect it from its invite.")
+  const kept = state ?? (() => {
+    const cached = cachedCeremony(record.network, record.orgId)
+    return cached ? reduce(cached, { room: record.room }) : null
+  })()
+  let found = kept ? await resolves(kept) : null
+  if (found && kept) ceremonyStates.set(record.orgId, kept)
+  if (!found) {
+    const messages = ceremonyOnly((await pullRoom(record.relay, record.room)).messages)
+    const fresh = reduce(messages, { room: record.room })
+    found = await resolves(fresh)
+    if (!found) throw new Error("This group's keys no longer control the organization's identity. Reconnect it from its invite.")
+    cacheCeremony(record.network, record.orgId, messages)
+    ceremonyStates.set(record.orgId, fresh)
+  }
   return rosterFromIdentity(found, record.relay)
 }
 
@@ -392,9 +399,10 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
       visible.set(p.id, d === null ? { landed: false, superseded: false, absent: false } : await writtenOnChain(sdk, p.id, d, current !== undefined && isNonceSpent(current, d.nonce), p.status === 'executed'))
     }),
   )
+  const reviews = new Map(parts.map(({ p, d }) => [p.id, d === null ? null : reviewDecoded(d, p.body, ctx)]))
   const landedBy = new Map<string, { readonly request: string; readonly signable: string }[]>()
   for (const { r, p, d } of parts) {
-    if (!d || visible.get(p.id)?.landed !== true) continue
+    if (!d || visible.get(p.id)?.landed !== true || p.status === 'invalid' || reviews.get(p.id)?.length !== 0) continue
     const slot = `${d.contractId}:${d.nonce}`
     landedBy.set(slot, [...(landedBy.get(slot) ?? []), { request: r.id, signable: d.signable }])
   }
@@ -413,7 +421,7 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
     const onChain = seen?.landed === true && !takenByOther
     const gone = d !== null && goneCreate(d.action, p.status === 'executed', spent, seen?.absent, takenByOther)
     const superseded = seen?.superseded === true
-    const problems = d === null ? ['its transition cannot be read'] : [...reviewDecoded(d, p.body, ctx), ...(reused ? ['it uses the same nonce as another part of this request'] : [])]
+    const problems = d === null ? ['its transition cannot be read'] : [...(reviews.get(p.id) ?? []), ...(reused ? ['it uses the same nonce as another part of this request'] : [])]
     facts.set(p.id, { reviewProblems: problems, nonceProblem: d && current !== undefined && !spent ? nonceProblem(d, current) : null, nonceUnread, nonce: d?.nonce ?? null, contractId: d?.contractId ?? null, spent: spent || takenByOther, onChain, gone, superseded })
   }
   await resolveMemberNames(sdk, members, opts.network)

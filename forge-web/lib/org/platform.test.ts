@@ -6,6 +6,9 @@ import { base58Encode } from '../auth/base58'
 import { participantKeys, seedFromMnemonic } from './derive'
 import { envelopeId, sealEnvelope, type Envelope } from './envelope'
 import { FMT_DEFLATE, FMT_JSON, PART_BYTES, encodeMessage, memberIdentities, mergeLogs, openShare, reassemble, sealShare, signMemberProof, verifyMemberProof, type MemberRow, type MessageRow } from './platform'
+import { deflateSync } from 'fflate'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { parseDeclaredOrg } from './gate'
 import { rosterFields, rosterFromDoc, rosterMismatch, type Roster } from './roster'
 import { hex, unhex } from './util'
 
@@ -57,6 +60,17 @@ describe('orgMessage parts', () => {
     const digest = new Uint8Array(32)
     crypto.getRandomValues(digest)
     expect(reassemble([{ id: 'x', ownerId: OWNER, createdAt: 1, digest, part: 0, parts: 1, fmt: FMT_JSON, body: text }], V.room)).toEqual([])
+  })
+
+  it('stops inflating a deflate bomb at the payload limit', () => {
+    const bomb = deflateSync(new Uint8Array(4 * 1024 * 1024), { level: 9 })
+    const digest = sha256(bomb)
+    expect(bomb.length).toBeLessThan(PART_BYTES)
+    expect(reassemble([{ id: 'b', ownerId: OWNER, createdAt: 1, digest, part: 0, parts: 1, fmt: FMT_DEFLATE, body: bomb }], V.room)).toEqual([])
+  })
+
+  it('reads no network from a declared link with a malformed escape', () => {
+    expect(parseDeclaredOrg('https://multisig.dashhq.org/?network=%E0%A4%A#org=2of3', 'testnet')).toBeNull()
   })
 
   it('merges member logs: one copy per envelope, ordered by when Platform first carried it', () => {

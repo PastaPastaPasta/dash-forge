@@ -41,6 +41,7 @@ let latest = 0
 
 const orgIdentity = { id: { toBase58: () => ORG }, publicKeys: [{ keyId: 2, keyTypeNumber: 1, purposeNumber: 0, securityLevelNumber: 2, data: GROUP_KEY }] }
 let relayUp = true
+let relayShows = Infinity
 let nonceDown = false
 
 const sdk = {
@@ -100,13 +101,15 @@ beforeAll(async () => {
     expect(u.pathname).toBe(`/v1/rooms/${V.room}/messages`)
     expect(init?.method ?? 'GET').toBe('GET')
     const after = Number(u.searchParams.get('after') ?? 0)
-    return new Response(JSON.stringify({ messages: room.slice(after), next: room.length, more: false }), { status: 200 })
+    const shown = room.slice(0, relayShows)
+    return new Response(JSON.stringify({ messages: shown.slice(after), next: shown.length, more: false }), { status: 200 })
   })
 })
 afterAll(() => vi.unstubAllGlobals())
 beforeEach(() => {
   port = fakeOrgPort()
   relayUp = true
+  relayShows = Infinity
   resetOrgCaches()
 })
 
@@ -276,6 +279,16 @@ describe('organization requests on Platform', () => {
     } finally {
       nonceDown = false
     }
+  })
+
+  it('a half-finished ceremony from the relay is not kept: the next load asks the relay again', async () => {
+    const r1 = await connected(0)
+    resetOrgCaches()
+    relayShows = 5
+    await expect(loadOrg(sdk, r1, readOpts())).rejects.toThrow(/no longer control/)
+    relayShows = Infinity
+    const view = await loadOrg(sdk, r1, readOpts())
+    expect(view.roster.cid).toBeTruthy()
   })
 
   it('a decline is recorded and does not block', async () => {

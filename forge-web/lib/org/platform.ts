@@ -3,7 +3,7 @@ import { ed25519 } from '@noble/curves/ed25519.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { concatBytes } from '@noble/hashes/utils.js'
-import { Inflate, deflateSync, inflateSync } from 'fflate'
+import { Inflate, deflateSync } from 'fflate'
 
 import { verifyEnvelope, type Envelope } from './envelope'
 import { canonical, hex, utf8 } from './util'
@@ -58,32 +58,40 @@ export interface CarriedEnvelope {
 }
 
 function decodePayload(fmt: number, payload: Uint8Array): unknown {
-  const bytes = fmt === FMT_DEFLATE ? inflateBounded(payload) : payload
+  const bytes = fmt === FMT_DEFLATE ? inflateExact(payload) : payload
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   const value = JSON.parse(text) as unknown
   return canonical(value) === text ? value : null
 }
 
+/** Input fed to the inflater at a time: deflate expands a byte at most about 1,032 times, so one step stays small. */
+const INFLATE_STEP = 256
+
+/** The one deflate stream `payload` holds, stopped as soon as its output passes {@link MAX_PAYLOAD}; throws when cut short. */
 function inflateBounded(payload: Uint8Array): Uint8Array {
   const chunks: Uint8Array[] = []
   let total = 0
-  let ended = false
-  const inflate = new Inflate((chunk, final) => {
+  const inflate = new Inflate((chunk) => {
     total += chunk.length
     if (total > MAX_PAYLOAD) throw new Error('message too large')
     chunks.push(chunk)
-    if (final) ended = true
   })
-  inflate.push(payload, true)
-  if (!ended || endsEarly(payload)) throw new Error('not exactly one deflate stream')
+  for (let at = 0; at < payload.length; at += INFLATE_STEP) inflate.push(payload.subarray(at, at + INFLATE_STEP), at + INFLATE_STEP >= payload.length)
   return concatBytes(...chunks)
+}
+
+/** The payload inflated, refusing anything but exactly one stream ending at its last byte. */
+function inflateExact(payload: Uint8Array): Uint8Array {
+  const out = inflateBounded(payload)
+  if (endsEarly(payload)) throw new Error('bytes after the deflate stream')
+  return out
 }
 
 /** A raw deflate stream's last byte always holds some of its bits: one that still inflates without it had bytes after its end. */
 function endsEarly(payload: Uint8Array): boolean {
   if (payload.length < 2) return false
   try {
-    inflateSync(payload.subarray(0, -1))
+    inflateBounded(payload.subarray(0, -1))
     return true
   } catch {
     return false

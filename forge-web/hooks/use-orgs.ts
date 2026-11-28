@@ -108,6 +108,7 @@ export function useOrgPoller(): void {
             const view = await loadOrg(sdk, record, { network: DEFAULT_NETWORK, forge, port })
             if (cancelled) return
             if (!known.has(record.orgId)) saveOrg(view.record)
+            else if (!view.reconnect && view.record.authPub !== record.authPub) saveOrg({ ...record, authPub: view.record.authPub })
             useOrgsStore.setState((s) => {
               const errors = { ...s.errors }
               delete errors[record.orgId]
