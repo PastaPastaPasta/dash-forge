@@ -114,4 +114,4 @@ from `forge-contracts/contracts/user/forge-user.json` by the same deployer at id
 recorded with the same contract group (`contractGroupId`). It holds the `state`, `share` and `grant` types of
 [identity-synced state](../../../docs/design/identity-synced-state.md); the four contracts above are
 unchanged. It is recorded in `forge-contracts/deployments/testnet.json` (`user`), and
-`user-sync-2026-11-25.md` is the live proof on testnet. It is not registered on mainnet.
+`forge-org-2026-11-28.md` records forge-org's testnet registration, its proved read and one write of each type. `user-sync-2026-11-25.md` is the live proof on testnet. It is not registered on mainnet.
