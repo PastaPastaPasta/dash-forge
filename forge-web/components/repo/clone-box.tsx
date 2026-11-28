@@ -168,10 +168,7 @@ export function provedRefs(home: RepoHome): ProvedRef[] {
   })
 }
 
-/** The gateway did not answer in a way the browser could read. */
-const UNREACHABLE = 'unreachable'
-
-type VerifyState = { kind: 'idle' } | { kind: 'checking' } | { kind: 'done'; check: GatewayCheck } | { kind: 'error'; message: string }
+type VerifyState = { kind: 'idle' } | { kind: 'checking' } | { kind: 'done'; check: GatewayCheck } | { kind: 'unreachable' } | { kind: 'error'; message: string }
 
 const short = (oid: string | null): string => (oid === null ? '-' : oid.slice(0, 10))
 
@@ -194,7 +191,7 @@ export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; ho
     } catch (e) {
       // A fetch the browser blocked or that never connected (a reply without CORS headers, such as
       // the gateway's first-copy 503) is a TypeError with no detail worth showing.
-      setState({ kind: 'error', message: e instanceof TypeError ? UNREACHABLE : errorMessage(e) })
+      setState(e instanceof TypeError ? { kind: 'unreachable' } : { kind: 'error', message: errorMessage(e) })
     }
   }
   return (
@@ -206,7 +203,7 @@ export function GatewayRow({ gateway, home, addr }: { gateway: GatewayConfig; ho
           Verify
         </button>{' '}
         ·{' '}
-        <Link href={DOCS.plainGitClone} className={HELP_LINK} data-testid="gateway-about">
+        <Link href={DOCS.plainGitClone} className={HELP_LINK} aria-label="About plain git clones" data-testid="gateway-about">
           About
         </Link>
       </p>
@@ -225,10 +222,10 @@ function GatewayVerdict({ state, url }: { state: VerifyState; url: string }): JS
       </p>
     )
   }
-  if (state.kind === 'error') {
+  if (state.kind === 'unreachable' || state.kind === 'error') {
     return (
       <p role="status" className={`${base} text-caution-700 dark:text-caution-400`} data-testid="gateway-verdict">
-        {state.message === UNREACHABLE
+        {state.kind === 'unreachable'
           ? "Couldn't reach the gateway for this repo. One it hasn't copied before can take a minute: try again shortly. The Dash remote doesn't need it."
           : `The gateway could not be checked (${state.message}). The Dash remote doesn't need it.`}
       </p>
