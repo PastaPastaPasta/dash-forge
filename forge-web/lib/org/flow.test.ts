@@ -1,16 +1,23 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
 import { publicKeyHash } from '../auth/identity-lookup'
 import { DEPLOYMENTS, forgeV2Ids, type ForgeIds } from '../deployments'
 import { membershipData } from '../repo/writes'
 import type { RepoRef } from '../repo/contract'
+import { contractOf } from '../repo/source'
 import { verify } from './bls'
-import type { Envelope } from './envelope'
-import { connect, createRequest, declineRequest, freeNonces, loadOrg, signRequest, verifyInvite } from './service'
+import { buildUnsigned } from './transition'
+import { approveEnvelope, connect, createRequest, myShare, declineRequest, finishRequest, freeNonces, loadOrg, openNonces, resetOrgCaches, signRequest, verifyInvite, type ConnectCandidate } from './service'
+import { fakeOrgPort, type FakeOrgPort } from './fake-port'
+import { encodeMessage } from './platform'
+import { rosterFields, rosterFromIdentity } from './roster'
+import { envelopeId, sealEnvelope, type Envelope } from './envelope'
+import type { WriteAuth } from '../sdk/write'
+import type { OrgRecord } from './store'
 import { participantKeys, seedFromMnemonic } from './derive'
 import { hex } from './util'
 
@@ -27,7 +34,6 @@ const ALICE = base58Encode(new Uint8Array(32).fill(5))
 const REPO: RepoRef = { forge, repoId: base58Encode(new Uint8Array(32).fill(9)), ownerId: ORG, name: 'widgets', visibility: 'public' }
 const GROUP_KEY = V.keys['high']!.groupPublicKey
 const RELAY = 'https://multisig.dashhq.org'
-const opts = { network: 'testnet' as const, forge }
 
 const room: { envelope: unknown }[] = []
 const broadcasts: { signable: string; signature: string }[] = []
@@ -35,17 +41,25 @@ const stored = new Map<string, { revision: bigint; data: Record<string, unknown>
 let nonce = 0n
 let latest = 0
 
+const orgIdentity = { id: { toBase58: () => ORG }, publicKeys: [{ keyId: 2, keyTypeNumber: 1, purposeNumber: 0, securityLevelNumber: 2, data: GROUP_KEY }] }
+let relayUp = true
+let relayShows = Infinity
+let nonceDown = false
+let unreadable: string | null = null
+
 const sdk = {
   version: () => latest,
   identities: {
-    byPublicKeyHash: async (hash: string) =>
-      hash === publicKeyHash(GROUP_KEY)
-        ? { id: { toBase58: () => ORG }, publicKeys: [{ keyId: 2, keyTypeNumber: 1, purposeNumber: 0, securityLevelNumber: 2, data: GROUP_KEY }] }
-        : undefined,
-    contractNonce: async () => nonce,
+    fetch: async (id: string) => (id === ORG ? orgIdentity : undefined),
+    byPublicKeyHash: async (hash: string) => (hash === publicKeyHash(GROUP_KEY) ? orgIdentity : undefined),
+    contractNonce: async () => {
+      if (nonceDown) throw new Error('DAPI unavailable')
+      return nonce
+    },
   },
   documents: {
     get: async (_c: string, _t: string, id: string) => {
+      if (id === unreadable) throw new Error('DAPI unavailable')
       const doc = stored.get(id)
       return doc ? { revision: doc.revision, toObject: () => doc.data } : undefined
     },
@@ -68,30 +82,46 @@ const sdk = {
   },
 } as unknown as EvoSDK
 
-const people = V.members.map((m) => {
+const people = V.members.map((m, i) => {
   const seed = seedFromMnemonic(m.mnemonic, m.passphrase)
-  return { seed, keys: participantKeys(seed) }
+  const identityId = base58Encode(new Uint8Array(32).fill(40 + i))
+  const auth: WriteAuth = { identityId, network: 'testnet', getSigningKeyWif: () => 'unused' }
+  return { seed, keys: participantKeys(seed), auth }
 })
+
+let port: FakeOrgPort
+const opts = (who: number) => ({ network: 'testnet' as const, forge, port, auth: people[who]!.auth })
+const readOpts = () => ({ network: 'testnet' as const, forge, port })
+const writer = (fill: number, role = 1) => ({ action: 'create' as const, contractId: forge.core, documentType: 'writer', data: membershipData(REPO, base58Encode(new Uint8Array(32).fill(fill)), { role }) })
 
 beforeAll(async () => {
   const evo = await import('@dashevo/evo-sdk')
   latest = await evo.EvoSDK.getLatestVersionNumber()
   for (const e of V.ceremonyMessages) room.push({ envelope: e })
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    if (!relayUp) throw new Error('relay unreachable')
     const u = new URL(url)
     expect(u.origin).toBe(RELAY)
     expect(u.pathname).toBe(`/v1/rooms/${V.room}/messages`)
-    if (init?.method === 'POST') {
-      room.push({ envelope: JSON.parse(String(init.body)) })
-      return new Response('{}', { status: 200 })
-    }
+    expect(init?.method ?? 'GET').toBe('GET')
     const after = Number(u.searchParams.get('after') ?? 0)
-    return new Response(JSON.stringify({ messages: room.slice(after), next: room.length, more: false }), { status: 200 })
+    const shown = room.slice(0, relayShows)
+    return new Response(JSON.stringify({ messages: shown.slice(after), next: shown.length, more: false }), { status: 200 })
   })
 })
 afterAll(() => vi.unstubAllGlobals())
+beforeEach(() => {
+  port = fakeOrgPort()
+  relayUp = true
+  relayShows = Infinity
+  resetOrgCaches()
+})
 
-describe('organization request flow', () => {
+async function connected(who: number, candidate?: ConnectCandidate): Promise<OrgRecord> {
+  return connect(sdk, candidate ?? (await verifyInvite(sdk, V.room, 'testnet')), 'testnet', people[who]!, people[who]!.auth, { forge, port })
+}
+
+describe('organization requests on Platform', () => {
   it('connects, creates at 1 of 2, a co-signer completes and broadcasts, then it reads done', async () => {
     const candidate = await verifyInvite(sdk, `${RELAY}/?network=testnet#room=${V.room}&name=Acme`, 'testnet')
     expect(candidate.identity.orgId).toBe(ORG)
@@ -99,28 +129,27 @@ describe('organization request flow', () => {
     expect(candidate.threshold).toBe(2)
     expect(candidate.members.map((m) => m.authPub)).toEqual(V.members.map((m) => m.authPub))
 
-    const r1 = connect(candidate, 'testnet', people[0]!.keys.authPub)
+    const r1 = await connected(0, candidate)
     expect(r1.label).toBe('Acme')
-    const group = await createRequest(
-      sdk,
-      r1,
-      people[0]!,
-      { title: 'Give alice Write access', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, ALICE, { role: 1 }) }] },
-      opts,
-    )
-    const v1 = await loadOrg(sdk, r1, opts)
-    const req1 = v1.requests.find((r) => r.request.id === group)!
+    expect(port.members).toHaveLength(1)
+    expect(port.shares).toHaveLength(1)
+    expect(port.shares[0]!.sealed.length).toBe(72)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'Give alice Write access', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, ALICE, { role: 1 }) }] }, opts(0))
+    expect(id).toBe(`${id.slice(0, 16)}-${people[0]!.keys.authPub.slice(0, 16)}`)
+    expect(port.writes.every((w) => w.ownerId === people[0]!.auth.identityId)).toBe(true)
+    const v1 = await loadOrg(sdk, r1, readOpts())
+    const req1 = v1.requests.find((r) => r.request.id === id)!
     expect(req1.status).toBe('collecting')
     expect(req1.card).toEqual({ kind: 'signed', missing: 1 })
     expect(req1.collected).toBe(1)
     expect(req1.proposals[0]!.sentence).toMatch(/^Give .+ Write access to a repository$/)
     expect(req1.proposals[0]!.problems).toEqual([])
 
-    const r3 = { ...r1, authPub: people[2]!.keys.authPub }
-    const v3 = await loadOrg(sdk, r3, opts)
-    const req3 = v3.requests.find((r) => r.request.id === group)!
+    const r3 = await connected(2)
+    const v3 = await loadOrg(sdk, r3, readOpts())
+    const req3 = v3.requests.find((r) => r.request.id === id)!
     expect(req3.card).toEqual({ kind: 'sign', collected: 1, needed: 2 })
-    const after = await signRequest(sdk, v3, req3, people[2]!, opts)
+    const after = await signRequest(sdk, v3, req3, people[2]!, opts(2))
     expect(after?.status).toBe('done')
     expect(after?.card).toEqual({ kind: 'done' })
     expect(broadcasts).toHaveLength(1)
@@ -128,26 +157,184 @@ describe('organization request flow', () => {
     expect(nonce).toBe(1n)
   })
 
+  it('a member signs on a fresh device from the published roster and their sealed share alone', async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'x', specs: [writer(21)] }, opts(0))
+    const roster = rosterFromIdentity((await verifyInvite(sdk, V.room, 'testnet')).identity, RELAY)
+    port.orgDocs.set(ORG, { id: 'orgdoc', revision: 1n, fields: rosterFields(roster) })
+    resetOrgCaches()
+    relayUp = false
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    expect(v2.roster.source).toBe('org')
+    const req = v2.requests.find((r) => r.request.id === id)!
+    expect(req.card).toEqual({ kind: 'sign', collected: 1, needed: 2 })
+    const done = await signRequest(sdk, v2, req, people[1]!, opts(1))
+    expect(done?.status).toBe('done')
+  })
+
+  it('reads only member identities whose proof verifies, so a stranger cannot add to the log', async () => {
+    const r1 = await connected(0)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'x', specs: [writer(22)] }, opts(0))
+    const stranger = { identityId: base58Encode(new Uint8Array(32).fill(90)), network: 'testnet' as const, getSigningKeyWif: () => '' }
+    const fake = port.members[0]!
+    port.members.push({ ...fake, id: 'forged', ownerId: stranger.identityId, createdAt: 1 })
+    const view = await loadOrg(sdk, r1, readOpts())
+    const p = view.requests.find((r) => r.request.id === id)!.request.proposals[0]!
+    const approve = sealEnvelope(people[1]!.keys, V.room, 'reject', { proposalId: p.id, reason: 'spam' })
+    await port.writeMessage(stranger, ORG, encodeMessage(approve))
+    const again = await loadOrg(sdk, r1, readOpts())
+    expect(again.members.map((m) => m.ownerId)).toEqual([people[0]!.auth.identityId])
+    expect(again.requests.find((r) => r.request.id === id)!.decliners).toEqual([])
+  })
+
+  it('garbage orgMember rows naming a member key cannot push the real one out', async () => {
+    const r1 = await connected(0)
+    const real = port.members[0]!
+    for (let i = 0; i < 20; i++) port.members.push({ ...real, id: `junk${i}`, ownerId: base58Encode(new Uint8Array(32).fill(150 + i)), createdAt: -100 + i })
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'f', specs: [writer(26)] }, opts(0))
+    const view = await loadOrg(sdk, r1, readOpts())
+    expect(view.members.map((m) => m.ownerId)).toEqual([people[0]!.auth.identityId])
+    expect(view.requests.some((r) => r.request.id === id)).toBe(true)
+  })
+
+  it("a member re-proposing a finished request's exact bytes cannot make it read expired", async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'c1', specs: [writer(31)] }, opts(0))
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    const p = v2.requests.find((r) => r.request.id === id)!.request.proposals[0]!
+    const copy = { ...p.body, note: p.body.note!.replace(/"group":"[0-9a-f]{16}"/, '"group":"ffffffffffffffff"') }
+    const mine = await myShare(port, v2, people[1]!, people[1]!.auth.identityId)
+    const proposal = sealEnvelope(people[1]!.keys, V.room, 'proposal', copy as unknown as Record<string, unknown>)
+    await port.writeMessage(people[1]!.auth, ORG, encodeMessage(proposal))
+    await port.writeMessage(people[1]!.auth, ORG, encodeMessage(approveEnvelope(v2, people[1]!, mine, envelopeId(proposal), copy)))
+    await signRequest(sdk, v2, v2.requests.find((r) => r.request.id === id)!, people[1]!, opts(1))
+    const after = await loadOrg(sdk, r1, readOpts())
+    expect(after.requests.find((r) => r.request.id === id)!.status).toBe('done')
+  })
+
+  it("another identity's write at the same contract nonce does not make the organization's done request read expired", async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'c2', specs: [writer(32)] }, opts(0))
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    expect((await signRequest(sdk, v2, v2.requests.find((r) => r.request.id === id)!, people[1]!, opts(1)))?.status).toBe('done')
+    const done = v2.requests.find((r) => r.request.id === id)!
+    const foreign = await buildUnsigned(writer(33), { ownerId: ALICE, keyId: 2, nonce: done.proposals[0]!.decoded!.nonce, platformVersion: latest })
+    stored.set(foreign.documentId, { revision: 1n, data: { ...writer(33).data } })
+    const body = { ...done.request.proposals[0]!.body, unsigned: foreign.unsigned, signable: foreign.signable, note: undefined }
+    await port.writeMessage(people[1]!.auth, ORG, encodeMessage(sealEnvelope(people[1]!.keys, V.room, 'proposal', body as unknown as Record<string, unknown>)))
+    const after = await loadOrg(sdk, r1, readOpts())
+    expect(after.requests.some((r) => r.proposals.some((q) => q.decoded?.ownerId === ALICE))).toBe(true)
+    expect(after.requests.find((r) => r.request.id === id)!.status).toBe('done')
+    stored.delete(foreign.documentId)
+  })
+
+  it('a new request waits while some member logs are unreadable, so it never takes a nonce they hold', async () => {
+    const r1 = await connected(0)
+    await connected(1)
+    const messagesOf = port.messagesOf
+    port.messagesOf = async (o, owner, since) => {
+      if (owner === people[1]!.auth.identityId) throw new Error('incomplete read')
+      return messagesOf(o, owner, since)
+    }
+    try {
+      resetOrgCaches()
+      await expect(createRequest(sdk, r1, people[0]!, { title: 'u', specs: [writer(32)] }, opts(0))).rejects.toThrow(/could not be read/)
+    } finally {
+      port.messagesOf = messagesOf
+    }
+  })
+
+  it("one member's unreadable log drops only that member's messages", async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'l', specs: [writer(27)] }, opts(0))
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    await declineRequest(sdk, v2, v2.requests.find((r) => r.request.id === id)!, people[1]!, opts(1))
+    resetOrgCaches()
+    const messagesOf = port.messagesOf
+    port.messagesOf = async (o, owner, since) => {
+      if (owner === people[1]!.auth.identityId) throw new Error('incomplete read')
+      return messagesOf(o, owner, since)
+    }
+    try {
+      const view = await loadOrg(sdk, r1, readOpts())
+      expect(view.unreadLogs).toBe(1)
+      expect(view.requests.find((r) => r.request.id === id)!.decliners).toEqual([])
+    } finally {
+      port.messagesOf = messagesOf
+    }
+  })
+
+  it('a retry of the same confirmed action posts the same request, not a second one', async () => {
+    const r1 = await connected(0)
+    const writeMessage = port.writeMessage
+    let calls = 0
+    port.writeMessage = async (...args) => {
+      if (++calls === 2) throw new Error('sent, not seen yet')
+      return writeMessage(...args)
+    }
+    try {
+      await expect(createRequest(sdk, r1, people[0]!, { title: 'r', specs: [writer(28)] }, { ...opts(0), intent: 'intent-1' })).rejects.toThrow(/not seen/)
+      const id = await createRequest(sdk, r1, people[0]!, { title: 'r', specs: [writer(28)] }, { ...opts(0), intent: 'intent-1' })
+      const view = await loadOrg(sdk, r1, readOpts())
+      expect(view.requests.filter((r) => r.request.title === 'r').map((r) => r.request.id)).toEqual([id])
+      expect(view.requests.find((r) => r.request.id === id)!.collected).toBe(1)
+    } finally {
+      port.writeMessage = writeMessage
+    }
+  })
+
+  it("an unreadable nonce keeps a request open but unsignable, never refused", async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'n', specs: [writer(29)] }, opts(0))
+    nonceDown = true
+    try {
+      const v2 = await loadOrg(sdk, r2, readOpts())
+      const req = v2.requests.find((r) => r.request.id === id)!
+      expect(req.status).toBe('collecting')
+      await expect(signRequest(sdk, v2, req, people[1]!, opts(1))).rejects.toThrow(/nonce could not be read/)
+    } finally {
+      nonceDown = false
+    }
+  })
+
+  it('a half-finished ceremony from the relay is not kept: the next load asks the relay again', async () => {
+    const r1 = await connected(0)
+    resetOrgCaches()
+    relayShows = 5
+    await expect(loadOrg(sdk, r1, readOpts())).rejects.toThrow(/no longer control/)
+    relayShows = Infinity
+    const view = await loadOrg(sdk, r1, readOpts())
+    expect(view.roster.cid).toBeTruthy()
+  })
+
   it('a decline is recorded and does not block', async () => {
-    const r1 = connect(await verifyInvite(sdk, V.room, 'testnet'), 'testnet', people[0]!.keys.authPub)
-    const group = await createRequest(sdk, r1, people[0]!, { title: 'x', specs: [{ action: 'delete', contractId: forge.core, documentType: 'writer', documentId: ALICE }] }, opts)
-    const r2 = { ...r1, authPub: people[1]!.keys.authPub }
-    const v2 = await loadOrg(sdk, r2, opts)
-    const req = v2.requests.find((r) => r.request.id === group)!
+    stored.set(ALICE, { revision: 1n, data: membershipData(REPO, ALICE, { role: 1 }) })
+    const r1 = await connected(0)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'x', specs: [{ action: 'delete', contractId: forge.core, documentType: 'writer', documentId: ALICE }] }, opts(0))
+    const r2 = await connected(1)
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    const req = v2.requests.find((r) => r.request.id === id)!
     expect(req.request.proposals[0]!.body.unsigned).toMatch(/^[0-9a-f]+$/)
-    await declineRequest(v2, req, people[1]!)
-    const again = (await loadOrg(sdk, r2, opts)).requests.find((r) => r.request.id === group)!
+    await declineRequest(sdk, v2, req, people[1]!, opts(1))
+    const again = (await loadOrg(sdk, r2, readOpts())).requests.find((r) => r.request.id === id)!
     expect(again.viewerDeclined).toBe(true)
     expect(again.status).toBe('collecting')
     expect(again.decliners).toHaveLength(1)
+    stored.delete(ALICE)
   })
 
   it('the second request takes the next nonce after an open one', async () => {
-    const r1 = connect(await verifyInvite(sdk, V.room, 'testnet'), 'testnet', people[0]!.keys.authPub)
-    const view = await loadOrg(sdk, r1, opts)
+    const r1 = await connected(0)
+    await createRequest(sdk, r1, people[0]!, { title: 'w', specs: [writer(23)] }, opts(0))
+    const view = await loadOrg(sdk, r1, readOpts())
     const open = view.requests.filter((r) => r.status === 'collecting').flatMap((r) => r.proposals.map((p) => p.decoded!.nonce))
-    const group = await createRequest(sdk, r1, people[0]!, { title: 'y', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, base58Encode(new Uint8Array(32).fill(6)), { role: 3 }) }] }, opts)
-    const req = (await loadOrg(sdk, r1, opts)).requests.find((r) => r.request.id === group)!
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'y', specs: [writer(6, 3)] }, opts(0))
+    const req = (await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!
     expect(req.proposals[0]!.decoded!.nonce).toBe(open.reduce((a, b) => (a > b ? a : b)) + 1n)
   })
 
@@ -159,35 +346,124 @@ describe('organization request flow', () => {
     expect(() => freeNonces(['c'], () => 10n, full)).toThrow(/hold every nonce/)
   })
 
-  it('a phrase that is not a member cannot create a request', async () => {
-    const r1 = connect(await verifyInvite(sdk, V.room, 'testnet'), 'testnet', people[0]!.keys.authPub)
-    await expect(createRequest(sdk, r1, people[1]!, { title: 'z', specs: [] }, opts)).rejects.toThrow(/unlock/)
+  it('a part that can never land frees its nonce unless a member claimed it', () => {
+    const part = (nonce: bigint, status: string, superseded: boolean) => ({
+      request: { proposals: [{ id: `p${nonce}`, status, from: 'm1', approvals: {}, rejections: {} }] },
+      proposals: [{ decoded: { contractId: 'c', nonce, ownerId: 'org' }, superseded }],
+    })
+    const view = {
+      record: { orgId: 'org' },
+      roster: { members: ['m1', 'm2', 'm3'], threshold: 2 },
+      requests: [part(11n, 'ready', true), part(12n, 'executed', true), part(13n, 'ready', false)],
+    } as unknown as Parameters<typeof openNonces>[0]
+    expect([...(openNonces(view).get('c') ?? [])].sort()).toEqual([12n, 13n])
+  })
+
+  it("an organization's roster write must match its key ceremony exactly", async () => {
+    const r1 = await connected(0)
+    const fields = rosterFields(rosterFromIdentity((await verifyInvite(sdk, V.room, 'testnet')).identity, RELAY))
+    const ask = (data: Record<string, unknown>) => createRequest(sdk, r1, people[0]!, { title: 'roster', specs: [{ action: 'create', contractId: forge.org!, documentType: 'org', data }] }, opts(0))
+    const reordered = Uint8Array.from([...fields.pubShares.slice(48, 96), ...fields.pubShares.slice(0, 48), ...fields.pubShares.slice(96)])
+    await expect(ask({ ...fields, pubShares: reordered })).rejects.toThrow(/the roster does not match the organization's key ceremony \(public shares\)/)
+    await expect(ask({ ...fields, threshold: 3 })).rejects.toThrow(/\(threshold\)/)
+    const id = await ask({ ...fields })
+    expect((await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!.status).toBe('collecting')
+  })
+
+  it("an organization's profile write never sets or changes its signing keys or bot claim", async () => {
+    const r1 = await connected(0)
+    const contractId = contractOf(forge, 'profile')
+    const ask = (spec: Parameters<typeof createRequest>[3]['specs'][number]) => createRequest(sdk, r1, people[0]!, { title: 'profile', specs: [spec] }, opts(0))
+    await expect(ask({ action: 'create', contractId, documentType: 'profile', data: { displayName: 'Acme', pubkeys: ['ssh-ed25519 AAAA'] } })).rejects.toThrow(/changes the profile's pubkeys, which an organization's request never does/)
+    const documentId = base58Encode(new Uint8Array(32).fill(21))
+    const bot = (fill: number) => ({ operator: new Uint8Array(32).fill(fill) })
+    stored.set(documentId, { revision: 1n, data: { displayName: 'Acme', bot: bot(4) } })
+    const replace = (data: Record<string, unknown>) => ({ action: 'replace' as const, contractId, documentType: 'profile', documentId, revision: 1n, data })
+    await expect(ask(replace({ displayName: 'Acme Inc' }))).rejects.toThrow(/changes the profile's bot/)
+    await expect(ask(replace({ displayName: 'Acme Inc', bot: bot(5) }))).rejects.toThrow(/changes the profile's bot/)
+    const id = await ask(replace({ displayName: 'Acme Inc', bot: bot(4) }))
+    expect((await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!.status).toBe('collecting')
+    stored.set(documentId, { revision: 1n, data: { displayName: 'Acme', bot: bot(6) } })
+    const moved = (await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!
+    expect(moved.status).toBe('invalid')
+    expect(moved.proposals[0]!.problems.join()).toMatch(/changes the profile's bot/)
+    unreadable = documentId
+    const unread = (await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!
+    expect(unread.proposals[0]!.problems.join()).toMatch(/profile could not be read/)
+    unreadable = null
+    stored.delete(documentId)
+  })
+
+  it('a phrase that is not this record\'s member cannot create a request', async () => {
+    const r1 = await connected(0)
+    await expect(createRequest(sdk, r1, people[1]!, { title: 'z', specs: [writer(30)] }, opts(1))).rejects.toThrow(/unlock/)
+  })
+
+  it('one Forge identity cannot connect as two members', async () => {
+    await connected(0)
+    const candidate = await verifyInvite(sdk, V.room, 'testnet')
+    await expect(connect(sdk, candidate, 'testnet', people[1]!, people[0]!.auth, { forge, port })).rejects.toThrow(/another member/)
   })
 
   it('a request declined by more than M-N members reads declined and frees its nonce', async () => {
-    const r1 = connect(await verifyInvite(sdk, V.room, 'testnet'), 'testnet', people[0]!.keys.authPub)
-    const group = await createRequest(sdk, r1, people[0]!, { title: 'w', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, base58Encode(new Uint8Array(32).fill(7)), { role: 1 }) }] }, opts)
-    const r2 = { ...r1, authPub: people[1]!.keys.authPub }
-    const r3 = { ...r1, authPub: people[2]!.keys.authPub }
-    const v2 = await loadOrg(sdk, r2, opts)
-    await declineRequest(v2, v2.requests.find((r) => r.request.id === group)!, people[1]!)
-    const v3 = await loadOrg(sdk, r3, opts)
-    const before = v3.requests.find((r) => r.request.id === group)!
+    const r1 = await connected(0)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'w', specs: [writer(7)] }, opts(0))
+    const r2 = await connected(1)
+    const r3 = await connected(2)
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    await declineRequest(sdk, v2, v2.requests.find((r) => r.request.id === id)!, people[1]!, opts(1))
+    const v3 = await loadOrg(sdk, r3, readOpts())
+    const before = v3.requests.find((r) => r.request.id === id)!
     expect(before.status).toBe('collecting')
     const held = before.proposals[0]!.decoded!.nonce
-    await declineRequest(v3, before, people[2]!)
-    const v1 = await loadOrg(sdk, r1, opts)
-    const req = v1.requests.find((r) => r.request.id === group)!
+    await declineRequest(sdk, v3, before, people[2]!, opts(2))
+    const v1 = await loadOrg(sdk, r1, readOpts())
+    const req = v1.requests.find((r) => r.request.id === id)!
     expect(req.status).toBe('declined')
-    expect(req.card).toEqual({ kind: 'declined' })
-    await expect(signRequest(sdk, v1, req, people[0]!, opts)).rejects.toThrow(/no longer open/)
-    const next = await createRequest(sdk, r1, people[0]!, { title: 'v', specs: [{ action: 'create', contractId: forge.core, documentType: 'writer', data: membershipData(REPO, base58Encode(new Uint8Array(32).fill(7)), { role: 1 }) }] }, opts)
-    const fresh = (await loadOrg(sdk, r1, opts)).requests.find((r) => r.request.id === next)!
+    expect(req.card).toEqual({ kind: 'declined', needed: 2, size: 3 })
+    await expect(signRequest(sdk, v1, req, people[0]!, opts(0))).rejects.toThrow(/no longer open/)
+    const next = await createRequest(sdk, r1, people[0]!, { title: 'v', specs: [writer(7)] }, opts(0))
+    const fresh = (await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === next)!
     expect(fresh.proposals[0]!.decoded!.nonce).toBe(held)
-    const v3again = await loadOrg(sdk, r3, opts)
-    await signRequest(sdk, v3again, v3again.requests.find((r) => r.request.id === next)!, people[2]!, opts)
-    const after = await loadOrg(sdk, r1, opts)
+    const v3again = await loadOrg(sdk, r3, readOpts())
+    await signRequest(sdk, v3again, v3again.requests.find((r) => r.request.id === next)!, people[2]!, opts(2))
+    const after = await loadOrg(sdk, r1, readOpts())
     expect(after.requests.find((r) => r.request.id === next)!.status).toBe('done')
-    expect(after.requests.find((r) => r.request.id === group)!.status).toBe('declined')
+    expect(after.requests.find((r) => r.request.id === id)!.status).toBe('declined')
+  })
+
+  it('signing re-runs the member-change checks: a repository that turned members-only refuses it (§11.4)', async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'g', specs: [writer(25)] }, opts(0))
+    stored.set(REPO.repoId, { revision: 1n, data: { name: 'widgets', visibility: 'private' } })
+    try {
+      const v2 = await loadOrg(sdk, r2, readOpts())
+      const req = v2.requests.find((r) => r.request.id === id)!
+      await expect(signRequest(sdk, v2, req, people[1]!, opts(1))).rejects.toThrow("widgets now has members-only content or environments, so an organization can't change its members; decline this request")
+      const after = (await loadOrg(sdk, r2, readOpts())).requests.find((r) => r.request.id === id)!
+      expect(after.collected).toBe(1)
+    } finally {
+      stored.delete(REPO.repoId)
+    }
+  })
+
+  it("a member's broadcast claim alone is not done: with its nonce free, Finish sends it", async () => {
+    const r1 = await connected(0)
+    const r2 = await connected(1)
+    const id = await createRequest(sdk, r1, people[0]!, { title: 'c', specs: [writer(24)] }, opts(0))
+    const v2 = await loadOrg(sdk, r2, readOpts())
+    const p = v2.requests.find((r) => r.request.id === id)!.request.proposals[0]!
+    const mine = await myShare(port, v2, people[1]!, people[1]!.auth.identityId)
+    await port.writeMessage(people[1]!.auth, ORG, encodeMessage(approveEnvelope(v2, people[1]!, mine, p.id, p.body)))
+    await port.writeMessage(people[1]!.auth, ORG, encodeMessage(sealEnvelope(people[1]!.keys, V.room, 'broadcast', { proposalId: p.id, result: { ok: true, confirmed: true } })))
+    const claimed = await loadOrg(sdk, r1, readOpts())
+    const req = claimed.requests.find((r) => r.request.id === id)!
+    expect(req.request.proposals[0]!.status).toBe('executed')
+    expect(req.status).toBe('ready')
+    const before = broadcasts.length
+    const done = await finishRequest(sdk, claimed, req, people[0]!, opts(0))
+    expect(broadcasts.length).toBe(before + 1)
+    expect(done?.status).toBe('done')
   })
 })

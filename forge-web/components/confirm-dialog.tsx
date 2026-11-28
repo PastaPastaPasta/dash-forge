@@ -79,7 +79,7 @@ export interface ConfirmDialogProps {
    * an action of one write ends under that write's own title.
    */
   toast?: SpendActionLabels
-  /** An organization request: it only collects signatures, so no cost line and no write steps. */
+  /** An organization request: the member pays only for posting it; the organization pays for its writes when it finishes. */
   request?: boolean
 }
 
@@ -205,13 +205,12 @@ export function ConfirmDialog({
         <fieldset disabled={pending || unconfirmed !== null} className="m-0 min-w-0 space-y-3 border-0 p-0 empty:hidden">
           {children}
         </fieldset>
-        {request ? (
-          <p className="text-dense text-anvil-500 dark:text-anvil-400">Nothing is spent now. The organization pays when the last co-signer finishes it.</p>
-        ) : costPending ? null : cost ? (
+        {costPending ? null : cost ? (
           <CostPreview cost={cost} refund={isRefund} />
-        ) : (
+        ) : request ? null : (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">This action is free: no credits are spent.</p>
         )}
+        {request ? <p className="text-dense text-anvil-500 dark:text-anvil-400">The organization pays for its own writes when the last co-signer finishes it.</p> : null}
 
         <div role="status" aria-live="polite" className="empty:absolute">
           {pending && !request ? <WriteProgressSteps /> : null}

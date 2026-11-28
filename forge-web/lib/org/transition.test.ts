@@ -6,7 +6,7 @@ import { firstConfigData, membershipData, repoCreateData } from '../repo/writes'
 import type { RepoRef } from '../repo/contract'
 import { contractOf } from '../repo/source'
 import { describeTransition, type DescribeNames } from './describe'
-import { buildUnsigned, decodeUnsigned, intentFor, reviewDecoded, signedTransition, type WriteSpec } from './transition'
+import { buildUnsigned, decodeUnsigned, intentFor, nonceProblem, reviewDecoded, signedTransition, type WriteSpec } from './transition'
 import { hex } from './util'
 
 const forge = forgeV2Ids(DEPLOYMENTS['testnet']) as ForgeIds
@@ -79,27 +79,28 @@ describe('organization transitions', () => {
     const grant = specs[3]![1]
     const built = await buildUnsigned(grant, ctx(5n))
     const d = await decodeUnsigned(built.unsigned)
-    expect(reviewDecoded(d, built, { ...review, orgId: ALICE }).join()).toMatch(/not written by this organization/)
+    expect(reviewDecoded(d, built, { ...review, orgId: ALICE }).join()).toMatch(/writes as another identity, not the organization/)
     expect(reviewDecoded(d, built, { ...review, keyId: 1 }).join()).toMatch(/group key/)
-    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 5n }).join()).toMatch(/nonce was already used/)
-    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 6n | (1n << 40n) })).toEqual([])
-    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 6n }).join()).toMatch(/nonce was already used/)
-    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 0n }).join()).not.toMatch(/nonce/)
+    expect(reviewDecoded(d, built, { ...review, currentNonce: () => 5n })).toEqual([])
+    expect(nonceProblem(d, 5n)).toMatch(/overtaken: its nonce is already used/)
+    expect(nonceProblem(d, 6n | (1n << 40n))).toBeNull()
+    expect(nonceProblem(d, 6n)).toMatch(/overtaken: its nonce is already used/)
+    expect(nonceProblem(d, 0n)).toBeNull()
     const far = await decodeUnsigned((await buildUnsigned(grant, ctx(26n))).unsigned)
-    expect(reviewDecoded(far, { signable: far.signable }, { ...review, currentNonce: () => 2n })).toEqual([])
-    expect(reviewDecoded(far, { signable: far.signable }, { ...review, currentNonce: () => 1n }).join()).toMatch(/further ahead than Platform accepts/)
+    expect(nonceProblem(far, 2n)).toBeNull()
+    expect(nonceProblem(far, 1n)).toMatch(/further ahead than Platform accepts/)
     expect(reviewDecoded(d, { signable: '00' }, review).join()).toMatch(/bytes to sign/)
 
     const foreign = await buildUnsigned({ ...grant, contractId: base58Encode(new Uint8Array(32).fill(8)) } as WriteSpec, ctx(5n))
-    expect(reviewDecoded(await decodeUnsigned(foreign.unsigned), foreign, review).join()).toMatch(/not one of this network's Forge contracts/)
+    expect(reviewDecoded(await decodeUnsigned(foreign.unsigned), foreign, review).join()).toMatch(/not this network's Forge/)
 
     const issue = await buildUnsigned({ action: 'create', contractId: forge.collab, documentType: 'issue', data: { repoId: decodeIdentifier(REPO_ID), title: 'x' } }, ctx(5n))
     const di = await decodeUnsigned(issue.unsigned)
-    expect(reviewDecoded(di, issue, review).join()).toMatch(/does not recognise this action/)
+    expect(reviewDecoded(di, issue, review).join()).toMatch(/does not sign this kind of write/)
     expect(describeTransition(di, names)).toMatch(/Unrecognised action/)
 
     const del = await buildUnsigned({ action: 'delete', contractId: forge.core, documentType: 'repo', documentId: REPO_ID }, ctx(5n))
-    expect(reviewDecoded(await decodeUnsigned(del.unsigned), del, review).join()).toMatch(/does not recognise/)
+    expect(reviewDecoded(await decodeUnsigned(del.unsigned), del, review).join()).toMatch(/does not sign this kind of write/)
   })
 
   it('review refuses a fee increase, a padded transition and a non-document transition', async () => {
@@ -116,6 +117,6 @@ describe('organization transitions', () => {
 
     const transfer = m.IdentityCreditTransfer.fromObject({ $formatVersion: '0', identityId: ORG, recipientId: ALICE, amount: 5n, nonce: 1n, userFeeIncrease: 0, signaturePublicKeyId: 2, signature: new Uint8Array() } as never).toStateTransition()
     const t = await decodeUnsigned(hex(transfer.toBytes()))
-    expect(reviewDecoded(t, { signable: '' }, review)).toEqual(['this is not a write Forge makes'])
+    expect(reviewDecoded(t, { signable: '' }, review)).toEqual(['it is not exactly one document write'])
   })
 })

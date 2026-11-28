@@ -3,14 +3,19 @@
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
+import { useAuth } from '@/contexts/auth-context'
 import { refreshOrgs } from '@/hooks/use-orgs'
-import { DEFAULT_NETWORK } from '@/lib/constants'
+import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
+import { orgWritesCost } from '@/lib/org/cost'
 import { multisigAppUrl, orgNetworkName } from '@/lib/org/gate'
 import { connect, verifyInvite, type ConnectCandidate } from '@/lib/org/service'
 import { ensureSdk } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
+import { useOrgWriteGuard } from './use-org-guard'
+import { EMPTY_PHRASE, PhraseField, unlockFrom, type PhraseState } from './phrase-field'
 
 export function NewOrganizationSteps(): JSX.Element {
   return (
@@ -33,12 +38,16 @@ export function NewOrganizationSteps(): JSX.Element {
 
 export function ConnectFlow({ initial = '' }: { initial?: string }): JSX.Element {
   const router = useRouter()
+  const { signer } = useAuth()
+  const guard = useOrgWriteGuard()
   const [text, setText] = useState(initial)
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   const [candidate, setCandidate] = useState<ConnectCandidate | null>(null)
-  const [me, setMe] = useState<string>('')
+  const [phrase, setPhrase] = useState<PhraseState>(EMPTY_PHRASE)
+  const [confirming, setConfirming] = useState(false)
   const network = orgNetworkName()
+  const forge = NETWORKS[DEFAULT_NETWORK].v2
 
   const check = async (): Promise<void> => {
     setBusy(true)
@@ -46,9 +55,7 @@ export function ConnectFlow({ initial = '' }: { initial?: string }): JSX.Element
     setCandidate(null)
     try {
       const sdk = await ensureSdk(DEFAULT_NETWORK)
-      const c = await verifyInvite(sdk, text, network)
-      setCandidate(c)
-      setMe(c.members.length === 1 ? (c.members[0]?.authPub ?? '') : '')
+      setCandidate(await verifyInvite(sdk, text, network))
     } catch (e) {
       setProblem(errorMessage(e, "Couldn't read the group; try again."))
     } finally {
@@ -56,9 +63,12 @@ export function ConnectFlow({ initial = '' }: { initial?: string }): JSX.Element
     }
   }
 
-  const save = (): void => {
-    if (!candidate || !me) return
-    const record = connect(candidate, network, me)
+  const save = async (): Promise<void> => {
+    if (!candidate || forge === null || signer === null) throw new Error('sign in to Forge first')
+    const u = await unlockFrom(phrase, candidate.members.map((m) => m.authPub), candidate.label)
+    setPhrase(EMPTY_PHRASE)
+    const sdk = await ensureSdk(DEFAULT_NETWORK)
+    const record = await connect(sdk, candidate, network, u, signer, { forge })
     refreshOrgs()
     router.push(`/org/?id=${encodeURIComponent(record.orgId)}`)
   }
@@ -91,18 +101,14 @@ export function ConnectFlow({ initial = '' }: { initial?: string }): JSX.Element
           <p className="text-dense">
             <span className="font-medium">{candidate.label}</span> · Organization · {candidate.threshold} of {candidate.members.length}. Its key ceremony checks out and its identity uses the group&apos;s keys.
           </p>
-          <fieldset className="space-y-2">
-            <legend className="text-dense font-medium">Which member are you?</legend>
-            {candidate.members.map((m) => (
-              <label key={m.authPub} className="flex items-center gap-2 text-dense">
-                <input type="radio" name="org-me" value={m.authPub} checked={me === m.authPub} onChange={() => setMe(m.authPub)} />
-                <span>{m.name || `Member ${m.index}`}</span>
-                <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400">{m.fingerprint}</span>
-              </label>
-            ))}
-          </fieldset>
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" disabled={!me} onClick={save} data-testid="org-connect-save">
+            <Button
+              variant="primary"
+              onClick={() => {
+                if (guard(memberCost, 'connect this organization')) setConfirming(true)
+              }}
+              data-testid="org-connect-save"
+            >
               Connect
             </Button>
             <Button variant="ghost" onClick={() => setCandidate(null)}>
@@ -111,6 +117,23 @@ export function ConnectFlow({ initial = '' }: { initial?: string }): JSX.Element
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirming && candidate !== null}
+        onClose={() => {
+          setConfirming(false)
+          setPhrase(EMPTY_PHRASE)
+        }}
+        title={`Connect ${candidate?.label ?? 'the organization'}?`}
+        description="Your seed phrase shows which member you are. Forge records on Platform that this Forge identity is that member, so you can sign from any device."
+        cost={memberCost}
+        confirmLabel="Connect"
+        successNote="Connected"
+        onConfirm={save}
+      >
+        <PhraseField value={phrase} onChange={setPhrase} autoFocus />
+      </ConfirmDialog>
     </section>
   )
 }
+
+const memberCost = orgWritesCost({ member: true })

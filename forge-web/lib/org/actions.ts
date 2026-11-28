@@ -1,22 +1,26 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { decodeIdentifier } from '../auth/base58'
+import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { DOC, type RepoRef } from '../repo/contract'
 import { descriptionProblem, readTopicDocIds, repoEditChanges, topicChanges, topicDocData, topicsProblem, type RepoDocEdit } from '../repo/settings'
 import { contractOf } from '../repo/source'
 import { checkRepoInput, firstConfigData, membershipData, normalizeRepoName, planMemberGrant, planMemberRevoke, planRoleChange, refuseMemberChangeWithEnvironments, repoCreateData, type CreateRepoInput } from '../repo/writes'
 import { hasMembersKey } from '../repo/members-writes'
+import { readNewestManifestOfKind } from '../repo/packs'
+import { PACK_KIND } from '../constants'
 import { ROLE_LABEL } from '../rules/roles'
 import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof } from '../sdk'
 import type { CreateRequestInput, LaterSpec } from './service'
-import type { WriteSpec } from './transition'
+import type { DecodedTransition, WriteSpec } from './transition'
 
 interface StoredDoc {
   readonly revision?: bigint
   toObject(): Record<string, unknown>
 }
+
+const documentsOf = (sdk: EvoSDK) => (sdk as unknown as { documents: { get(c: string, t: string, id: string): Promise<StoredDoc | undefined | null> } }).documents
 
 export async function newRepoRequest(sdk: EvoSDK, forge: ForgeIds, orgId: string, orgLabel: string, raw: CreateRepoInput): Promise<CreateRequestInput> {
   const name = normalizeRepoName(raw.name)
@@ -59,6 +63,30 @@ async function refuseKeyedMemberChange(sdk: EvoSDK, repo: RepoRef): Promise<void
   await refuseMemberChangeWithEnvironments(sdk, repo)
 }
 
+const MEMBER_TYPES: ReadonlySet<string> = new Set([DOC.maintainer, DOC.writer])
+
+/**
+ * Why a member change in a request can no longer be signed (§11.4): its repository now has
+ * members-only content or environments. Null when it is not a member change, its repository is
+ * not there yet (made by the same request), or nothing stands in the way.
+ */
+export async function memberChangeProblem(sdk: EvoSDK, forge: ForgeIds, orgId: string, d: DecodedTransition): Promise<string | null> {
+  if (d.contractId !== forge.core || !MEMBER_TYPES.has(d.documentType)) return null
+  const docs = documentsOf(sdk)
+  const source = d.action === 'delete' ? ((await docs.get(forge.core, d.documentType, d.documentId))?.toObject() ?? null) : d.data
+  const repoBytes = source?.['repoId']
+  if (!(repoBytes instanceof Uint8Array)) return null
+  const repoId = base58Encode(repoBytes)
+  const stored = await docs.get(forge.core, DOC.repo, repoId)
+  if (!stored) return null
+  const data = stored.toObject()
+  const name = typeof data['name'] === 'string' ? data['name'] : 'This repository'
+  const repo: RepoRef = { forge, repoId, ownerId: orgId, name, visibility: data['visibility'] === 'private' ? 'private' : 'public' }
+  const keyed = repo.visibility !== 'public' || (await hasMembersKey(sdk, repo))
+  if (!keyed && (await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) === null) return null
+  return `${name} now has members-only content or environments, so an organization can't change its members; decline this request`
+}
+
 export async function grantRequest(sdk: EvoSDK, repo: RepoRef, memberId: string, role: Role): Promise<CreateRequestInput | null> {
   const plan = await planMemberGrant(sdk, repo, memberId, role)
   if (plan.heldId !== null) return null
@@ -96,7 +124,7 @@ export async function listingRequest(sdk: EvoSDK, repo: RepoRef, edit: RepoDocEd
   }
   const changes = repoEditChanges(edit)
   if (Object.keys(changes).length === 0) return null
-  const stored = (await (sdk as unknown as { documents: { get(c: string, t: string, id: string): Promise<StoredDoc | undefined> } }).documents.get(repo.forge.core, DOC.repo, repo.repoId)) ?? null
+  const stored = (await documentsOf(sdk).get(repo.forge.core, DOC.repo, repo.repoId)) ?? null
   if (stored === null) throw new Error(`${repo.name} was not found`)
   const props: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(stored.toObject())) if (!k.startsWith('$')) props[k] = v

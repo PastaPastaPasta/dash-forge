@@ -5,14 +5,18 @@ import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useCopy } from '@/hooks/use-copy'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { useAuth } from '@/contexts/auth-context'
 import { useOrgsStore, useUnlocked, setOrgView } from '@/hooks/use-orgs'
 import { DEFAULT_NETWORK, NETWORKS } from '@/lib/constants'
+import { orgWritesCost } from '@/lib/org/cost'
+import { declinedText, refusedText } from '@/lib/org/requests'
 import { declineRequest, finishRequest, loadOrg, requestLink, signRequest, type OrgView, type RequestView } from '@/lib/org/service'
-import type { Unlocked } from '@/lib/org/store'
-import { ensureSdk } from '@/lib/sdk'
-import { errorMessage } from '@/lib/utils'
+import { dismissRequest } from '@/lib/org/store'
+import { ensureSdk, type CostPreview } from '@/lib/sdk'
 import { timeAgo } from '@/lib/view/format'
-import { UnlockDialog } from './unlock-dialog'
+import { useOrgWriteGuard } from './use-org-guard'
+import { EMPTY_PHRASE, PhraseField, unlockFrom, type PhraseState } from './phrase-field'
 
 export function absoluteRequestLink(orgId: string, requestId: string): string {
   const origin = typeof window === 'undefined' ? '' : window.location.origin
@@ -48,22 +52,38 @@ type Pending = 'sign' | 'decline' | 'finish'
 
 const proposalIds = (r: RequestView): string => r.request.proposals.map((p) => p.id).join(',')
 
+const ACTION: Readonly<Record<Pending, { title: string; confirm: string; done: string }>> = {
+  sign: { title: 'Sign this request?', confirm: 'Sign', done: 'Signed' },
+  decline: { title: 'Decline this request?', confirm: 'Decline', done: 'Declined' },
+  finish: { title: 'Finish this request?', confirm: 'Finish', done: 'Finished' },
+}
+
+function actionCost(what: Pending, request: RequestView, firstWrite: boolean): CostPreview {
+  const open = request.proposals.filter((p) => !p.done).length
+  if (what === 'decline') return orgWritesCost({ approvals: open, member: firstWrite })
+  if (what === 'finish') return orgWritesCost({ broadcasts: open, member: firstWrite })
+  const completes = request.collected + 1 >= request.needed
+  return orgWritesCost({ approvals: open, broadcasts: completes ? open : 0, member: firstWrite })
+}
+
 export function RequestCard({ view, request, highlight = false }: { view: OrgView; request: RequestView; highlight?: boolean }): JSX.Element {
   const { record } = view
   const unlocked = useUnlocked(record.authPub)
+  const { signer } = useAuth()
+  const guard = useOrgWriteGuard()
   const [asking, setAsking] = useState<Pending | null>(null)
-  const [busy, setBusy] = useState<Pending | null>(null)
-  const [problem, setProblem] = useState<string | null>(null)
+  const [phrase, setPhrase] = useState<PhraseState>(EMPTY_PHRASE)
   const forge = NETWORKS[DEFAULT_NETWORK].v2
   const card = request.card
+  const firstWrite = signer !== null && !view.members.some((m) => m.ownerId === signer.identityId)
 
-  const act = async (what: Pending, u: Unlocked): Promise<void> => {
-    if (forge === null) return
-    setBusy(what)
-    setProblem(null)
+  const act = async (what: Pending, intent: string): Promise<void> => {
+    if (forge === null || signer === null) throw new Error('sign in to Forge first')
+    const u = unlocked ?? (await unlockFrom(phrase, [record.authPub], record.label))
+    setPhrase(EMPTY_PHRASE)
+    const sdk = await ensureSdk(DEFAULT_NETWORK)
+    const opts = { network: DEFAULT_NETWORK, forge, auth: signer, intent }
     try {
-      const sdk = await ensureSdk(DEFAULT_NETWORK)
-      const opts = { network: DEFAULT_NETWORK, forge }
       const fresh = useOrgsStore.getState().views[record.orgId] ?? view
       const current = fresh.requests.find((r) => r.request.id === request.request.id) ?? request
       if (what !== 'decline' && proposalIds(current) !== proposalIds(request)) {
@@ -71,24 +91,15 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
       }
       if (what === 'sign') await signRequest(sdk, fresh, current, u, opts)
       else if (what === 'finish') await finishRequest(sdk, fresh, current, u, opts)
-      else await declineRequest(fresh, current, u)
-      setOrgView(await loadOrg(sdk, record, opts))
-    } catch (e) {
-      setProblem(errorMessage(e, 'that did not go through; try again'))
-      try {
-        const sdk = await ensureSdk(DEFAULT_NETWORK)
-        setOrgView(await loadOrg(sdk, record, { network: DEFAULT_NETWORK, forge }))
-      } catch {
-        /* the poller retries */
-      }
+      else await declineRequest(sdk, fresh, current, u, opts)
     } finally {
-      setBusy(null)
+      await loadOrg(sdk, record, opts).then(setOrgView, () => undefined)
     }
   }
 
   const start = (what: Pending): void => {
-    if (unlocked) void act(what, unlocked)
-    else setAsking(what)
+    if (!guard(actionCost(what, request, firstWrite), ACTION[what].confirm.toLowerCase())) return
+    setAsking(what)
   }
 
   const at = Date.parse(request.request.at)
@@ -109,12 +120,12 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
       <div className="mt-3 flex flex-wrap items-center gap-3">
         {card.kind === 'sign' ? (
           <>
-            <Button variant="primary" loading={busy === 'sign'} onClick={() => start('sign')} data-testid="org-sign">
+            <Button variant="primary" onClick={() => start('sign')} data-testid="org-sign">
               Sign ({card.collected} of {card.needed} collected)
             </Button>
             {!request.viewerDeclined ? (
-              <button type="button" className="text-dense text-anvil-600 underline hover:text-anvil-800 dark:text-anvil-300" disabled={busy !== null} onClick={() => start('decline')} data-testid="org-decline">
-                {busy === 'decline' ? 'Declining…' : 'Decline'}
+              <button type="button" className="text-dense text-anvil-600 underline hover:text-anvil-800 dark:text-anvil-300" onClick={() => start('decline')} data-testid="org-decline">
+                Decline
               </button>
             ) : (
               <span className="text-dense text-anvil-500 dark:text-anvil-400">You declined</span>
@@ -130,24 +141,28 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
           </>
         ) : null}
         {card.kind === 'finish' ? (
-          <Button variant="primary" loading={busy === 'finish'} onClick={() => start('finish')} data-testid="org-finish">
+          <Button variant="primary" onClick={() => start('finish')} data-testid="org-finish">
             Finish
           </Button>
         ) : null}
         {card.kind === 'done' ? (
           <span className="inline-flex items-center gap-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="org-done">
-            <Check className="h-4 w-4" aria-hidden /> Done
+            <Check className="h-4 w-4" aria-hidden /> {request.proposals.some((p) => p.gone) ? 'Done (no longer on Platform)' : 'Done'}
           </span>
         ) : null}
         {card.kind === 'expired' ? <span className="text-dense text-anvil-600 dark:text-anvil-300">Expired: the organization made another change first. Ask again if it is still needed.</span> : null}
-        {card.kind === 'declined' ? <span className="text-dense text-anvil-600 dark:text-anvil-300">Declined: too many members declined it, so it can no longer collect enough signatures.</span> : null}
-        {card.kind === 'invalid' ? <span className="text-dense text-anvil-600 dark:text-anvil-300">Forge won&apos;t sign this: {card.reason || 'it is not an action Forge recognises'}.</span> : null}
+        {card.kind === 'declined' ? <span className="text-dense text-anvil-600 dark:text-anvil-300">{declinedText(card.needed, card.size)}</span> : null}
+        {card.kind === 'invalid' ? (
+          <>
+            <span className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="org-refused">
+              {refusedText(card.reasons)}
+            </span>
+            <Button size="sm" variant="outline" onClick={() => dismissRequest(record.network, record.orgId, request.request.id)} data-testid="org-dismiss">
+              Dismiss
+            </Button>
+          </>
+        ) : null}
       </div>
-      {problem ? (
-        <p role="alert" className="mt-2 text-dense text-danger-700 dark:text-danger-400">
-          {problem}
-        </p>
-      ) : null}
 
       <details className="mt-3 text-dense">
         <summary className="cursor-pointer text-anvil-600 dark:text-anvil-300">Details</summary>
@@ -184,16 +199,22 @@ export function RequestCard({ view, request, highlight = false }: { view: OrgVie
         </dl>
       </details>
 
-      <UnlockDialog
+      <ConfirmDialog
         open={asking !== null}
-        record={record}
-        onClose={() => setAsking(null)}
-        onUnlocked={(u) => {
-          const what = asking
+        onClose={() => {
           setAsking(null)
-          if (what) void act(what, u)
+          setPhrase(EMPTY_PHRASE)
         }}
-      />
+        title={asking ? ACTION[asking].title : ''}
+        description={asking === 'decline' ? 'Declining does not block it; it ends once too many members decline.' : asking === 'finish' ? `The organization pays for its writes; this posts the result for ${record.label}.` : `Your signature counts toward ${request.needed} of ${record.members.length}. Once enough members sign, Forge sends it.`}
+        cost={asking ? actionCost(asking, request, firstWrite) : null}
+        confirmLabel={asking ? ACTION[asking].confirm : 'Confirm'}
+        successNote={asking ? ACTION[asking].done : undefined}
+        request
+        onConfirm={(intent) => (asking ? act(asking, intent) : Promise.resolve())}
+      >
+        {unlocked ? null : <PhraseField value={phrase} onChange={setPhrase} autoFocus />}
+      </ConfirmDialog>
     </article>
   )
 }

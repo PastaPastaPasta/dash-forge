@@ -59,7 +59,7 @@ import {
   type ConfigChange,
   type RepoDocEdit,
 } from '@/lib/repo'
-import { MAX_TOPICS } from '@/lib/repo/settings'
+import { MAX_TOPICS, topicChanges } from '@/lib/repo/settings'
 import { writeContractKind } from '@/lib/layout'
 import { missingDefaultProtection } from '@/lib/rules'
 import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
@@ -417,10 +417,15 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
   const changed = Object.keys(edit).length > 0
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
   const cost = previewRepoEdit(edit, held.data, home.repo.visibility, home.repo.forge)
-  const run = async (): Promise<void> => {
+  const orgParts = (e: RepoDocEdit): number => {
+    if (e.topics === undefined || home.repo.visibility !== 'public') return 1
+    const { added, removed } = topicChanges(held.data ?? home.v2.topics, e.topics)
+    return 1 + added.length + removed.length
+  }
+  const run = async (intent?: string): Promise<void> => {
     if (orgOwned && pending !== null) {
       const edit = pending
-      await org.submit((s) => listingRequest(s, home.repo, edit))
+      await org.submit((s) => listingRequest(s, home.repo, edit), intent)
       return
     }
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
@@ -460,7 +465,7 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
         {owner && changed ? (
           <SaveBar
             disabled={problem !== null || (!orgOwned && guard.disabledReason !== null)}
-            cost={orgOwned ? null : cost}
+            cost={orgOwned ? org.cost(orgParts(edit)) : cost}
             onCancel={reset}
             onSave={() => {
               if (orgOwned) {
@@ -486,7 +491,7 @@ function RepoDocForm({ home, maintainer, owner, onSaved }: { home: RepoHome; mai
             ? "Replaces the description and topics. The repo's name can't change."
             : "Replaces the description and topics. Each topic added or removed costs a little extra so Explore can count it. The repo's name and visibility can't change."
         }
-        cost={pending && !orgOwned ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
+        cost={pending === null ? null : orgOwned ? org.cost(orgParts(pending)) : previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge)}
         confirmLabel={orgOwned ? 'Sign & ask co-signers' : 'Sign & save'}
         {...(orgOwned ? {} : { toast: { running: 'Saving the repo details…', done: 'Repository details saved' } })}
         request={orgOwned}

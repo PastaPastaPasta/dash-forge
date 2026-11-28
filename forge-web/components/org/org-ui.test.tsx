@@ -6,12 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useOrgsStore } from '@/hooks/use-orgs'
 import { cardState } from '@/lib/org/requests'
 import type { OrgView, RequestView } from '@/lib/org/service'
-import { forgetOrg, saveOrg, type OrgRecord } from '@/lib/org/store'
+import { dismissedRequests, forgetOrg, saveOrg, type OrgRecord } from '@/lib/org/store'
+import { useState } from 'react'
 
-vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null }) }))
+const auth = vi.hoisted(() => ({ value: { identity: null } as Record<string, unknown> }))
+vi.mock('@/contexts/auth-context', () => ({ useAuth: () => auth.value }))
 
 const { RequestCard } = await import('./request-card')
 const { NeedsSignature } = await import('./needs-signature')
+const { EMPTY_PHRASE, PhraseField } = await import('./phrase-field')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -35,8 +38,8 @@ function request(status: RequestView['status'], viewerSigned: boolean, collected
   return {
     request: { id: '0123456789abcdef', title: 'x', forge: true, proposals: [], from: 'b'.repeat(64), at: new Date().toISOString(), malformed: false },
     status,
-    card: cardState(status, collected, 2, viewerSigned, 'the nonce was already used'),
-    proposals: [{ id: 'p', decoded: null, problems: [], sentence: 'Give alice.dash Write access to Acme/widgets', done: false }],
+    card: cardState(status, collected, 2, viewerSigned, ['the nonce was already used'], 3),
+    proposals: [{ id: 'p', decoded: null, problems: [], sentence: 'Give alice.dash Write access to Acme/widgets', done: false, gone: false, nonceUnread: false, superseded: false }],
     collected,
     needed: 2,
     proposer: 'p2',
@@ -47,7 +50,7 @@ function request(status: RequestView['status'], viewerSigned: boolean, collected
   }
 }
 
-const view = (requests: RequestView[]): OrgView => ({ record, identity: {} as OrgView['identity'], state: {} as OrgView['state'], requests })
+const view = (requests: RequestView[]): OrgView => ({ record, roster: {} as OrgView['roster'], state: {} as OrgView['state'], members: [], requests, unreadLogs: 0, reconnect: false })
 
 let host: HTMLDivElement
 let root: Root
@@ -106,13 +109,59 @@ describe('request card', () => {
 
     const d = view([request('declined', false)])
     render(<RequestCard view={d} request={d.requests[0]!} />)
-    expect(host.textContent).toContain('Declined: too many members declined it')
+    expect(host.textContent).toContain('Declined: too many members declined it to reach 2 of 3.')
     expect(host.querySelector('[data-testid="org-sign"]')).toBeNull()
 
     const i = view([request('invalid', false)])
     render(<RequestCard view={i} request={i.requests[0]!} />)
     expect(host.textContent).toContain("Forge won't sign this: the nonce was already used.")
     expect(host.querySelector('[data-testid="org-sign"]')).toBeNull()
+  })
+
+  it('a request Forge will never sign offers a local Dismiss, which writes nothing', () => {
+    const i = view([request('invalid', false)])
+    render(<RequestCard view={i} request={i.requests[0]!} />)
+    expect(dismissedRequests('testnet', record.orgId).has('0123456789abcdef')).toBe(false)
+    act(() => (host.querySelector('[data-testid="org-dismiss"]') as HTMLButtonElement).click())
+    expect(dismissedRequests('testnet', record.orgId).has('0123456789abcdef')).toBe(true)
+    expect(host.querySelector('[data-testid="org-decline"]')).toBeNull()
+  })
+})
+
+describe('org write guard', () => {
+  it('a session whose keys each cover one Forge contract is asked to replace its key before signing', async () => {
+    const { useUiStore } = await import('@/hooks/use-ui-store')
+    const openLogin = vi.fn()
+    useUiStore.setState({ openLogin })
+    auth.value = { identity: 'Me1111111111111111111111111111111111111111', signer: { identityId: 'Me1111111111111111111111111111111111111111' }, balance: '100000000000', grants: { core: true, collab: true, community: true, meta: true }, groupKey: false, keyLimits: null, funds: null, unlockScope: 'full' }
+    try {
+      const v = view([request('collecting', false)])
+      render(<RequestCard view={v} request={v.requests[0]!} />)
+      act(() => (host.querySelector('[data-testid="org-sign"]') as HTMLButtonElement).click())
+      expect(openLogin).toHaveBeenCalledWith('wallet-replace')
+      expect(document.querySelector('[role="dialog"]')).toBeNull()
+      openLogin.mockClear()
+      auth.value = { ...auth.value, groupKey: true }
+      render(<RequestCard view={v} request={v.requests[0]!} />)
+      act(() => (host.querySelector('[data-testid="org-sign"]') as HTMLButtonElement).click())
+      expect(openLogin).not.toHaveBeenCalled()
+    } finally {
+      auth.value = { identity: null }
+    }
+  })
+})
+
+describe('phrase field', () => {
+  it('masks the phrase as typed, with a Show button', () => {
+    const Harness = (): JSX.Element => {
+      const [v, setV] = useState(EMPTY_PHRASE)
+      return <PhraseField value={v} onChange={setV} />
+    }
+    render(<Harness />)
+    const input = host.querySelector('[data-testid="org-phrase"]') as HTMLInputElement
+    expect(input.type).toBe('password')
+    act(() => (host.querySelector('[data-testid="org-phrase-show"]') as HTMLButtonElement).click())
+    expect((host.querySelector('[data-testid="org-phrase"]') as HTMLInputElement).type).toBe('text')
   })
 })
 

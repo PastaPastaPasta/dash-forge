@@ -177,15 +177,16 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   // A role change to or from Bot moves the key to members-only content: priced with it.
   const changeCost = (member: string, from: MemberRole, to: MemberRole): ReturnType<typeof keyedRoleChangeCost> =>
     keyedRoleChangeCost(keyed ? laneSession : null, identity, member, from, to, repo.forge.core, ops?.keyId ?? null)
-  const runOrgAction = async (): Promise<void> => {
+  const runOrgAction = async (intent: string): Promise<void> => {
     if (!action) return
     const a = action
-    await org.submit((s) =>
-      a.kind === 'change' ? changeRoleRequest(s, repo, a.member, a.role, a.to) : a.kind === 'grant' ? grantRequest(s, repo, a.member, a.role) : revokeRequest(s, repo, a.member, a.role),
+    await org.submit(
+      (s) => (a.kind === 'change' ? changeRoleRequest(s, repo, a.member, a.role, a.to) : a.kind === 'grant' ? grantRequest(s, repo, a.member, a.role) : revokeRequest(s, repo, a.member, a.role)),
+      intent,
     )
   }
   const runAction = async (intent: string): Promise<void> => {
-    if (orgOwned) return runOrgAction()
+    if (orgOwned) return runOrgAction(intent)
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     const planned = envFlow.envsPlanned
     // their consent is gone or not given yet: nothing about the membership was signed
@@ -440,7 +441,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     ? 'Removes them from this repo and changes the key to its members-only content.'
                     : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
-          cost={orgOwned ? null : envFlow.cost(
+          cost={orgOwned ? org.cost(action?.kind === 'change' ? 2 : 1) : envFlow.cost(
             action === null
               ? previewCreate('writer')
               : action.kind === 'revoke'

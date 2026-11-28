@@ -2,13 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import { declaredOrgLink, orgsEnabled, parseDeclaredOrg } from './gate'
 import { parseInvite, roomOnNetwork } from './invite'
-import { cardState, groupRequests, makeNote, parseNote, requestStatus, waitingForViewer, type ProposalFacts } from './requests'
+import { cardState, declinedText, findRequest, groupRequests, makeNote, parseNote, refusalReasons, refusedText, requestStatus, waitingForViewer, type ProposalFacts } from './requests'
 import type { Proposal, RoomState } from './state'
 
 const CID = 'c'.repeat(64)
 const A = 'a'.repeat(64)
 const B = 'b'.repeat(64)
-const MEMBERS = new Set([A, B])
 
 function proposal(id: string, note: string | undefined, over: Partial<Proposal> = {}): Proposal {
   return {
@@ -44,10 +43,11 @@ describe('notes', () => {
 })
 
 describe('grouping', () => {
+  const G = '0123456789abcdef'
   it('groups proposals by note.group in seq order; others stand alone', () => {
-    const reqs = groupRequests(state([proposal('p2', note(1, 2)), proposal('p1', note(0, 2)), proposal('solo', 'made elsewhere')]), CID, MEMBERS)
+    const reqs = groupRequests(state([proposal('p2', note(1, 2)), proposal('p1', note(0, 2)), proposal('solo', 'made elsewhere')]), CID)
     const forge = reqs.find((r) => r.forge)!
-    expect(forge.id).toBe('0123456789abcdef')
+    expect(forge.id).toBe(`${G}-${A.slice(0, 16)}`)
     expect(forge.proposals.map((p) => p.id)).toEqual(['p1', 'p2'])
     expect(forge.malformed).toBe(false)
     const solo = reqs.find((r) => !r.forge)!
@@ -55,65 +55,90 @@ describe('grouping', () => {
     expect(solo.title).toBeNull()
   })
 
-  it('someone reusing a group gets a request of their own and leaves the original whole', () => {
-    const reqs = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2026-11-25T00:00:00.000Z' })]), CID, MEMBERS)
+  it("every id carries its proposer's key, so a backdated reuse of a group claims nothing (§11.5)", () => {
+    const reqs = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2000-01-01T00:00:00.000Z' })]), CID)
     expect(reqs).toHaveLength(2)
     expect(reqs.every((r) => !r.malformed)).toBe(true)
-    expect(reqs.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
-    expect(reqs.find((r) => r.from === B)!.id).toBe(`0123456789abcdef-${B.slice(0, 16)}`)
-    const backdated = groupRequests(state([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B, at: '2000-01-01T00:00:00.000Z', status: 'invalid' })]), CID, MEMBERS)
-    expect(backdated.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
-    const C = 'd'.repeat(64)
-    const base = proposal('p2', undefined).body
-    const outsider = proposal('p2', note(0, 1), { from: C, at: '2000-01-01T00:00:00.000Z', body: { ...base, note: note(0, 1), requirements: [...base.requirements, { cid: 'e'.repeat(64), slot: 'high' }] } })
-    const taken = groupRequests(state([proposal('p1', note(0, 1)), outsider]), CID, MEMBERS)
-    expect(taken.find((r) => r.from === A)!.id).toBe('0123456789abcdef')
-    expect(taken.find((r) => r.from === C)!.id).toBe(`0123456789abcdef-${C.slice(0, 16)}`)
-    const twoKeys = proposal('p2', note(0, 1), { from: B, at: '2000-01-01T00:00:00.000Z', body: outsider.body })
-    expect(groupRequests(state([proposal('p1', note(0, 1)), twoKeys]), CID, MEMBERS).find((r) => r.from === A)!.id).toBe('0123456789abcdef')
+    expect(reqs.find((r) => r.from === A)!.id).toBe(`${G}-${A.slice(0, 16)}`)
+    expect(reqs.find((r) => r.from === B)!.id).toBe(`${G}-${B.slice(0, 16)}`)
+  })
+
+  it('a bare group id resolves only when exactly one proposer used it', () => {
+    const views = (ps: Proposal[]) => groupRequests(state(ps), CID).map((request) => ({ request }))
+    const one = views([proposal('p1', note(0, 1))])
+    expect(findRequest(one, G)?.request.from).toBe(A)
+    expect(findRequest(one, `${G}-${A.slice(0, 16)}`)?.request.from).toBe(A)
+    expect(findRequest(one, 'p1')).toBeNull()
+    expect(findRequest(one, G.slice(0, 6))?.request.from).toBe(A)
+    expect(findRequest(one, G.slice(0, 3))).toBeNull()
+    const two = views([proposal('p1', note(0, 1)), proposal('p2', note(0, 1), { from: B })])
+    expect(findRequest(two, G)).toBeNull()
+    expect(findRequest(two, `${G}-${B.slice(0, 16)}`)?.request.from).toBe(B)
+    expect(findRequest(views([proposal('solo', undefined)]), 'solo')?.request.id).toBe('solo')
   })
 
   it('a group with a missing part or a duplicate seq is malformed', () => {
-    expect(groupRequests(state([proposal('p1', note(0, 2))]), CID, MEMBERS)[0]!.malformed).toBe(true)
-    expect(groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(0, 2))]), CID, MEMBERS)[0]!.malformed).toBe(true)
+    expect(groupRequests(state([proposal('p1', note(0, 2))]), CID)[0]!.malformed).toBe(true)
+    expect(groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(0, 2))]), CID)[0]!.malformed).toBe(true)
   })
 
   it('ignores proposals for another ceremony', () => {
     const other = proposal('x', note(0, 1), { body: { ...proposal('x', undefined).body, requirements: [{ cid: 'd'.repeat(64), slot: 'high' }] } })
-    expect(groupRequests(state([other]), CID, MEMBERS)).toEqual([])
+    expect(groupRequests(state([other]), CID)).toEqual([])
   })
 })
 
 describe('request status', () => {
-  const [req] = groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(1, 2))]), CID, MEMBERS)
-  const nonces = { p1: facts(5n), p2: facts(6n) } as Record<string, ProposalFacts>
-  const at = (n: bigint) => () => n
+  const [req] = groupRequests(state([proposal('p1', note(0, 2)), proposal('p2', note(1, 2))]), CID)
+  const base = { p1: facts(5n), p2: facts(6n) } as Record<string, ProposalFacts>
+  const with_ = (over: (id: string) => Partial<ProposalFacts>) => (id: string) => ({ ...base[id]!, ...over(id) })
+  const plain = (id: string) => base[id]
 
   it('collecting, ready, done, expired, invalid', () => {
-    expect(requestStatus(req!, (id) => nonces[id], at(4n))).toBe('collecting')
+    expect(requestStatus(req!, plain)).toBe('collecting')
     const ready = { ...req!, proposals: req!.proposals.map((p) => ({ ...p, status: 'ready' as const })) }
-    expect(requestStatus(ready, (id) => nonces[id], at(4n))).toBe('ready')
-    const done = { ...req!, proposals: req!.proposals.map((p) => ({ ...p, status: 'executed' as const })) }
-    expect(requestStatus(done, (id) => nonces[id], at(9n))).toBe('done')
-    expect(requestStatus(done, (id) => ({ ...nonces[id]!, unproven: true }), at(4n))).toBe('ready')
-    expect(requestStatus(req!, (id) => nonces[id], at(5n))).toBe('expired')
-    expect(requestStatus(req!, (id) => nonces[id], at(7n | (3n << 40n)))).toBe('collecting')
-    expect(requestStatus(req!, (id) => ({ ...nonces[id]!, onChain: id === 'p1' }), at(5n))).toBe('collecting')
-    expect(requestStatus(req!, (id) => ({ ...nonces[id]!, onChain: true }), at(6n))).toBe('done')
-    expect(requestStatus(req!, (id) => ({ ...nonces[id]!, reviewProblems: id === 'p2' ? ['bad'] : [] }), at(4n))).toBe('invalid')
+    expect(requestStatus(ready, plain)).toBe('ready')
+    expect(requestStatus(req!, with_(() => ({ spent: true })))).toBe('expired')
+    expect(requestStatus(req!, with_((id) => ({ onChain: id === 'p1', spent: id === 'p1' })))).toBe('collecting')
+    expect(requestStatus(req!, with_((id) => ({ onChain: true, spent: true, reviewProblems: id === 'p1' ? ['it raises the fee'] : [] })))).toBe('invalid')
+    expect(requestStatus(req!, with_(() => ({ onChain: true, spent: true })))).toBe('done')
+    expect(requestStatus(req!, with_((id) => ({ reviewProblems: id === 'p2' ? ['bad'] : [] })))).toBe('invalid')
+    expect(requestStatus(req!, with_(() => ({ nonceProblem: 'its nonce is further ahead than Platform accepts' })), true)).toBe('invalid')
+    expect(requestStatus(req!, with_(() => ({ nonceUnread: true })))).toBe('collecting')
     const invalid = { ...req!, proposals: [{ ...req!.proposals[0]!, status: 'invalid' as const }, req!.proposals[1]!] }
-    expect(requestStatus(invalid, (id) => nonces[id], at(4n))).toBe('invalid')
+    expect(requestStatus(invalid, plain)).toBe('invalid')
+  })
+
+  it("a member's broadcast claim alone is not done; a create gone from Platform after its claim is (§11.6)", () => {
+    const claimed = { ...req!, proposals: req!.proposals.map((p) => ({ ...p, status: 'executed' as const })) }
+    expect(requestStatus(claimed, plain)).toBe('ready')
+    expect(requestStatus(claimed, with_(() => ({ spent: true })))).toBe('expired')
+    expect(requestStatus(claimed, with_(() => ({ spent: true, gone: true })))).toBe('done')
+  })
+
+  it('invalid wins over declined, and declined over done and expired (§11.3)', () => {
+    expect(requestStatus(req!, with_((id) => ({ reviewProblems: id === 'p1' ? ['bad'] : [] })), true)).toBe('invalid')
+    expect(requestStatus(req!, plain, true)).toBe('declined')
+    expect(requestStatus(req!, with_(() => ({ spent: true })), true)).toBe('declined')
+  })
+
+  it("says why Forge won't sign it", () => {
+    expect(refusalReasons(req!, with_((id) => ({ reviewProblems: id === 'p2' ? ['the transition raises the fee'] : [] })))).toEqual(['the transition raises the fee'])
+    expect(refusalReasons({ ...req!, malformed: true }, with_(() => ({ reviewProblems: ['it raises the fee'] })))).toEqual(['its parts are missing, repeated, or from different members', 'it raises the fee'])
   })
 })
 
 describe('request card', () => {
-  it('one primary state per status', () => {
+  it('one primary state per status, in the same words as dg', () => {
     expect(cardState('collecting', 1, 2, false)).toEqual({ kind: 'sign', collected: 1, needed: 2 })
     expect(cardState('collecting', 1, 2, true)).toEqual({ kind: 'signed', missing: 1 })
     expect(cardState('ready', 2, 2, true)).toEqual({ kind: 'finish' })
     expect(cardState('done', 2, 2, true)).toEqual({ kind: 'done' })
     expect(cardState('expired', 1, 2, false)).toEqual({ kind: 'expired' })
-    expect(cardState('invalid', 0, 2, false, 'why')).toEqual({ kind: 'invalid', reason: 'why' })
+    expect(cardState('declined', 1, 2, false, [], 3)).toEqual({ kind: 'declined', needed: 2, size: 3 })
+    expect(cardState('invalid', 0, 2, false, ['why'])).toEqual({ kind: 'invalid', reasons: ['why'] })
+    expect(declinedText(2, 3)).toBe('Declined: too many members declined it to reach 2 of 3.')
+    expect(refusedText(['the nonce was already used', 'the transition raises the fee'])).toBe("Forge won't sign this: the nonce was already used; the transition raises the fee.")
   })
 
   it('counts as waiting only while collecting, unsigned and not declined', () => {

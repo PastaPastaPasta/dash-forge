@@ -16,6 +16,10 @@ export interface OrgRecord {
   readonly label: string
   readonly threshold: number
   readonly members: readonly OrgMember[]
+  /** The Forge identity whose `orgMember` binds `authPub`, once known. */
+  readonly identityId?: string
+  /** Every member key that identity bound to the organization, newest first (after a ceremony re-run there are several). */
+  readonly boundKeys?: readonly string[]
 }
 
 const storageKey = (network: string): string => `forge:orgs:${network}`
@@ -73,9 +77,10 @@ export function connectedOrg(network: string, orgId: string): OrgRecord | null {
   return read(network).find((r) => r.orgId === orgId) ?? null
 }
 
+/** Remembers `record`, replacing this identity's record for the organization (and an older one for the same member key). */
 export function saveOrg(record: OrgRecord): void {
-  const list = read(record.network).filter((r) => r.orgId !== record.orgId)
-  write(record.network, [...list, record])
+  const replaces = (r: OrgRecord): boolean => r.orgId === record.orgId && (r.identityId === record.identityId || (r.identityId === undefined && r.authPub === record.authPub))
+  write(record.network, [...read(record.network).filter((r) => !replaces(r)), record])
 }
 
 export function forgetOrg(network: string, orgId: string): void {
@@ -150,3 +155,62 @@ export function subscribeUnlock(listener: () => void): () => void {
 }
 
 export const unlockGeneration = (): number => unlockVersion
+
+const ceremonyKey = (network: string, orgId: string): string => `forge:org-ceremony:${network}:${orgId}`
+
+/** The key ceremony's messages, kept when a member connects (§10.4): public values only. */
+export function cachedCeremony(network: string, orgId: string): unknown[] | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(ceremonyKey(network, orgId))
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+export function cacheCeremony(network: string, orgId: string, messages: readonly unknown[]): void {
+  try {
+    globalThis.localStorage?.setItem(ceremonyKey(network, orgId), JSON.stringify(messages))
+  } catch {
+    /* storage full or unavailable: read again from the relay next time */
+  }
+}
+
+const dismissedKey = (network: string, orgId: string): string => `forge:org-dismissed:${network}:${orgId}`
+const dismissListeners = new Set<() => void>()
+const dismissed = new Map<string, ReadonlySet<string>>()
+
+/** The requests dismissed on this device; the same set until one more is dismissed. */
+export function dismissedRequests(network: string, orgId: string): ReadonlySet<string> {
+  const key = dismissedKey(network, orgId)
+  const hit = dismissed.get(key)
+  if (hit) return hit
+  let set: ReadonlySet<string> = new Set()
+  try {
+    const parsed = JSON.parse(globalThis.localStorage?.getItem(key) ?? '[]') as unknown
+    if (Array.isArray(parsed)) set = new Set(parsed.filter((x): x is string => typeof x === 'string'))
+  } catch {
+    /* unreadable: nothing dismissed */
+  }
+  dismissed.set(key, set)
+  return set
+}
+
+/** Hides a request Forge won't sign on this device (§11.1): nothing is written anywhere. */
+export function dismissRequest(network: string, orgId: string, requestId: string): void {
+  const key = dismissedKey(network, orgId)
+  const next = new Set([...dismissedRequests(network, orgId), requestId])
+  dismissed.set(key, next)
+  try {
+    globalThis.localStorage?.setItem(key, JSON.stringify([...next].slice(-500)))
+  } catch {
+    /* kept for this tab */
+  }
+  for (const l of dismissListeners) l()
+}
+
+export function subscribeDismissed(listener: () => void): () => void {
+  dismissListeners.add(listener)
+  return () => dismissListeners.delete(listener)
+}
