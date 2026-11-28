@@ -1539,6 +1539,17 @@ pub(crate) async fn existing_copies(
     }))
 }
 
+/// The names in `policy` that resolved to Platform storage under another name (a saved
+/// `kind = "platform"` profile), which `dash.storage` records as `platform`.
+fn platform_aliases<'a>(policy: &'a StoragePolicy, resolved: &ResolvedPolicy) -> Vec<&'a str> {
+    policy
+        .targets
+        .iter()
+        .filter(|t| *t != PLATFORM_PROFILE && !resolved.external.iter().any(|(n, _)| n == *t))
+        .map(String::as_str)
+        .collect()
+}
+
 #[allow(clippy::too_many_lines)] // one flow: set the policy, then say what it leaves behind
 async fn use_profiles(
     ctx: &Ctx,
@@ -1618,6 +1629,9 @@ async fn use_profiles(
                 resolved.total(),
                 if resolved.platform_fallback { ", falling back to Platform" } else { "" }
             );
+            for alias in platform_aliases(&policy, &resolved) {
+                println!("note: {alias} is Dash Platform storage, which git config records as `platform`");
+            }
             for w in &url_warnings {
                 println!("warning: {w}");
             }
@@ -2133,6 +2147,26 @@ async fn probe_uris(uris: &[String], reader: &PackReader) -> Vec<serde_json::Val
 pub(crate) mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[test]
+    fn a_saved_platform_profile_is_named_as_platform_storage() {
+        let profiles = StorageProfiles::parse(
+            "[profiles.chain]\nkind = \"platform\"\n[profiles.r2]\nkind = \"s3\"\nendpoint = \"https://a.r2.cloudflarestorage.com\"\nbucket = \"b\"\n",
+        )
+        .unwrap();
+        let aliases = |list: &str| {
+            let policy = StoragePolicy::from_git_values(Some(list), None, None).unwrap();
+            let resolved = policy.resolve(&profiles).unwrap();
+            platform_aliases(&policy, &resolved)
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(aliases("chain"), vec!["chain".to_string()]);
+        assert_eq!(aliases("r2,chain"), vec!["chain".to_string()]);
+        assert!(aliases("platform").is_empty());
+        assert!(aliases("r2,platform").is_empty());
+    }
 
     #[test]
     fn storage_share_sets_the_repository_entry_and_uploads_what_is_only_local() {
