@@ -286,6 +286,9 @@ struct GroupContractRecord {
     contract_id: Option<String>,
     #[serde(default)]
     contract_group_id: Option<String>,
+    /// `broadcasting` while a deploy script's create is in flight, `registered` once confirmed.
+    #[serde(default)]
+    status: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -610,6 +613,10 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
     let Some((_, raw)) = EMBEDDED_DEPLOYMENTS.iter().find(|(k, _)| *k == key) else {
         return Ok(None);
     };
+    parse_deployment(key, raw).map(Some)
+}
+
+fn parse_deployment(key: &str, raw: &str) -> Result<Deployment> {
     let file: DeploymentFile = serde_json::from_str(raw).map_err(|e| {
         Error::Config(format!(
             "forge-contracts/deployments/{key}.json is malformed: {e}"
@@ -620,7 +627,7 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
         .iter()
         .map(|a| normalize_dapi_address(a))
         .collect::<Result<_>>()?;
-    Ok(Some(Deployment {
+    Ok(Deployment {
         key: key.to_string(),
         dapi_addresses,
         quorum_base_url: file.quorum_base_url.filter(|s| !s.is_empty()),
@@ -632,11 +639,15 @@ pub fn deployment(key: &str) -> Result<Option<Deployment>> {
                     .map(str::to_owned)
             };
             ids.user = in_group(file.user.as_ref());
-            ids.org = in_group(file.org.as_ref());
+            ids.org = in_group(
+                file.org
+                    .as_ref()
+                    .filter(|r| r.status.as_deref() == Some("registered")),
+            );
             ids
         }),
         retired: file.retired,
-    }))
+    })
 }
 
 /// A network plus the forge-v2 contracts deployed on it — what
@@ -1993,6 +2004,29 @@ mod tests {
         forge.org = Some("ORG".into());
         assert!(forge.allows_key_bounds(Some(&contract("ORG", None))));
         assert!(forge.is_group_member("ORG"));
+    }
+
+    #[test]
+    fn forge_org_counts_once_registered_in_this_group() {
+        let file = |org: &str| {
+            format!(
+                r#"{{"v2":{{"forgeCore":{{"contractId":"C","status":"registered"}},
+                "forgeCollab":{{"contractId":"L","status":"registered"}},"contractGroupId":"G"}},
+                "user":{{"contractId":"U","contractGroupId":"G"}},"org":{org}}}"#
+            )
+        };
+        let org_of = |org: &str| parse_deployment("x", &file(org)).unwrap().v2.unwrap();
+        let registered =
+            org_of(r#"{"contractId":"O","contractGroupId":"G","status":"registered"}"#);
+        assert_eq!(registered.org.as_deref(), Some("O"));
+        assert_eq!(registered.user.as_deref(), Some("U"));
+        for pending in [
+            r#"{"contractId":"O","contractGroupId":"G","status":"broadcasting"}"#,
+            r#"{"contractId":"O","contractGroupId":"G"}"#,
+            r#"{"contractId":"O","contractGroupId":"OTHER","status":"registered"}"#,
+        ] {
+            assert_eq!(org_of(pending).org, None, "{pending}");
+        }
     }
 
     #[test]

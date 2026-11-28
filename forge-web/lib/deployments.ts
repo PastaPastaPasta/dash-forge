@@ -32,6 +32,8 @@ export interface GroupContractRecord {
   readonly contractId?: string | null
   readonly ownerId?: string | null
   readonly contractGroupId?: string | null
+  /** `broadcasting` while a deploy script's create is in flight, `registered` once confirmed. */
+  readonly status?: string
 }
 
 /** The fields forge-web reads from a deployment file. */
@@ -174,7 +176,7 @@ export function forgeV2Ids(file: DeploymentFile | undefined): ForgeIds | null {
   if (!(core && collab && community && group) || meta === null) return null
   const inGroup = (r: GroupContractRecord | undefined): string | undefined => (r?.contractId && r.contractGroupId === group ? r.contractId : undefined)
   const user = inGroup(file?.user)
-  const org = inGroup(file?.org)
+  const org = file?.org?.status === 'registered' ? inGroup(file.org) : undefined
   return {
     core,
     collab,
