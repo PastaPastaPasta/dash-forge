@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { participantKeys } from './derive'
 import { envelopeId, type Envelope } from './envelope'
 import { MAX_PAYLOAD, mergeLogs, memberIdentities, openShare, reassemble, sealShare, signMemberProof, storedPayload, verifyMemberProof, type MemberRow, type MessageRow } from './platform'
-import { declinedOut, findRequest, goneCreate, supersededWrite, groupRequests, landed, proposalDone, refusalReasons, refusedText, declinedText, requestStatus, type OrgRequest, type ProposalFacts } from './requests'
+import { declinedOut, findRequest, goneCreate, groupRequests, partWrite, proposalDone, refusalReasons, refusedText, declinedText, requestStatus, type OrgRequest, type ProposalFacts } from './requests'
 import { rosterCeremony, rosterFields, rosterFromDoc } from './roster'
 import { reduce, type Proposal } from './state'
 import { hex, unhex } from './util'
@@ -16,7 +16,7 @@ interface Part {
   readonly shares: number
   readonly claim: boolean
   readonly nonceSpent: boolean
-  readonly doc: 'absent' | 'present' | 'same' | 'different' | 'later'
+  readonly doc: 'absent' | 'present' | 'same' | 'different' | 'base' | 'later'
   readonly takenByOther: boolean
 }
 
@@ -172,13 +172,19 @@ describe('platform-v1.json (shared with forge-core::org)', () => {
     }))
     const request: OrgRequest = { id: 'r', title: 't', forge: true, proposals, from: roster.members[0] as string, at: '', malformed: (c.problems ?? []).includes('its parts are missing, repeated, or from different members') }
     const want = { revision: 2n, fields: { a: 1 } }
-    const stored = (doc: Part['doc']) => (doc === 'absent' ? null : doc === 'later' ? { revision: 3n, fields: { a: 2 } } : doc === 'different' ? { revision: 2n, fields: { a: 2 } } : { revision: 2n, fields: { a: 1 } })
+    const STORED: Record<Part['doc'], { revision: bigint; fields: Record<string, unknown> } | null> = {
+      absent: null,
+      present: { revision: 1n, fields: { a: 0 } },
+      base: { revision: 1n, fields: { a: 0 } },
+      same: { revision: 2n, fields: { a: 1 } },
+      different: { revision: 2n, fields: { a: 2 } },
+      later: { revision: 3n, fields: { a: 2 } },
+    }
     const facts = new Map<string, ProposalFacts>(
       c.parts.map((part, i) => {
-        const isLanded = landed(part.action, stored(part.doc), want, part.nonceSpent, part.claim)
-        const superseded = !isLanded && supersededWrite(part.action, stored(part.doc), want.revision, part.nonceSpent, part.claim)
+        const { landed: isLanded, superseded, absent } = partWrite(part.action, STORED[part.doc], want, part.nonceSpent, part.claim)
         const problems = (c.problems ?? []).filter((x) => x !== 'its parts are missing, repeated, or from different members')
-        return [`p${i}`, { reviewProblems: i === 0 ? problems : [], nonce: BigInt(i), contractId: 'c', spent: part.nonceSpent || part.takenByOther, onChain: isLanded && !part.takenByOther, gone: goneCreate(part.action, part.claim, part.nonceSpent, isLanded, part.takenByOther), superseded }]
+        return [`p${i}`, { reviewProblems: i === 0 ? problems : [], nonce: BigInt(i), contractId: 'c', spent: part.nonceSpent || part.takenByOther, onChain: isLanded && !part.takenByOther, gone: goneCreate(part.action, part.claim, part.nonceSpent, absent, part.takenByOther), superseded }]
       }),
     )
     const partState = (i: number): string => {

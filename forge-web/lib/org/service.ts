@@ -25,8 +25,7 @@ import {
   declinedOut,
   goneCreate,
   groupRequests,
-  landed,
-  supersededWrite,
+  partWrite,
   makeNote,
   newGroupId,
   proposalDone,
@@ -38,6 +37,7 @@ import {
   signedBy,
   type CardState,
   type OrgRequest,
+  type PartWrite,
   type ProposalFacts,
   type RequestStatus,
 } from './requests'
@@ -339,20 +339,15 @@ async function storedDoc(sdk: EvoSDK, contractId: string, type: string, id: stri
 const landedParts = new Set<string>()
 const doneSentences = new Map<string, string>()
 
-interface Written {
-  readonly landed: boolean
-  readonly superseded: boolean
-}
-
 /** Whether a part's write is visible on Platform (§11.6); undefined when the read failed. Once seen, kept for the tab. */
-async function writtenOnChain(sdk: EvoSDK, proposalId: string, d: DecodedTransition, spent: boolean, claimed: boolean): Promise<Written | undefined> {
-  if (landedParts.has(proposalId)) return { landed: true, superseded: false }
+async function writtenOnChain(sdk: EvoSDK, proposalId: string, d: DecodedTransition, spent: boolean, claimed: boolean): Promise<PartWrite | undefined> {
+  if (landedParts.has(proposalId)) return { landed: true, superseded: false, absent: d.action === 'delete' }
   try {
     const doc = await storedDoc(sdk, d.contractId, d.documentType, d.documentId)
     const stored = doc && { revision: doc.revision, fields: doc.data }
-    const seen = landed(d.action, stored, { revision: d.revision, fields: d.data }, spent, claimed)
-    if (seen) landedParts.add(proposalId)
-    return { landed: seen, superseded: !seen && supersededWrite(d.action, stored, d.revision, spent, claimed) }
+    const seen = partWrite(d.action, stored, { revision: d.revision, fields: d.data }, spent, claimed)
+    if (seen.landed) landedParts.add(proposalId)
+    return seen
   } catch {
     return undefined
   }
@@ -390,11 +385,11 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
   )
   const ctx = reviewContext(record, roster, opts.forge, currentNonce)
   const parts = requests.flatMap((r) => r.proposals.map((p, i) => ({ r, p, i, d: decoded.get(p.id) ?? null })))
-  const visible = new Map<string, Written | undefined>()
+  const visible = new Map<string, PartWrite | undefined>()
   await Promise.all(
     parts.map(async ({ p, d }) => {
       const current = d ? currentNonce(d.contractId) : undefined
-      visible.set(p.id, d === null ? { landed: false, superseded: false } : await writtenOnChain(sdk, p.id, d, current !== undefined && isNonceSpent(current, d.nonce), p.status === 'executed'))
+      visible.set(p.id, d === null ? { landed: false, superseded: false, absent: false } : await writtenOnChain(sdk, p.id, d, current !== undefined && isNonceSpent(current, d.nonce), p.status === 'executed'))
     }),
   )
   const landedBy = new Map<string, { readonly request: string; readonly signable: string }[]>()
@@ -416,7 +411,7 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
     const nonceUnread = d !== null && current === undefined
     const takenByOther = slot !== null && d !== null && (landedBy.get(slot) ?? []).some((x) => x.request !== r.id && x.signable !== d.signable)
     const onChain = seen?.landed === true && !takenByOther
-    const gone = d !== null && goneCreate(d.action, p.status === 'executed', spent, seen?.landed, takenByOther)
+    const gone = d !== null && goneCreate(d.action, p.status === 'executed', spent, seen?.absent, takenByOther)
     const superseded = seen?.superseded === true
     const problems = d === null ? ['its transition cannot be read'] : [...reviewDecoded(d, p.body, ctx), ...(reused ? ['it uses the same nonce as another part of this request'] : [])]
     facts.set(p.id, { reviewProblems: problems, nonceProblem: d && current !== undefined && !spent ? nonceProblem(d, current) : null, nonceUnread, nonce: d?.nonce ?? null, contractId: d?.contractId ?? null, spent: spent || takenByOther, onChain, gone, superseded })
