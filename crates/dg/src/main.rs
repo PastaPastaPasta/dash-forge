@@ -403,8 +403,8 @@ pub enum Command {
 #[allow(clippy::struct_excessive_bools)] // independent command-line switches
 pub struct CreateOptions {
     /// Where pushes store packs: comma-separated storage profile names (`platform` is built
-    /// in). Default: git config `dash.storage`, else your only profile; with neither, the
-    /// command stops before spending (E508).
+    /// in). Default: git config `dash.storage`, else your only profile (a saved Platform profile
+    /// counts when you have no other); with neither, the command stops before spending (E508).
     #[arg(long, value_name = "PROFILES")]
     pub storage: Option<String>,
     /// Confirmations a push needs (default: every listed profile).

@@ -8,6 +8,12 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Dash Platform storage profile is storage.** After `dg storage add` → Dash Platform, `dg init` and `dg repo create` stopped with E508 ("run `dg storage add` first") or offered a picker without it. With no other storage profile (synced ones included) and no `dash.storage`, they now use it as your only storage profile, without asking, also under `--yes`: the plan still prices Platform storage. `dg storage use <name>` says the name is Platform storage, recorded as `platform`.
+- **E402 says when a key has budget left.** A write that costs more than a limited key has left said "this key's budget is used up"; it now says "this key's budget is too low for this write" with both amounts in DASH ("this key (#23) has 0.001 DASH of budget left; this write needs about 0.0012 DASH"). The code (E402) and `--json` fields are unchanged.
+- **One line when the OS keychain refuses a key.** On Linux with a Secret Service that refuses writes, a sign-in printed the keyring's raw error twice; it now prints `note: no usable OS keychain here, so the key is sealed in <file>` once (the raw error with `RUST_LOG=debug`).
+
 ## [0.3.2] - 2026-11-27
 
 ### Added

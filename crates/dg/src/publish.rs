@@ -5,7 +5,7 @@
 //! Everything that can refuse runs **before anything is spent** ([`plan`]): the identity,
 //! the local repository and its remote, then the storage — `--storage` > git config
 //! `dash.storage` (this repo's, then the global one) > the user's only storage profile (one
-//! external profile, or with none a saved Platform profile) > a picker (in a terminal) > stop with E508, pricing what Platform storage would cost — and,
+//! external profile, or with none, synced ones included, a saved Platform profile) > a picker (in a terminal) > stop with E508, pricing what Platform storage would cost — and,
 //! for a push, that every storage secret resolves and that `git-remote-dash` gets the key this
 //! run unlocked (a sealed key's passphrase is asked once; the key reaches the helper over an
 //! inherited pipe, never the environment).
@@ -496,7 +496,13 @@ async fn choose_storage(ctx: &Ctx, opts: &CreateOptions, size: Option<u64>) -> R
         .filter(|(_, p)| !p.is_platform())
         .map(|(n, _)| n.clone())
         .collect();
-    if let Some(only) = only_profile(&profiles, &external) {
+    // A saved Platform profile is not the only storage when sync brings external profiles
+    // (which this choice does not list): those keep the picker / E508, as before.
+    let only = match only_profile(&profiles, &external) {
+        Some(_) if external.is_empty() && synced_external(ctx, &profiles).await => None,
+        only => only,
+    };
+    if let Some(only) = only {
         return resolve(
             &profiles,
             only,
@@ -569,6 +575,16 @@ fn only_profile<'a>(profiles: &'a StorageProfiles, external: &'a [String]) -> Op
             .map(|(n, _)| n.as_str()),
         _ => None,
     }
+}
+
+/// Whether settings sync adds an external profile `storage.toml` does not have.
+async fn synced_external(ctx: &Ctx, local: &StorageProfiles) -> bool {
+    crate::sync::merged(ctx, local)
+        .await
+        .profiles
+        .profiles
+        .values()
+        .any(|p| !p.is_platform())
 }
 
 /// The storage picker's choices, in order: Platform (the default: nothing to set up), the

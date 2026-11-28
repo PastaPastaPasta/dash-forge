@@ -296,7 +296,7 @@ Nothing was signed in either case.
 
 **This key's budget is used up.** The limited key signing for you has spent its whole budget (the identity's balance is untouched). Budgets bound what a leaked key could spend.
 
-**This key's budget is too low for this write.** The key still has some budget, but less than this write costs: the cause says both amounts in DASH ("this key has 0.001 DASH of budget left; this write needs about 0.0012 DASH"). Smaller writes may still fit; the fix is the same.
+**This key's budget is too low for this write.** The key still has some budget, but less than this write costs: the cause says both amounts in DASH ("this key (#23) has 0.001 DASH of budget left; this write needs about 0.0012 DASH"). Smaller writes may still fit; the fix is the same.
 
 **What to do:** get a fresh limited key: `dg auth login` (your DashPay wallet approves it), or `dg auth login <identity file>` / `dg auth login --mnemonic` (uses the master key once), with a larger `--budget` if you need one. `dg auth keys add --budget <DASH>` adds one to a signed-in identity.
 

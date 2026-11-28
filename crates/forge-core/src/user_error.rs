@@ -290,7 +290,8 @@ pub mod codes {
     pub const MEMBERS_ONLY: &str = "E313";
     /// The identity's balance cannot pay for the write.
     pub const INSUFFICIENT_CREDITS: &str = "E401";
-    /// The signing key has spent its whole budget (protocol-14 limited keys).
+    /// The signing key has spent its whole budget, or has less left than the write costs
+    /// (protocol-14 limited keys).
     pub const KEY_BUDGET_SPENT: &str = "E402";
     /// `dash.storage` names an unknown profile, or storage.toml is invalid.
     pub const STORAGE_CONFIG: &str = "E501";
@@ -2006,15 +2007,23 @@ fn balance_numbers(m: &str) -> Option<(u64, u64)> {
 /// spent, the write costs more than what is left.
 fn budget_too_low(m: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     let (left, need) = budget_numbers(m).filter(|(left, _)| *left > 0)?;
+    let (mut left_s, mut need_s) = (short_dash(left), short_dash(need));
+    if left_s == need_s {
+        // Rounded to the same amount: show the credits' full precision.
+        let full = |c: u64| {
+            let s = format!("{:.11}", crate::repo::credits_to_dash(c));
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        };
+        (left_s, need_s) = (full(left), full(need));
+    }
+    let key = key_id(m).map(|k| format!(" (#{k})")).unwrap_or_default();
     Some(
         UserError::new(
             codes::KEY_BUDGET_SPENT,
             ctx.headline("this key's budget is too low for this write"),
         )
         .cause(format!(
-            "this key has {} DASH of budget left; this write needs about {} DASH",
-            short_dash(left),
-            short_dash(need)
+            "this key{key} has {left_s} DASH of budget left; this write needs about {need_s} DASH"
         ))
         .fix("get a fresh limited key: `dg auth login` (your DashPay wallet approves a new key; `--budget` asks for more than the default 0.25 DASH), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once)")
         .note("the identity's balance is untouched; smaller writes may still fit in what is left"),
@@ -2024,15 +2033,21 @@ fn budget_too_low(m: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
 /// `(left, needed)` credits from IdentityPublicKeyBudgetExceededError's text ("… has N credits
 /// of budget left, the state transition requires M"), lowercased.
 fn budget_numbers(m: &str) -> Option<(u64, u64)> {
-    let left = m.split(" credits of budget left").next()?;
-    let left = left.rsplit(' ').next()?.parse().ok()?;
-    let need = m.split("the state transition requires ").nth(1)?;
+    let (head, tail) = m.split_once(" credits of budget left")?;
+    let left = head.rsplit(' ').next()?.parse().ok()?;
+    let (_, need) = tail.split_once("the state transition requires ")?;
     let need = need
         .split(|c: char| !c.is_ascii_digit())
         .next()?
         .parse()
         .ok()?;
     Some((left, need))
+}
+
+/// The key id in "… public key N has …" (lowercased).
+fn key_id(m: &str) -> Option<u32> {
+    let (_, rest) = m.split_once("public key ")?;
+    rest.split(' ').next()?.parse().ok()
 }
 
 /// [`dash`] without trailing zeros (`0.001`, not `0.0010`), as `dg auth status` shows budgets.
@@ -2689,7 +2704,9 @@ mod tests {
         );
         assert_eq!(
             u.cause.as_deref(),
-            Some("this key has 0.001 DASH of budget left; this write needs about 0.0012 DASH")
+            Some(
+                "this key (#23) has 0.001 DASH of budget left; this write needs about 0.0012 DASH"
+            )
         );
         assert!(u.fix[0].contains("--budget"));
         let spent = from_platform_text(
@@ -2704,6 +2721,20 @@ mod tests {
         assert_eq!(
             budget_numbers("identity a public key 2 has 1000 credits of budget left, the state transition requires 5000."),
             Some((1000, 5000))
+        );
+        let close = from_platform_text(
+            "Identity 9xYz public key 23 has 121000000 credits of budget left, the state transition requires 124000000",
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(
+            close.cause.as_deref(),
+            Some("this key (#23) has 0.00121 DASH of budget left; this write needs about 0.00124 DASH")
+        );
+        assert_eq!(
+            budget_numbers("the state transition requires 5000"),
+            None,
+            "both phrases are needed"
         );
         assert_eq!(short_dash(100_000_000), "0.001");
         assert_eq!(short_dash(25_000_000_000), "0.25");

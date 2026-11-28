@@ -557,7 +557,7 @@ pub async fn run(p: &mut dyn Prompter, origin: &'static str) -> Result<Added> {
     println!("Saved {}{stored}", tilde(&path));
     println!("Equivalent: {}", equivalent_command(&args));
     if profile.is_platform() {
-        println!("Dash Platform is built in (`platform` names it too): `dg init` and `dg repo create` use it while it is your only storage, and `dg storage use {name}` sets it for a repo");
+        println!("Dash Platform is built in (`platform` names it too): `dg init` and `dg repo create` use it when no dash.storage is set and you have no other storage, and `dg storage use {name}` sets it for a repo");
     } else {
         println!("Use it in a repo: dg storage use {name}");
     }

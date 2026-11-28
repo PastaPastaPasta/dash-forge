@@ -10,7 +10,6 @@
 //! `BridgeIdentity::load_from_file`.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, Result};
 
@@ -158,6 +157,9 @@ pub struct Storer {
     /// Never use the keychain (a full identity with its master key).
     pub no_keychain: bool,
     pass: Option<Secret>,
+    /// Whether this storer already said the OS keychain refused a key: a sign-in stores more
+    /// than once (the pending key, then the confirmed one), and one line says it.
+    keychain_noted: bool,
     /// Where this storer last put a pending key, and the key, so [`promote`] removes that copy
     /// only while it still holds this run's key.
     staged: Option<(Stored, Secret)>,
@@ -213,6 +215,7 @@ impl Storer {
     ) -> Result<Stored> {
         let mut sync_keychain_failed = None;
         let mut keychain_failed = false;
+        let mut keychain_refused = false;
         if !self.no_keychain && keychain::available() {
             let acct = account(network, identity_id, slot);
             // An entry that can't be read is left as it is (it can't be copied first), and the
@@ -241,6 +244,7 @@ impl Storer {
                         Err(e) => {
                             tracing::debug!("the keychain refused the key: {e}");
                             keychain_failed = true;
+                            keychain_refused = true;
                             None
                         }
                     }
@@ -267,7 +271,7 @@ impl Storer {
         if let Some(e) = sync_keychain_failed {
             tracing::debug!("the keychain refused the settings-sync key: {e:#}");
             eprintln!("{}", sync_file_note(&stored));
-        } else if keychain_failed && !KEYCHAIN_NOTED.swap(true, Ordering::Relaxed) {
+        } else if keychain_refused && !std::mem::replace(&mut self.keychain_noted, true) {
             if let Stored::Sealed(p) | Stored::Plaintext(p) = &stored {
                 // A pending key is named as the file it ends up in (as the passphrase prompt does).
                 let main = (slot == Slot::Pending)
@@ -421,10 +425,6 @@ fn sync_fallback(entry: forge_core::error::Result<Option<Secret>>, text: &Secret
         Ok(Some(_)) | Err(_) => SyncFallback::Refuse,
     }
 }
-
-/// Whether this run already said the OS keychain refused a key: a sign-in stores more than once
-/// (the pending key, then the confirmed one), and one line says it.
-static KEYCHAIN_NOTED: AtomicBool = AtomicBool::new(false);
 
 /// The one line for a key the OS keychain did not take; the store's own error goes to
 /// `RUST_LOG=debug`.
@@ -967,6 +967,17 @@ pub fn set_default(ctx: &Ctx, identity_id: &str, source: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_keychain_is_one_plain_line_naming_the_file() {
+        let p = std::path::Path::new("/h/.config/dash-forge/identities/testnet-ID.key");
+        assert_eq!(
+            keychain_refused_note(p, true),
+            "note: no usable OS keychain here, so the key is sealed in /h/.config/dash-forge/identities/testnet-ID.key"
+        );
+        assert!(keychain_refused_note(p, false).contains("kept unencrypted in"));
+        assert!(!Storer::default().keychain_noted);
+    }
 
     /// #664 review: the keychain refusing the key never writes over a master key (or a key that
     /// does not open) nobody was asked about; a limited key there is replaced as usual.
