@@ -388,7 +388,10 @@ mod tests {
         let stored = BTreeMap::from([
             ("$revision".to_string(), FieldValue::Integer(3)),
             ("bio".to_string(), FieldValue::text("old")),
-            ("pubkeys".to_string(), FieldValue::text_list(vec!["ssh-ed25519 AAAA".to_string()])),
+            (
+                "pubkeys".to_string(),
+                FieldValue::text_list(vec!["ssh-ed25519 AAAA".to_string()]),
+            ),
         ]);
         let fields = ProfileFields {
             display_name: Some("Acme".into()),

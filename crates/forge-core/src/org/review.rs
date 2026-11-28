@@ -505,11 +505,18 @@ mod tests {
         let mut other_relay = r.clone();
         other_relay.relay = Some("https://relay.example".into());
         d.properties = other_relay.props();
-        assert_eq!(checked(&d, Some(r.clone())), None, "the relay is not the key");
+        assert_eq!(
+            checked(&d, Some(r.clone())),
+            None,
+            "the relay is not the key"
+        );
         let mut swapped = r.clone();
         swapped.members.swap(0, 1);
         d.properties = swapped.props();
-        assert!(checked(&d, Some(r.clone())).is_some(), "members out of order");
+        assert!(
+            checked(&d, Some(r.clone())).is_some(),
+            "members out of order"
+        );
         let mut lower = r.clone();
         lower.threshold = 3;
         d.properties = lower.props();
@@ -521,19 +528,29 @@ mod tests {
 
     #[test]
     fn a_declared_profile_link_must_name_the_organizations_n_of_m() {
-        let link = |n, m| FieldValue::text_list(vec![
-            "https://acme.example".to_string(),
-            super::super::owner::declared_org_link("testnet", n, m),
-        ]);
+        let link = |n, m| {
+            FieldValue::text_list(vec![
+                "https://acme.example".to_string(),
+                super::super::owner::declared_org_link("testnet", n, m),
+            ])
+        };
         let mut d = write("replace", &[("links", link(2, 3))]);
         d.document_type = "profile".into();
         assert_eq!(checked(&d, Some(roster())), None);
         d.properties.insert("links".into(), link(2, 4));
-        assert!(checked(&d, Some(roster())).unwrap().contains("2 of 4, but it is 2 of 3"));
+        assert!(checked(&d, Some(roster()))
+            .unwrap()
+            .contains("2 of 4, but it is 2 of 3"));
         d.properties.insert(
             "links".into(),
-            FieldValue::text_list(vec![super::super::owner::declared_org_link("devnet-x", 9, 9)]),
+            FieldValue::text_list(vec![super::super::owner::declared_org_link(
+                "devnet-x", 9, 9,
+            )]),
         );
-        assert_eq!(checked(&d, Some(roster())), None, "another network's link is not checked");
+        assert_eq!(
+            checked(&d, Some(roster())),
+            None,
+            "another network's link is not checked"
+        );
     }
 }
