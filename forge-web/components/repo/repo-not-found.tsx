@@ -37,6 +37,7 @@ import { MIRROR_NAMED_PAGES, reposNamed, type DiscoveredRepo } from '@/lib/view/
 import { checkMirrorClaim, githubRepoOf, type MirrorCheck } from '@/lib/view/mirror-check'
 import { mirrorSourceOfDescription, type MirrorSource } from '@/lib/view/mirror-source'
 import { matchUpstream } from '@/lib/view/upstream-alias'
+import { otherNetworkSite } from '@/lib/network-sites'
 
 /** Claims checked at most, per click: each is one request to GitHub. */
 const CHECK_MAX = 10
@@ -96,6 +97,7 @@ function ClaimText({ s, check }: { s: Suggestion; check: MirrorCheck | undefined
 export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const name = addr.name.trim().toLowerCase()
+  const other = otherNetworkSite()
   const found = useAsync(() => reposNamed(sdk!, name, { network, pages: MIRROR_NAMED_PAGES }), [ready, name, network], { enabled: ready && sdk !== null && name !== '' })
   // The answers for this address only: another missing address starts unchecked.
   const [checked, setChecked] = useState<{ readonly name: string; readonly checks: ReadonlyMap<string, MirrorCheck> }>({ name, checks: new Map() })
@@ -157,9 +159,17 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
         title="Repo not found"
         body={`No repo ${addr.owner}/${addr.name} exists on this network.`}
         action={
-          <Link href={`/explore/?q=${encodeURIComponent(name)}`}>
-            <Button variant="primary">Search repos for “{name}”</Button>
-          </Link>
+          <span className="flex flex-wrap items-center justify-center gap-2.5">
+            <Link href={`/explore/?q=${encodeURIComponent(name)}`}>
+              <Button variant="primary">Search repos for “{name}”</Button>
+            </Link>
+            {other !== null ? (
+              // A link from the other network's site lands here with the same address: its repo is there.
+              <a href={`${other.url}${repoHref('/repo', addr)}`} data-testid="repo-other-network">
+                <Button variant="outline">Look on {other.key}</Button>
+              </a>
+            ) : null}
+          </span>
         }
       />
       {suggestions.length > 0 ? (

@@ -78,7 +78,7 @@ export function mirrorRepo(description: string): ForgeRepo | null {
 }
 
 /** `github.com/dashpay/dash` (a mirror source's label) as a {@link ForgeRepo}. */
-function forgeRepoOf(label: string | null): ForgeRepo | null {
+export function forgeRepoOf(label: string | null): ForgeRepo | null {
   const slash = label?.indexOf('/') ?? -1
   return label === null || slash <= 0 ? null : { host: label.slice(0, slash).toLowerCase(), path: label.slice(slash + 1) }
 }
