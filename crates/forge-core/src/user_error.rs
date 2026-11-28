@@ -1015,6 +1015,9 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     // Protocol-14 key limits (PublicKeyBudgetExhaustedError / PublicKeyExpiredError), before
     // the balance rule: a spent key is not an empty identity.
     // … or IdentityPublicKeyBudgetExceededError: some budget left, but less than this costs.
+    if let Some(u) = budget_too_low(&m, ctx) {
+        return Some(u);
+    }
     if m.contains("has spent its whole budget") || m.contains("credits of budget left") {
         return Some(
             UserError::new(codes::KEY_BUDGET_SPENT, ctx.headline("this key's budget is used up"))
@@ -1999,6 +2002,49 @@ fn balance_numbers(m: &str) -> Option<(u64, u64)> {
     Some((num_after("credits balance ")?, num_after(" to pay ")?))
 }
 
+/// IdentityPublicKeyBudgetExceededError with budget left (`m` lowercased): the key is not
+/// spent, the write costs more than what is left.
+fn budget_too_low(m: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
+    let (left, need) = budget_numbers(m).filter(|(left, _)| *left > 0)?;
+    Some(
+        UserError::new(
+            codes::KEY_BUDGET_SPENT,
+            ctx.headline("this key's budget is too low for this write"),
+        )
+        .cause(format!(
+            "this key has {} DASH of budget left; this write needs about {} DASH",
+            short_dash(left),
+            short_dash(need)
+        ))
+        .fix("get a fresh limited key: `dg auth login` (your DashPay wallet approves a new key; `--budget` asks for more than the default 0.25 DASH), or `dg auth login <identity file>` / `--mnemonic` (uses your master key once)")
+        .note("the identity's balance is untouched; smaller writes may still fit in what is left"),
+    )
+}
+
+/// `(left, needed)` credits from IdentityPublicKeyBudgetExceededError's text ("… has N credits
+/// of budget left, the state transition requires M"), lowercased.
+fn budget_numbers(m: &str) -> Option<(u64, u64)> {
+    let left = m.split(" credits of budget left").next()?;
+    let left = left.rsplit(' ').next()?.parse().ok()?;
+    let need = m.split("the state transition requires ").nth(1)?;
+    let need = need
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()?;
+    Some((left, need))
+}
+
+/// [`dash`] without trailing zeros (`0.001`, not `0.0010`), as `dg auth status` shows budgets.
+fn short_dash(credits: u64) -> String {
+    let s = dash(credits);
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
 /// Credits as a short DASH amount: four decimals from 0.001 DASH up, and three significant
 /// digits below that, so a small fee never rounds to `0` (`0.00031`, `0.000000123`).
 pub fn dash(credits: u64) -> String {
@@ -2614,6 +2660,10 @@ mod tests {
                 codes::KEY_BUDGET_SPENT,
             ),
             (
+                "Identity 5Dtb public key 7 has 0 credits of budget left, the state transition requires 5000",
+                codes::KEY_BUDGET_SPENT,
+            ),
+            (
                 "Identity public key 7 is disabled and can no longer sign",
                 codes::KEY_EXPIRED,
             ),
@@ -2622,6 +2672,42 @@ mod tests {
             assert_eq!(u.code, code, "{text}");
             assert!(u.fix.iter().any(|f| f.contains("dg auth login")), "{text}");
         }
+    }
+
+    #[test]
+    fn a_key_with_budget_left_but_too_little_is_not_used_up() {
+        let ctx = ErrorContext {
+            goal: Some("issue not created"),
+            ..ErrorContext::default()
+        };
+        let text = "Protocol error: consensus error: Identity 9xYz public key 23 has 100000000 credits of budget left, the state transition requires 121095000";
+        let u = from_platform_text(text, &ctx).unwrap();
+        assert_eq!(u.code, codes::KEY_BUDGET_SPENT);
+        assert_eq!(
+            u.message,
+            "issue not created: this key's budget is too low for this write"
+        );
+        assert_eq!(
+            u.cause.as_deref(),
+            Some("this key has 0.001 DASH of budget left; this write needs about 0.0012 DASH")
+        );
+        assert!(u.fix[0].contains("--budget"));
+        let spent = from_platform_text(
+            "Identity 9xYz public key 23 has 0 credits of budget left, the state transition requires 5000",
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(
+            spent.message,
+            "issue not created: this key's budget is used up"
+        );
+        assert_eq!(
+            budget_numbers("identity a public key 2 has 1000 credits of budget left, the state transition requires 5000."),
+            Some((1000, 5000))
+        );
+        assert_eq!(short_dash(100_000_000), "0.001");
+        assert_eq!(short_dash(25_000_000_000), "0.25");
+        assert_eq!(short_dash(0), "0");
     }
 
     #[test]
