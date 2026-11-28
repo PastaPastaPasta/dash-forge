@@ -7,7 +7,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { contractKind, forgeContractIds, type ForgeIds } from '../deployments'
+import { contractKind, forgeContractIds, isGroupExtra, type ForgeIds } from '../deployments'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { controlsKey, readRemainingBudget } from './limited-key'
@@ -51,15 +51,15 @@ export function keyScope(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds): K
  * about; anything else is refused, whatever the key's bounds.
  */
 export function scopeCovers(scope: KeyScope, forge: ForgeIds, contractId: string): boolean {
-  // forge-user is a member of the group: a group-bound (or unbounded) key covers it, a key bound to one contract never.
-  if (forge.user !== undefined && contractId === forge.user) return scope.unbounded || (scope.core && scope.collab && scope.community && scope.meta)
+  // forge-user and forge-org are members of the group: a group-bound (or unbounded) key covers them, a key bound to one contract never.
+  if (isGroupExtra(forge, contractId)) return scope.unbounded || (scope.core && scope.collab && scope.community && scope.meta)
   const kind = contractKind(forge, contractId)
   return kind !== null && scope[kind]
 }
 
-/** Whether a vault key may be asked to sign on `contractId`: Forge's contracts, and forge-user where deployed. */
+/** Whether a vault key may be asked to sign on `contractId`: Forge's contracts, and forge-user and forge-org where deployed. */
 export function isSigningContract(forge: ForgeIds, contractId: string | undefined): contractId is string {
-  return isForgeContract(forge, contractId) || (forge.user !== undefined && contractId === forge.user)
+  return isForgeContract(forge, contractId) || isGroupExtra(forge, contractId)
 }
 
 /** Whether `contractId` is one of Forge's contracts. */

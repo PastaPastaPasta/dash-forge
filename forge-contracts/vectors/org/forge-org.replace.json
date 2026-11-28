@@ -1,0 +1,67 @@
+[
+ {
+  "item": "ORG",
+  "name": "a roster republished",
+  "type": "org",
+  "expect": "ok",
+  "stored": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "relay": "https://multisig.dashhq.org",
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "keyId": 2,
+   "groupKey": {
+    "$b": [
+     6,
+     48
+    ]
+   },
+   "threshold": 2,
+   "members": {
+    "$b": [
+     7,
+     96
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     8,
+     144
+    ]
+   }
+  },
+  "doc": {
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "cid": {
+    "$b": [
+     11,
+     32
+    ]
+   },
+   "keyId": 3,
+   "groupKey": {
+    "$b": [
+     12,
+     48
+    ]
+   },
+   "threshold": 3,
+   "members": {
+    "$b": [
+     13,
+     128
+    ]
+   },
+   "pubShares": {
+    "$b": [
+     14,
+     192
+    ]
+   }
+  }
+ }
+]
