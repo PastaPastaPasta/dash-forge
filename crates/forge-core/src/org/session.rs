@@ -675,6 +675,9 @@ impl Org {
             cid: &self.cid,
             slot: &self.slot,
             forge,
+            roster: self
+                .ceremony()
+                .and_then(|c| Roster::of_ceremony(c, Some(&self.record.relay))),
         }
     }
 

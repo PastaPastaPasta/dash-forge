@@ -91,6 +91,15 @@ pub enum OrgCommand {
         #[command(flatten)]
         phrase: PhraseArgs,
     },
+    /// Publish the organization on Platform: its roster (so members sign from Platform alone)
+    /// and the "N of M" link in its profile (other profile fields kept). A request the members
+    /// sign.
+    Publish {
+        /// The organization (its identity id or name).
+        org: String,
+        #[command(flatten)]
+        phrase: PhraseArgs,
+    },
     /// Hide a request on this computer (free; nothing is written). For a request Forge won't
     /// sign; decline a valid request you disagree with instead.
     Dismiss {
@@ -128,6 +137,7 @@ pub async fn run(ctx: &Ctx, cmd: &OrgCommand) -> Result<()> {
             phrase,
         } => decline(ctx, request, reason.as_deref().unwrap_or(""), phrase).await,
         OrgCommand::Finish { request, phrase } => finish(ctx, request, phrase).await,
+        OrgCommand::Publish { org, phrase } => publish(ctx, org, phrase).await,
         OrgCommand::Dismiss { request } => dismiss(ctx, request).await,
         OrgCommand::Migrate { org, phrase } => migrate(ctx, org, phrase).await,
     }
@@ -939,33 +949,104 @@ async fn post_request(
     Ok(())
 }
 
-/// The organization acting as owner: loaded with its identity, this member's keys, and the
-/// signed-in identity that writes the request.
-struct OwnerSession {
-    org: Org,
-    identity: LoadedIdentity,
-    seed: Seed,
-    keys: MemberKeys,
-    member: Member,
+/// An owner action an organization's members sign.
+pub enum Action<'a> {
+    RepoCreate(&'a forge_core::create::CreateRepoOpts),
+    Grant(&'a forge_core::scope::RepoRef, &'a str, &'a str, Role),
+    Revoke(&'a forge_core::scope::RepoRef, &'a str, &'a str, Role),
+    RunnerAdd(&'a forge_core::scope::RepoRef, &'a str, &'a str),
+    RunnerRemove(&'a forge_core::scope::RepoRef, &'a str, &'a str),
+    Profile(&'a forge_core::rules::profile::ProfileFields),
+    Publish,
 }
 
-async fn open_owner(
+/// Build `action` as the organization `record`'s writes and post them as a request signed with
+/// this member's share. `label` names what it acts on; `extra` is merged into the JSON result.
+pub async fn request_action(
     ctx: &Ctx,
     client: &PlatformClient,
     record: OrgRecord,
     phrase: &PhraseArgs,
-) -> Result<OwnerSession> {
+    label: &str,
+    action: Action<'_>,
+    mut extra: Value,
+) -> Result<()> {
+    use core_org::actions;
     let (seed, keys) = unlock_for(ctx, phrase, &record)?;
     let mut org = load(ctx, client, record).await?;
     let identity = org.bind(client).await?;
     let member = Member::of(ctx, client).await?;
-    Ok(OwnerSession {
-        org,
-        identity,
-        seed,
-        keys,
-        member,
-    })
+    let writer = forge_core::platform::org::OrgWriter::new(client, &identity, org.key_id)?;
+    let mut nonces = actions::Nonces::new(&writer, org.open_nonces());
+    let owner = actions::Owner {
+        client,
+        org: &identity,
+        writer: &writer,
+        label,
+    };
+    let planned = match action {
+        Action::RepoCreate(opts) => {
+            let p = actions::repo_create(&owner, &mut nonces, opts).await?;
+            extra["repoId"] = json!(p.writes[0].document_id);
+            p
+        }
+        Action::Grant(repo, who, name, role) => {
+            actions::grant(&owner, &mut nonces, repo, who, name, role).await?
+        }
+        Action::Revoke(repo, who, name, role) => {
+            actions::revoke(&owner, &mut nonces, repo, who, name, role).await?
+        }
+        Action::RunnerAdd(repo, who, name) => {
+            actions::runner_add(&owner, &mut nonces, repo, who, name).await?
+        }
+        Action::RunnerRemove(repo, who, name) => {
+            actions::runner_remove(&owner, &mut nonces, repo, who, name).await?
+        }
+        Action::Profile(fields) => actions::profile_set(&owner, &mut nonces, fields).await?,
+        Action::Publish => {
+            let roster = org
+                .ceremony()
+                .and_then(|c| core_org::transport::Roster::of_ceremony(c, Some(&org.record.relay)))
+                .ok_or_else(|| anyhow::anyhow!("{} has no key ceremony to publish", line(label)))?;
+            actions::publish(&owner, &mut nonces, &org_contract(ctx)?, &roster).await?
+        }
+    };
+    let engine = member.engine(client)?;
+    post_request(ctx, client, &engine, &mut org, &seed, &keys, planned, extra).await
+}
+
+/// The connected organization `which` (its identity id or name).
+pub fn connected_named(ctx: &Ctx, which: &str) -> Result<OrgRecord> {
+    pick(&connected(ctx), which)
+        .cloned()
+        .ok_or_else(|| not_connected(which))
+}
+
+async fn publish(ctx: &Ctx, which: &str, phrase: &PhraseArgs) -> Result<()> {
+    let record = connected_named(ctx, which)?;
+    let client = ctx.connect().await?;
+    let label = record.label.clone();
+    request_action(
+        ctx,
+        &client,
+        record,
+        phrase,
+        &label,
+        Action::Publish,
+        json!({}),
+    )
+    .await
+}
+
+/// The connected organization that owns `handle`, when there is one (no network read when no
+/// organization is connected).
+pub fn owning_org(ctx: &Ctx, handle: &forge_core::scope::RepoRef) -> Option<OrgRecord> {
+    if !core_org::enabled(ctx.network()) {
+        return None;
+    }
+    connected(ctx)
+        .into_iter()
+        .find(|r| r.org_id == handle.owner_id())
 }
 
 /// Why `owner` cannot be used as an organization owner: it is not connected here.
@@ -1038,25 +1119,17 @@ pub async fn request_repo_create(
         protect: !o.no_protect,
         ..forge_core::create::CreateRepoOpts::public(name)
     };
-    let mut s = open_owner(ctx, &client, record, &args.phrase).await?;
-    let label = s.org.record.label.clone();
-    let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.open_nonces());
-    let owner = core_org::actions::Owner {
-        client: &client,
-        org: &s.identity,
-        writer: &writer,
-        label: &label,
-    };
-    let planned = core_org::actions::repo_create(&owner, &mut nonces, &opts).await?;
-    let extra = json!({
-        "repoId": planned.writes[0].document_id,
-        "ownerId": s.identity.id(),
-        "name": forge_core::resolve::repo_slug(&opts.name)?,
-    });
-    let engine = s.member.engine(&client)?;
-    post_request(
-        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
+    let label = record.label.clone();
+    let extra =
+        json!({ "ownerId": record.org_id, "name": forge_core::resolve::repo_slug(&opts.name)? });
+    request_action(
+        ctx,
+        &client,
+        record,
+        &args.phrase,
+        &label,
+        Action::RepoCreate(&opts),
+        extra,
     )
     .await
 }
@@ -1087,26 +1160,13 @@ pub async fn route_member_change(
     let member = crate::common::resolve_identity(&client, member, "member").await?;
     let member_name = forge_core::org::session::first_name(&client, &member).await;
     let label = format!("{}/{}", record.label, handle.name());
-    let mut s = open_owner(ctx, &client, record, phrase).await?;
-    let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.open_nonces());
-    let owner = core_org::actions::Owner {
-        client: &client,
-        org: &s.identity,
-        writer: &writer,
-        label: &label,
-    };
-    let planned = if add {
-        core_org::actions::grant(&owner, &mut nonces, &handle, &member, &member_name, role).await?
-    } else {
-        core_org::actions::revoke(&owner, &mut nonces, &handle, &member, &member_name, role).await?
-    };
     let extra = json!({ "member": member, "role": role.as_str(), "repo": label });
-    let engine = s.member.engine(&client)?;
-    post_request(
-        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
-    )
-    .await?;
+    let action = if add {
+        Action::Grant(&handle, &member, &member_name, role)
+    } else {
+        Action::Revoke(&handle, &member, &member_name, role)
+    };
+    request_action(ctx, &client, record, phrase, &label, action, extra).await?;
     Ok(Some(()))
 }
 

@@ -12,11 +12,13 @@ use crate::members::{
 };
 use crate::network::ForgeIds;
 use crate::platform::org::{NonceState, OrgWriter, UnsignedWrite};
-use crate::platform::{self, LoadedIdentity, PlatformClient};
+use crate::platform::{self, FieldValue, LoadedIdentity, PlatformClient, QueryFilter};
 use crate::refs::DOC_CONFIG;
 use crate::resolve::{find_named, DOC_REPO};
 use crate::rules::v2::{Role, Visibility};
 use crate::scope::{DocScope, RepoRef};
+
+use super::transport::{Roster, DOC_ORG};
 
 /// Hands out identity-contract nonces: the lowest ones above the identity's current one that no
 /// open request of the organization holds. Platform accepts nonces out of order within its
@@ -291,6 +293,244 @@ pub async fn revoke(
             existing.role.label()
         ),
         writes: vec![delete],
+    })
+}
+
+/// "Publish organization" (§10.5): the `org` roster of the signing ceremony, and the
+/// organization's `profile` with the declared link (other profile fields kept), each only when
+/// it differs from what is stored.
+pub async fn publish(
+    owner: &Owner<'_>,
+    nonces: &mut Nonces<'_>,
+    org_contract: &str,
+    roster: &Roster,
+) -> Result<Planned> {
+    let Owner {
+        client,
+        org,
+        writer,
+        label,
+    } = *owner;
+    let forge = forge_of(client)?;
+    let network = client.network().key();
+    let contract = client.fetch_contract(org_contract).await?;
+    let owner_id = platform::decode_identifier(&org.id())?;
+    let stored = client
+        .query_documents(
+            &contract,
+            DOC_ORG,
+            &[QueryFilter::eq(
+                "$ownerId",
+                FieldValue::identifier(owner_id),
+            )],
+            &[],
+            1,
+            None,
+        )
+        .await?
+        .into_iter()
+        .next();
+    let mut writes = Vec::new();
+    let current = stored
+        .as_ref()
+        .and_then(|d| Roster::from_props(&d.fields))
+        .is_some_and(|r| r.same_key(roster) && r.relay == roster.relay);
+    if !current {
+        let props = roster.props();
+        let nonce = nonces.take(org_contract).await?;
+        writes.push(match &stored {
+            Some(d) => {
+                writer
+                    .replace(
+                        &contract,
+                        DOC_ORG,
+                        &d.id,
+                        d.revision.unwrap_or(1),
+                        props,
+                        nonce,
+                    )
+                    .await?
+            }
+            None => writer.create(&contract, DOC_ORG, props, nonce).await?,
+        });
+    }
+    let link = super::owner::declared_org_link(
+        &network,
+        u32::try_from(roster.threshold).unwrap_or(u32::MAX),
+        u32::try_from(roster.members.len()).unwrap_or(u32::MAX),
+    );
+    let doc = crate::profile::read_profile_doc(client, &forge, &org.id()).await?;
+    let mut fields = doc
+        .as_ref()
+        .map(|d| crate::profile::profile_from_doc(d).fields)
+        .unwrap_or_default();
+    let before = fields.links.clone().unwrap_or_default();
+    let mut links: Vec<String> = before
+        .iter()
+        .filter(|l| super::owner::parse_declared_org(l, &network).is_none())
+        .cloned()
+        .collect();
+    links.push(link);
+    if links != before {
+        if links.len() > crate::rules::profile::MAX_LINKS {
+            return Err(Error::Config(format!(
+                "{label}'s profile already has {} links: remove one first (`dg profile set --owner {label}`)",
+                crate::rules::profile::MAX_LINKS
+            )));
+        }
+        fields.links = Some(links);
+        writes.push(profile_write(owner, nonces, &forge, doc.as_ref(), &fields).await?);
+    }
+    if writes.is_empty() {
+        return Err(Error::Config(format!(
+            "{label} has already published its roster and declared itself in its profile"
+        )));
+    }
+    Ok(Planned {
+        title: format!("Publish {label} on Platform"),
+        writes,
+    })
+}
+
+/// The organization's profile write: a create, or a replace of `stored` keeping its other
+/// properties (the personal builders' properties).
+async fn profile_write(
+    owner: &Owner<'_>,
+    nonces: &mut Nonces<'_>,
+    forge: &ForgeIds,
+    stored: Option<&crate::platform::FetchedDocument>,
+    fields: &crate::rules::profile::ProfileFields,
+) -> Result<UnsignedWrite> {
+    let home = forge.home(crate::profile::DOC_PROFILE).to_string();
+    let contract = owner.client.fetch_contract(&home).await?;
+    let nonce = nonces.take(&home).await?;
+    match stored {
+        Some(d) => {
+            owner
+                .writer
+                .replace(
+                    &contract,
+                    crate::profile::DOC_PROFILE,
+                    &d.id,
+                    d.revision.unwrap_or(1),
+                    crate::profile::replaced_props(&d.fields, fields),
+                    nonce,
+                )
+                .await
+        }
+        None => {
+            owner
+                .writer
+                .create(
+                    &contract,
+                    crate::profile::DOC_PROFILE,
+                    crate::profile::created_props(fields),
+                    nonce,
+                )
+                .await
+        }
+    }
+}
+
+/// Set the organization's profile to `fields` (already normalized). A declared link it holds
+/// must name the organization's N of M; one it drops is the members' choice.
+pub async fn profile_set(
+    owner: &Owner<'_>,
+    nonces: &mut Nonces<'_>,
+    fields: &crate::rules::profile::ProfileFields,
+) -> Result<Planned> {
+    let forge = forge_of(owner.client)?;
+    let doc = crate::profile::read_profile_doc(owner.client, &forge, &owner.org.id()).await?;
+    if doc
+        .as_ref()
+        .is_some_and(|d| crate::profile::profile_from_doc(d).fields == *fields)
+    {
+        return Err(Error::Config(format!(
+            "{}'s profile already holds these fields",
+            owner.label
+        )));
+    }
+    let write = profile_write(owner, nonces, &forge, doc.as_ref(), fields).await?;
+    Ok(Planned {
+        title: format!("Update {}'s profile", owner.label),
+        writes: vec![write],
+    })
+}
+
+/// Enrol `member` as a CI runner of the organization's `repo`.
+pub async fn runner_add(
+    owner: &Owner<'_>,
+    nonces: &mut Nonces<'_>,
+    repo: &RepoRef,
+    member: &str,
+    member_name: &str,
+) -> Result<Planned> {
+    if crate::ci::RunnerReader::new(owner.client)
+        .get(repo, member)
+        .await?
+        .is_some()
+    {
+        return Err(Error::Config(format!(
+            "{member_name} is already a runner of {}",
+            owner.label
+        )));
+    }
+    owner
+        .client
+        .fetch_identity(member)
+        .await
+        .map_err(|e| match e {
+            Error::NotFound => {
+                Error::Config(format!("{member} is not an identity on this network"))
+            }
+            other => other,
+        })?;
+    let community = owner.client.fetch_contract(&repo.forge().community).await?;
+    let write = owner
+        .writer
+        .create(
+            &community,
+            crate::ci::DOC_RUNNER,
+            crate::ci::runner_props(repo, member)?,
+            nonces.take(&repo.forge().community).await?,
+        )
+        .await?;
+    Ok(Planned {
+        title: format!("Add {member_name} as a CI runner of {}", owner.label),
+        writes: vec![write],
+    })
+}
+
+/// Revoke `member`'s CI runner membership of the organization's `repo`.
+pub async fn runner_remove(
+    owner: &Owner<'_>,
+    nonces: &mut Nonces<'_>,
+    repo: &RepoRef,
+    member: &str,
+    member_name: &str,
+) -> Result<Planned> {
+    let Some(existing) = crate::ci::RunnerReader::new(owner.client)
+        .get(repo, member)
+        .await?
+    else {
+        return Err(Error::Config(format!(
+            "{member_name} is not a runner of {}",
+            owner.label
+        )));
+    };
+    let community = owner.client.fetch_contract(&repo.forge().community).await?;
+    let write = owner
+        .writer
+        .delete(
+            &community,
+            crate::ci::DOC_RUNNER,
+            &existing.document_id,
+            nonces.take(&repo.forge().community).await?,
+        )
+        .await?;
+    Ok(Planned {
+        title: format!("Remove the CI runner {member_name} from {}", owner.label),
+        writes: vec![write],
     })
 }
 

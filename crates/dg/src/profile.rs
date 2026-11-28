@@ -164,6 +164,12 @@ pub struct SetArgs {
     /// https image URL (viewers load it only when they ask), or "" for the default.
     #[arg(long, value_name = "CONFIG")]
     pub avatar: Option<String>,
+    /// Edit the profile of an organization you connected (`dg org list`) instead of yours: it
+    /// makes a request its members sign.
+    #[arg(long, value_name = "ORG")]
+    pub owner: Option<String>,
+    #[command(flatten)]
+    pub phrase: crate::org::PhraseArgs,
 }
 
 impl SetArgs {
@@ -213,6 +219,31 @@ impl SetArgs {
     }
 }
 
+/// `dg profile set --owner <org>`: the edit as a request the organization's members sign, built
+/// with the same rules and properties as a personal edit.
+async fn set_for_org(ctx: &Ctx, owner: &str, args: &SetArgs) -> Result<()> {
+    crate::org::require_enabled(ctx)?;
+    let record = crate::org::connected_named(ctx, owner)?;
+    let client = ctx.connect().await?;
+    let forge = ctx.target.require_v2()?;
+    let stored = core_profile::read_profile(&client, forge, &record.org_id).await?;
+    let none = ProfileFields::default();
+    let input = args.input(stored.as_ref().map_or(&none, |p| &p.fields))?;
+    let fields = core_profile::normalize(&input).map_err(|why| refusal(&why))?;
+    let label = record.label.clone();
+    let extra = json!({ "fields": fields_json(&fields) });
+    Box::pin(crate::org::request_action(
+        ctx,
+        &client,
+        record,
+        &args.phrase,
+        &label,
+        crate::org::Action::Profile(&fields),
+        extra,
+    ))
+    .await
+}
+
 /// The text bytes a profile stores (what its cost grows with).
 fn text_bytes(f: &ProfileFields) -> u64 {
     let s = |v: &Option<String>| v.as_ref().map_or(0, String::len);
@@ -252,6 +283,9 @@ async fn set(ctx: &Ctx, args: &SetArgs) -> Result<()> {
         ));
     }
     ctx.require_confirmable("dg profile set")?;
+    if let Some(owner) = &args.owner {
+        return Box::pin(set_for_org(ctx, owner, args)).await;
+    }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let forge = ctx.target.require_v2()?;
     let me = identity.id();
@@ -438,6 +472,8 @@ mod tests {
             links: vec![],
             clear_links: false,
             avatar: None,
+            owner: None,
+            phrase: crate::org::PhraseArgs::default(),
         }
     }
 

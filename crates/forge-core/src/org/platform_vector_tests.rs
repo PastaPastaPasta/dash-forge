@@ -193,6 +193,7 @@ fn the_roster_matches_the_ceremony_and_stands_in_for_it() {
         ),
     ]);
     let from_doc = Roster::from_props(&props).unwrap();
+    assert_eq!(from_doc.props(), props);
     let of_ceremony = Roster::of_ceremony(c, Some("https://multisig.dashhq.org")).unwrap();
     assert_eq!(from_doc, of_ceremony);
     assert_eq!(hex::encode(from_doc.members_bytes()), s(r, "members"));

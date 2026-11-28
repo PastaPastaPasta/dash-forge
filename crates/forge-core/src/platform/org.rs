@@ -668,6 +668,7 @@ mod tests {
             cid: "",
             slot: "high",
             forge,
+            roster: None,
         }
     }
 

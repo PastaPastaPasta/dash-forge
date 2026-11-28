@@ -178,24 +178,30 @@ pub enum CiCommand {
 pub enum RunnerCommand {
     /// Register a checkRun-only key for a runner identity and enrol it as a runner of the repo.
     New(Box<RunnerNewArgs>),
-    /// Enrol an identity that already has a key as a runner of the repo (the owner signs).
+    /// Enrol an identity that already has a key as a runner of the repo (the owner signs; on an
+    /// organization's repository, a request its members sign).
     Add {
         /// The repository (`owner/name`).
         repo: String,
         /// The runner: an identity id (base58) or a DPNS name (`alice`, `@alice`, `alice.dash`).
         runner: String,
+        #[command(flatten)]
+        phrase: crate::org::PhraseArgs,
     },
     /// List the repo's runners.
     List {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Revoke a runner (Platform refuses its next report).
+    /// Revoke a runner (Platform refuses its next report; on an organization's repository, a
+    /// request its members sign).
     Revoke {
         /// The repository (`owner/name`).
         repo: String,
         /// The runner: an identity id (base58) or a DPNS name (`alice`, `@alice`, `alice.dash`).
         runner: String,
+        #[command(flatten)]
+        phrase: crate::org::PhraseArgs,
     },
 }
 
@@ -319,13 +325,17 @@ pub async fn run(ctx: &Ctx, cmd: &CiCommand) -> Result<()> {
     match cmd {
         CiCommand::Env { repo, env } => crate::env::ci_values(ctx, repo, env).await,
         CiCommand::Runner(RunnerCommand::New(a)) => runner_new(ctx, a).await,
-        CiCommand::Runner(RunnerCommand::Add { repo, runner }) => {
-            runner_add(ctx, repo, runner).await
-        }
+        CiCommand::Runner(RunnerCommand::Add {
+            repo,
+            runner,
+            phrase,
+        }) => runner_add(ctx, repo, runner, phrase).await,
         CiCommand::Runner(RunnerCommand::List { repo }) => runner_list(ctx, repo).await,
-        CiCommand::Runner(RunnerCommand::Revoke { repo, runner }) => {
-            runner_revoke(ctx, repo, runner).await
-        }
+        CiCommand::Runner(RunnerCommand::Revoke {
+            repo,
+            runner,
+            phrase,
+        }) => runner_revoke(ctx, repo, runner, phrase).await,
         CiCommand::Report(a) => report(ctx, a).await,
         CiCommand::Status {
             repo,
@@ -759,11 +769,42 @@ async fn register_runner_key(
     Ok(key_id)
 }
 
-async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
+/// `dg ci runner add|revoke` on a repository a connected organization owns: a request.
+async fn runner_request(
+    ctx: &Ctx,
+    s: &Session,
+    record: forge_core::org::OrgRecord,
+    runner: &str,
+    add: bool,
+    phrase: &crate::org::PhraseArgs,
+) -> Result<()> {
+    let name = forge_core::org::session::first_name(&s.client, runner).await;
+    let label = format!("{}/{}", record.label, s.repo.name());
+    let action = if add {
+        crate::org::Action::RunnerAdd(&s.repo, runner, &name)
+    } else {
+        crate::org::Action::RunnerRemove(&s.repo, runner, &name)
+    };
+    let extra = json!({ "runner": runner, "repo": label });
+    Box::pin(crate::org::request_action(
+        ctx, &s.client, record, phrase, &label, action, extra,
+    ))
+    .await
+}
+
+async fn runner_add(
+    ctx: &Ctx,
+    repo: &str,
+    runner: &str,
+    phrase: &crate::org::PhraseArgs,
+) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     // `runner` is an identity id or a DPNS name; resolve it once so the existence check and
     // enrolment below both see a plain identity id.
     let runner: &str = &resolve_identity(&s.client, runner, "runner").await?;
+    if let Some(record) = crate::org::owning_org(ctx, &s.repo) {
+        return Box::pin(runner_request(ctx, &s, record, runner, true, phrase)).await;
+    }
     s.client
         .fetch_identity(runner)
         .await
@@ -811,11 +852,19 @@ async fn runner_list(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
-async fn runner_revoke(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
+async fn runner_revoke(
+    ctx: &Ctx,
+    repo: &str,
+    runner: &str,
+    phrase: &crate::org::PhraseArgs,
+) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     // `runner` is an identity id or a DPNS name; resolve it once so the revoke below sees a
     // plain identity id.
     let runner: &str = &resolve_identity(&s.client, runner, "runner").await?;
+    if let Some(record) = crate::org::owning_org(ctx, &s.repo) {
+        return Box::pin(runner_request(ctx, &s, record, runner, false, phrase)).await;
+    }
     ctx.confirm_or_cancel(&format!(
         "Revoke runner {runner} of {}? (one document delete)",
         s.repo.display()

@@ -8,10 +8,14 @@ use crate::platform::org::{decode_unsigned, DecodedWrite, NonceState};
 use crate::platform::{FieldValue, PlatformClient};
 use crate::rules::v2::Role;
 
+use super::owner::parse_declared_org;
 use super::state::Proposal;
+use super::transport::Roster;
 
-/// The (document type, action) pairs an organization signs (§9 review step 5).
-pub const ALLOWED: [(&str, &str); 13] = [
+/// The (document type, action) pairs an organization signs (§9 review step 5, §10.5).
+pub const ALLOWED: [(&str, &str); 15] = [
+    ("org", "create"),
+    ("org", "replace"),
     ("repo", "create"),
     ("repo", "replace"),
     ("maintainer", "create"),
@@ -36,6 +40,9 @@ pub struct Expect<'a> {
     pub cid: &'a str,
     pub slot: &'a str,
     pub forge: &'a ForgeIds,
+    /// The roster of the ceremony the organization signs with: what an `org` write must
+    /// publish, and the N of M a declared profile link must name.
+    pub roster: Option<Roster>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,16 +121,55 @@ pub fn decoded_problems(expect: &Expect<'_>, d: &DecodedWrite, signable: &[u8]) 
     if d.signable != signable {
         problems.push("the bytes to sign are not the transition's".into());
     }
+    let home = if d.document_type == "org" {
+        expect.forge.org.as_deref()
+    } else {
+        expect.forge.contract_id_of(&d.document_type)
+    };
     if !ALLOWED.contains(&(d.document_type.as_str(), d.action.as_str())) {
         problems.push(format!(
             "Forge does not sign this kind of write ({} {})",
             super::one_line(&d.action),
             super::one_line(&d.document_type)
         ));
-    } else if expect.forge.contract_id_of(&d.document_type) != Some(d.contract_id.as_str()) {
+    } else if home != Some(d.contract_id.as_str()) {
         problems.push("it writes to a contract that is not this network's Forge".into());
     }
+    problems.extend(roster_problem(expect, d));
     problems
+}
+
+/// §10.5: an `org` write must publish exactly the bound ceremony's roster, and a profile's
+/// declared link must name its N of M.
+fn roster_problem(expect: &Expect<'_>, d: &DecodedWrite) -> Option<String> {
+    let want = expect.roster.as_ref();
+    match d.document_type.as_str() {
+        "org" if d.action != "delete" => {
+            let ok = Roster::from_props(&d.properties)
+                .zip(want)
+                .is_some_and(|(got, want)| got.same_key(want));
+            (!ok).then(|| "the roster it publishes is not the organization's key ceremony".into())
+        }
+        "profile" => {
+            let links = d
+                .properties
+                .get("links")
+                .and_then(FieldValue::as_text_list)
+                .unwrap_or_default();
+            let quorum = want.map(|r| (r.threshold, r.members.len()));
+            links
+                .iter()
+                .filter_map(|l| parse_declared_org(l, expect.network))
+                .find(|(n, m)| quorum != Some((*n as usize, *m as usize)))
+                .map(|(n, m)| match quorum {
+                    Some((qn, qm)) => format!(
+                        "its profile link declares the organization as {n} of {m}, but it is {qn} of {qm}"
+                    ),
+                    None => "its profile link declares an organization Forge can't check".into(),
+                })
+        }
+        _ => None,
+    }
 }
 
 /// Step 4: the nonce must still be usable, and not further ahead than Platform accepts.
@@ -190,7 +236,14 @@ pub fn describe(d: &DecodedWrite, stored: Option<&DecodedWrite>, names: &Names) 
     let src = stored.unwrap_or(d);
     let repo = names.repo(ident(src, "repoId"));
     let who = names.who(ident(src, "memberId"));
+    let quorum = || {
+        Roster::from_props(&d.properties).map_or_else(String::new, |r| {
+            format!(" ({} of {})", r.threshold, r.members.len())
+        })
+    };
     match (d.document_type.as_str(), d.action.as_str()) {
+        ("org", "create") => format!("Publish the organization's roster on Platform{}", quorum()),
+        ("org", "replace") => format!("Publish the organization's roster again{}", quorum()),
         ("repo", "create") => format!(
             "Create the repository {}",
             names.repo(Some(d.document_id.clone()))
@@ -413,5 +466,74 @@ mod tests {
         );
         assert!(describe(&after, None, &names)
             .contains("could not be read; it would set description to “new”"));
+    }
+
+    fn roster() -> Roster {
+        Roster {
+            room: "t_000102030405060708090a0b0c0d0e0f".into(),
+            relay: Some("https://multisig.dashhq.org".into()),
+            cid: "11".repeat(32),
+            key_id: 2,
+            group_key: "22".repeat(48),
+            threshold: 2,
+            members: vec!["a1".repeat(32), "b2".repeat(32), "c3".repeat(32)],
+            pub_shares: vec!["d4".repeat(48), "e5".repeat(48), "f6".repeat(48)],
+        }
+    }
+
+    fn checked(d: &DecodedWrite, want: Option<Roster>) -> Option<String> {
+        let forge = ForgeIds::test_forge();
+        let expect = Expect {
+            network: "testnet",
+            org_id: "",
+            key_id: 2,
+            cid: "",
+            slot: "high",
+            forge: &forge,
+            roster: want,
+        };
+        roster_problem(&expect, d)
+    }
+
+    #[test]
+    fn an_org_write_must_publish_the_bound_ceremony_exactly() {
+        let r = roster();
+        let mut d = write("create", &[]);
+        d.document_type = "org".into();
+        d.properties = r.props();
+        assert_eq!(checked(&d, Some(r.clone())), None);
+        let mut other_relay = r.clone();
+        other_relay.relay = Some("https://relay.example".into());
+        d.properties = other_relay.props();
+        assert_eq!(checked(&d, Some(r.clone())), None, "the relay is not the key");
+        let mut swapped = r.clone();
+        swapped.members.swap(0, 1);
+        d.properties = swapped.props();
+        assert!(checked(&d, Some(r.clone())).is_some(), "members out of order");
+        let mut lower = r.clone();
+        lower.threshold = 3;
+        d.properties = lower.props();
+        assert!(checked(&d, Some(r.clone())).is_some());
+        d.properties = r.props();
+        assert!(checked(&d, None).is_some(), "no ceremony to check against");
+        assert!(describe(&d, None, &Names::default()).ends_with("(2 of 3)"));
+    }
+
+    #[test]
+    fn a_declared_profile_link_must_name_the_organizations_n_of_m() {
+        let link = |n, m| FieldValue::text_list(vec![
+            "https://acme.example".to_string(),
+            super::super::owner::declared_org_link("testnet", n, m),
+        ]);
+        let mut d = write("replace", &[("links", link(2, 3))]);
+        d.document_type = "profile".into();
+        assert_eq!(checked(&d, Some(roster())), None);
+        d.properties.insert("links".into(), link(2, 4));
+        assert!(checked(&d, Some(roster())).unwrap().contains("2 of 4, but it is 2 of 3"));
+        d.properties.insert(
+            "links".into(),
+            FieldValue::text_list(vec![super::super::owner::declared_org_link("devnet-x", 9, 9)]),
+        );
+        assert_eq!(checked(&d, Some(roster())), None, "another network's link is not checked");
     }
 }
