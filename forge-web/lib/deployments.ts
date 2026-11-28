@@ -58,9 +58,10 @@ export interface DeploymentFile {
    */
   readonly user?: GroupContractRecord
   /**
-   * forge-org (docs/design/organizations.md §10): organizations' members, rosters and request
-   * logs. A member of the forge group, registered by `forge-contracts/scripts/deploy-org.mjs`;
-   * absent where it is not registered (mainnet), and organizations then have nothing to read.
+   * forge-org (docs/design/organizations.md §10): organizations' members, sealed shares, rosters
+   * and request logs. A member of the forge group, registered by
+   * `forge-contracts/scripts/deploy-org.mjs`; absent where it is not registered (mainnet), and
+   * organizations then have nothing to read.
    */
   readonly org?: GroupContractRecord
   /** The forge-v2 record `forge-contracts/scripts/deploy-v2.mjs` read-modify-writes. */
