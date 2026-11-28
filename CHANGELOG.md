@@ -10,7 +10,7 @@ What a version number promises before 1.0 is described in [docs/VERSIONING.md](d
 
 ### Added
 
-- **forge-org, the contract for organizations on Platform (testnet).** A new contract in Forge's contract group holds organizations' members, sealed shares, rosters and request logs ([design](docs/design/organizations.md#10-on-platform-the-forge-org-contract), [#785](https://github.com/PastaPastaPasta/dash-forge/pull/785)); it is not on mainnet. Once it is registered on testnet, a `dg` built before its testnet record is compiled in refuses, with `--strict-group` (or `DASH_FORGE_STRICT_GROUP=1`), to bind a new key to the testnet group, because it does not know the new member; update to the release that includes the record, or bind without strict mode. Keys already bound keep working, and nothing changes on mainnet.
+- **forge-org, the contract for organizations on Platform (testnet).** A new contract in Forge's contract group holds organizations' members, sealed shares, rosters and request logs ([design](docs/design/organizations.md#10-on-platform-the-forge-org-contract), [#785](https://github.com/PastaPastaPasta/dash-forge/pull/785)). It is registered on testnet (`61dAELEsWbi1Nz9kyVo4WY2GGAUBzMw8AzNn74vhJHjx`, 2026-11-28, in contract group `EXgzBMpwC7RMjSU4WQghLAnfboswsssMGiXRtiV1hmBC`) and not on mainnet. Since it is registered, a `dg` built before its testnet record is compiled in refuses, with `--strict-group` (or `DASH_FORGE_STRICT_GROUP=1`), to bind a new key to the testnet group, because it does not know the new member; update to the release that includes the record, or bind without strict mode. Keys already bound keep working, and nothing changes on mainnet.
 
 ### Fixed
 
