@@ -8,6 +8,7 @@ import { publicKeyHash } from '../auth/identity-lookup'
 import { DEPLOYMENTS, forgeV2Ids, type ForgeIds } from '../deployments'
 import { membershipData } from '../repo/writes'
 import type { RepoRef } from '../repo/contract'
+import { contractOf } from '../repo/source'
 import { verify } from './bls'
 import { approveEnvelope, connect, createRequest, myShare, declineRequest, finishRequest, freeNonces, loadOrg, openNonces, resetOrgCaches, signRequest, verifyInvite, type ConnectCandidate } from './service'
 import { fakeOrgPort, type FakeOrgPort } from './fake-port'
@@ -336,6 +337,37 @@ describe('organization requests on Platform', () => {
       requests: [part(11n, 'ready', true), part(12n, 'executed', true), part(13n, 'ready', false)],
     } as unknown as Parameters<typeof openNonces>[0]
     expect([...(openNonces(view).get('c') ?? [])].sort()).toEqual([12n, 13n])
+  })
+
+  it("an organization's roster write must match its key ceremony exactly", async () => {
+    const r1 = await connected(0)
+    const fields = rosterFields(rosterFromIdentity((await verifyInvite(sdk, V.room, 'testnet')).identity, RELAY))
+    const ask = (data: Record<string, unknown>) => createRequest(sdk, r1, people[0]!, { title: 'roster', specs: [{ action: 'create', contractId: forge.org!, documentType: 'org', data }] }, opts(0))
+    const reordered = Uint8Array.from([...fields.pubShares.slice(48, 96), ...fields.pubShares.slice(0, 48), ...fields.pubShares.slice(96)])
+    await expect(ask({ ...fields, pubShares: reordered })).rejects.toThrow(/the roster does not match the organization's key ceremony \(public shares\)/)
+    await expect(ask({ ...fields, threshold: 3 })).rejects.toThrow(/\(threshold\)/)
+    const id = await ask({ ...fields })
+    expect((await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!.status).toBe('collecting')
+  })
+
+  it("an organization's profile write never sets or changes its signing keys or bot claim", async () => {
+    const r1 = await connected(0)
+    const contractId = contractOf(forge, 'profile')
+    const ask = (spec: Parameters<typeof createRequest>[3]['specs'][number]) => createRequest(sdk, r1, people[0]!, { title: 'profile', specs: [spec] }, opts(0))
+    await expect(ask({ action: 'create', contractId, documentType: 'profile', data: { displayName: 'Acme', pubkeys: ['ssh-ed25519 AAAA'] } })).rejects.toThrow(/changes the profile's pubkeys, which an organization's request never does/)
+    const documentId = base58Encode(new Uint8Array(32).fill(21))
+    const bot = (fill: number) => ({ operator: new Uint8Array(32).fill(fill) })
+    stored.set(documentId, { revision: 1n, data: { displayName: 'Acme', bot: bot(4) } })
+    const replace = (data: Record<string, unknown>) => ({ action: 'replace' as const, contractId, documentType: 'profile', documentId, revision: 1n, data })
+    await expect(ask(replace({ displayName: 'Acme Inc' }))).rejects.toThrow(/changes the profile's bot/)
+    await expect(ask(replace({ displayName: 'Acme Inc', bot: bot(5) }))).rejects.toThrow(/changes the profile's bot/)
+    const id = await ask(replace({ displayName: 'Acme Inc', bot: bot(4) }))
+    expect((await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!.status).toBe('collecting')
+    stored.set(documentId, { revision: 1n, data: { displayName: 'Acme', bot: bot(6) } })
+    const moved = (await loadOrg(sdk, r1, readOpts())).requests.find((r) => r.request.id === id)!
+    expect(moved.status).toBe('invalid')
+    expect(moved.proposals[0]!.problems.join()).toMatch(/changes the profile's bot/)
+    stored.delete(documentId)
   })
 
   it('a phrase that is not this record\'s member cannot create a request', async () => {

@@ -6,7 +6,7 @@ import { contractKindOfType } from '../layout'
 import { isNonceSpent, isNonceTooFar } from '../sdk/nonce'
 import { isDeclaredLink, parseDeclaredOrg } from './gate'
 import { rosterMismatch, type Roster } from './roster-fields'
-import { hex, isObject, unhex } from './util'
+import { hex, isObject, sameValue, unhex } from './util'
 
 export type DocAction = 'create' | 'replace' | 'delete'
 
@@ -190,6 +190,16 @@ export function reviewDecoded(
   return problems
 }
 
+
+/** Profile properties an organization's request never sets or changes: its signing keys and bot claims (dg's `PROTECTED_PROFILE_FIELDS`). */
+export const PROTECTED_PROFILE_FIELDS = ['pubkeys', 'bot', 'keyProofs'] as const
+
+/** An organization `profile` write that sets or changes a protected property against `stored` (null for a create), in dg's words. */
+export function protectedProfileProblem(d: DecodedTransition, stored: Readonly<Record<string, unknown>> | null): string | null {
+  if (d.documentType !== 'profile') return null
+  const k = PROTECTED_PROFILE_FIELDS.find((k) => !sameValue(d.data[k], stored?.[k]))
+  return k === undefined ? null : `it changes the profile's ${k}, which an organization's request never does`
+}
 
 /** Why the organization's nonce state keeps the write from landing, or null (dg's `nonce_problem`). */
 export function nonceProblem(d: DecodedTransition, current: bigint): string | null {

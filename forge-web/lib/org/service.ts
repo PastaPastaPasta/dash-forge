@@ -44,7 +44,7 @@ import {
 import { memberIndex, rosterCeremony, rosterFromDoc, rosterFromIdentity, shareMatches, type Roster } from './roster'
 import { reduce, requirementKey, type ProposalBody, type RoomState } from './state'
 import { cacheCeremony, cachedCeremony, saveOrg, type OrgMember, type OrgRecord, type Unlocked } from './store'
-import { buildUnsigned, decodeUnsigned, derivedFor, intentFor, nonceProblem, reviewDecoded, signedTransition, type DecodedTransition, type ReviewContext, type WriteSpec } from './transition'
+import { buildUnsigned, decodeUnsigned, derivedFor, intentFor, nonceProblem, protectedProfileProblem, reviewDecoded, signedTransition, type DecodedTransition, type ReviewContext, type WriteSpec } from './transition'
 import { OrgUnavailableError, orgContractOf, platformOrgPort, type OrgPort } from './transport'
 import { assert, hex, unhex } from './util'
 import { memberChangeProblem } from './actions'
@@ -343,6 +343,14 @@ async function storedDoc(sdk: EvoSDK, contractId: string, type: string, id: stri
   return doc ? { revision: doc.revision ?? 1n, data: doc.toObject() } : null
 }
 
+/** A profile write's problem with the properties it must leave alone, checked against the document a replace changes (dg's `stored_target`). */
+async function profileProblems(sdk: EvoSDK, d: DecodedTransition): Promise<string[]> {
+  if (d.documentType !== 'profile') return []
+  const stored = d.action === 'create' ? null : await storedDoc(sdk, d.contractId, d.documentType, d.documentId)
+  const problem = protectedProfileProblem(d, stored?.data ?? null)
+  return problem === null ? [] : [problem]
+}
+
 const landedParts = new Set<string>()
 const doneSentences = new Map<string, string>()
 
@@ -399,7 +407,7 @@ export async function loadOrg(sdk: EvoSDK, record: OrgRecord, opts: LoadOptions)
       visible.set(p.id, d === null ? { landed: false, superseded: false, absent: false } : await writtenOnChain(sdk, p.id, d, current !== undefined && isNonceSpent(current, d.nonce), p.status === 'executed'))
     }),
   )
-  const reviews = new Map(parts.map(({ p, d }) => [p.id, d === null ? null : reviewDecoded(d, p.body, ctx)]))
+  const reviews = new Map(await Promise.all(parts.map(async ({ p, d }) => [p.id, d === null ? null : [...reviewDecoded(d, p.body, ctx), ...(await profileProblems(sdk, d))]] as const)))
   const landedBy = new Map<string, { readonly request: string; readonly signable: string }[]>()
   for (const { r, p, d } of parts) {
     if (!d || visible.get(p.id)?.landed !== true || p.status === 'invalid' || reviews.get(p.id)?.length !== 0) continue
@@ -691,7 +699,7 @@ export async function createRequest(sdk: EvoSDK, record: OrgRecord, unlocked: Un
       note: makeNote({ group, seq, of: input.specs.length, title: input.title }),
     }
     const decoded = await decodeUnsigned(built.unsigned)
-    const problems = [...reviewDecoded(decoded, body, ctx), nonceProblem(decoded, current(decoded.contractId) ?? 0n)].filter((p): p is string => typeof p === 'string')
+    const problems = [...reviewDecoded(decoded, body, ctx), nonceProblem(decoded, current(decoded.contractId) ?? 0n), ...(await profileProblems(sdk, decoded))].filter((p): p is string => typeof p === 'string')
     if (problems.length > 0) throw new Error(`this request would not pass review: ${problems.join('; ')}`)
     const proposal = propose(unlocked.keys, roster.room, body)
     envelopes.push(proposal, approveEnvelope(view, unlocked, mine, envelopeId(proposal), body))
