@@ -100,9 +100,9 @@ async function register(args, { recordKey, schemaFile, label }, network, depFile
       const got = shapeOf(found);
       const want = Object.keys(schema.documentSchemas).sort();
       if (got.owner !== ownerId || got.types.join() !== want.join()) {
-        throw new Error(`${recordKey} records ${prior.contractId}, but the contract there (owner ${got.owner}, types ${got.types.join(', ')}) is not ${label} (owner ${ownerId}, types ${want.join(', ')}): reconcile the record by hand. Nothing was broadcast.`);
+        throw new Error(`${recordKey} records ${prior.contractId}, but the contract there (owner ${got.owner}, types ${got.types.join(', ')}) differs from the committed ${label} (owner ${ownerId}, types ${want.join(', ')}): reconcile the record by hand. Nothing was broadcast.`);
       }
-      if (prior.status === 'broadcasting') putRecord({ ...prior, status: 'registered', confirmedAt: new Date().toISOString() });
+      if (prior.status !== 'registered' && !args['dry-run']) putRecord({ ...prior, status: 'registered', confirmedAt: new Date().toISOString() });
       log(`already registered: ${prior.contractId}`);
       console.log(JSON.stringify(prior, null, 2));
       return;
@@ -111,6 +111,8 @@ async function register(args, { recordKey, schemaFile, label }, network, depFile
       if ((await chainNonce()) >= BigInt(prior.identityNonce)) {
         throw new Error(`the reservation ${prior.contractId} (nonce ${prior.identityNonce}) was broadcast and its nonce is used, but the contract cannot be fetched yet: check it before registering again`);
       }
+    } else if (network === 'testnet' || network === 'mainnet') {
+      throw new Error(`${recordKey} records ${prior.contractId} on ${network}, but it cannot be fetched: check the network before registering another. Nothing was broadcast.`);
     }
   }
   const group = await sdk.contractGroups.info(groupId);
