@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/org-publish.schema.json",
+  "title": "dg org publish --json",
+  "description": "The request that publishes the organization on Platform: its roster and the N-of-M link in its profile.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "org": {
+      "type": "string"
+    },
+    "orgId": {
+      "type": "string"
+    },
+    "requestId": {
+      "type": "string",
+      "description": "The request the members sign with `dg org sign <requestId>`."
+    },
+    "title": {
+      "type": "string"
+    },
+    "collected": {
+      "type": "integer"
+    },
+    "threshold": {
+      "type": "integer"
+    },
+    "signCommand": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "requested"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "requestId"
+  ],
+  "additionalProperties": true
+}

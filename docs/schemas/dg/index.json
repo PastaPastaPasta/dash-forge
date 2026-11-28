@@ -114,6 +114,7 @@
     "org finish": "org-finish.schema.json",
     "org list": "org-list.schema.json",
     "org migrate": "org-migrate.schema.json",
+    "org publish": "org-publish.schema.json",
     "org requests": "org-requests.schema.json",
     "org show": "org-show.schema.json",
     "org sign": "org-sign.schema.json",

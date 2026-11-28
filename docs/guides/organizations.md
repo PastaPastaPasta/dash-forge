@@ -37,7 +37,10 @@ The header shows how many requests wait for your signature, and the Notification
 Owner actions need *N* of *M* signatures. In dg these are:
 
 - `dg repo create <name> --owner <org>`: the repository, the organization's own Maintain access and the first settings, as one request;
-- `dg collab add` and `dg collab remove` on a repository the organization owns.
+- `dg collab add` and `dg collab remove` on a repository the organization owns;
+- `dg ci runner add` and `dg ci runner revoke` on a repository the organization owns;
+- `dg profile set --owner <org> …`: the organization's profile (the same fields and limits as yours);
+- `dg org publish <org>`: publish the organization on Platform (below).
 
 ### Connect the organization
 
@@ -84,6 +87,14 @@ Before signing, dg decodes the request's transitions itself and checks them: the
 A request Forge won't sign reads "Forge won't sign this: <reasons>." and stops with [E613](../errors.md#e613). Nothing is wrong on your side: `dg org dismiss <request>` hides it on this computer, for free.
 
 The signature that completes a request also puts it on Platform. If that stops part way, any member runs `dg org finish <request>`. A request is done once its writes are on Platform; a member's report that it broadcast is not enough. `dg org decline <request> --reason "…"` declines a request you disagree with; it stays open for the others until so many members decline that it can no longer reach the threshold, and then it reads "Declined: too many members declined it to reach N of M."
+
+### Publish the organization
+
+```sh
+dg org publish acme
+```
+
+This makes one request with two writes: the organization's roster (its members, threshold and signing key, from the key ceremony) and the "N of M" link in its profile, so every visitor sees "Organization · N of M". Its other profile fields are kept. Before signing, each member's dg checks that the roster is exactly the organization's key ceremony and that the link names its real N of M. Once it is published, members sign from their phrase and Platform alone, on any computer. After the organization re-runs its key ceremony in multisig.dashhq.org, publish it again.
 
 ### Requests made before the move to Platform
 
