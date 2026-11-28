@@ -13,6 +13,7 @@ vi.mock('@/hooks/use-ui-store', () => ({ useUiStore: (pick: (s: { openTopUp: () 
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: (e: unknown) => String(e), disabledReason: null }) }))
 vi.mock('@/components/ui/cost-preview', () => ({ CostPreview: () => <span data-testid="cost-preview" /> }))
 
+import { newRequestCost } from '@/lib/org/cost'
 import { ConfirmDialog } from './confirm-dialog'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -43,10 +44,10 @@ describe('a confirm with its cost still pending', () => {
 })
 
 describe('an organization request', () => {
-  it('shows no cost and never says it is free', () => {
-    act(() => root.render(<ConfirmDialog open onClose={() => undefined} title="Create repo?" cost={null} request confirmLabel="Sign & ask co-signers" onConfirm={async () => undefined} />))
+  it('shows what posting it costs the member, says who pays for the writes, and never says it is free', () => {
+    act(() => root.render(<ConfirmDialog open onClose={() => undefined} title="Create repo?" cost={newRequestCost(3)} request confirmLabel="Sign & ask co-signers" onConfirm={async () => undefined} />))
     expect(document.body.textContent).not.toContain('This action is free')
-    expect(document.body.textContent).toContain('Nothing is spent now')
-    expect(document.querySelector('[data-testid="cost-preview"]')).toBeNull()
+    expect(document.body.textContent).toContain('The organization pays for its own writes')
+    expect(document.querySelector('[data-testid="cost-preview"]')).not.toBeNull()
   })
 })

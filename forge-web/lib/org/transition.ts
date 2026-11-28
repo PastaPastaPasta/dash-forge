@@ -1,8 +1,11 @@
 import type { StateTransition } from '@dashevo/evo-sdk'
 
 import { base58Encode } from '../auth/base58'
-import { forgeContractIds, type ForgeIds } from '../deployments'
+import type { ForgeIds } from '../deployments'
+import { contractKindOfType } from '../layout'
 import { isNonceSpent, isNonceTooFar } from '../sdk/nonce'
+import { isDeclaredLink, parseDeclaredOrg } from './gate'
+import { rosterMismatch, type Roster } from './roster'
 import { hex, isObject, unhex } from './util'
 
 export type DocAction = 'create' | 'replace' | 'delete'
@@ -27,6 +30,7 @@ export const ALLOWED: Readonly<Record<string, readonly DocAction[]>> = {
   profile: ['create', 'replace'],
   topic: ['create', 'delete'],
   runner: ['create', 'delete'],
+  org: ['create', 'replace'],
 }
 
 export const isAllowed = (documentType: string, action: string): boolean => (ALLOWED[documentType] ?? []).includes(action as DocAction)
@@ -133,25 +137,65 @@ export interface ReviewContext {
   readonly keyId: number
   readonly forge: ForgeIds
   readonly currentNonce: (contractId: string) => bigint | undefined
+  /** forge-org's id, where the `org` roster lives. */
+  readonly orgContract?: string | null
+  /** What an `org` write and a profile's declared link must match (§10.5). */
+  readonly roster?: Roster
+  readonly network?: string
 }
 
-export function reviewDecoded(d: DecodedTransition, body: { readonly signable: string }, ctx: ReviewContext): string[] {
+function contractFor(documentType: string, ctx: ReviewContext): string | null {
+  if (documentType === 'org') return ctx.orgContract ?? null
+  const kind = contractKindOfType(documentType, ctx.forge)
+  return kind === null ? null : (ctx.forge[kind] ?? null)
+}
+
+/**
+ * What review finds wrong with a proposal (§9 steps 1, 2, 3 and 5, §10.5), in dg's words
+ * (`forge-core::org::review`); the nonce, step 4, is {@link nonceProblem}'s.
+ */
+export function reviewDecoded(
+  d: DecodedTransition,
+  body: { readonly signable: string; readonly network?: string; readonly requirements?: readonly { readonly cid: string; readonly slot: string }[] },
+  ctx: ReviewContext,
+): string[] {
   const problems: string[] = []
-  if (!d.kind.startsWith('DocumentsBatch')) return ['this is not a write Forge makes']
-  if (!d.canonical) problems.push('the transition bytes do not re-encode to themselves')
-  if (d.count !== 1) problems.push('the transition does not carry exactly one write')
-  if (d.ownerId !== ctx.orgId) problems.push('the transition is not written by this organization')
-  if (d.signaturePublicKeyId !== ctx.keyId) problems.push("the transition is not signed with the organization's group key")
-  if (d.userFeeIncrease !== 0) problems.push('the transition raises the fee')
-  if (!d.signatureEmpty) problems.push('the transition already carries a signature')
-  if (d.signable !== body.signable) problems.push('the bytes to sign are not those of the transition')
-  if (!forgeContractIds(ctx.forge).includes(d.contractId)) problems.push("the transition writes to a contract that is not one of this network's Forge contracts")
-  const current = ctx.currentNonce(d.contractId)
-  if (current === undefined) problems.push("the organization's nonce could not be read")
-  else if (isNonceSpent(current, d.nonce)) problems.push('the nonce was already used')
-  else if (isNonceTooFar(current, d.nonce)) problems.push('the nonce is further ahead than Platform accepts')
-  if (!isAllowed(d.documentType, d.action)) problems.push(`Forge does not recognise this action (${d.action || 'unknown'} ${d.documentType || 'document'})`)
+  if (ctx.network !== undefined && body.network !== undefined && body.network !== ctx.network) problems.push(`it is for ${body.network}, not ${ctx.network}`)
+  const reqs = body.requirements
+  if (ctx.roster && reqs && !(reqs.length === 1 && reqs[0]?.cid === ctx.roster.cid && reqs[0]?.slot === ctx.roster.slot)) problems.push("it asks for signatures from keys other than the organization's")
+  // copy-lint-ignore: dg's exact words (forge-core::org::review), shown the same by both clients
+  if (!d.kind.startsWith('DocumentsBatch') || d.count !== 1) return [...problems, 'it is not exactly one document write']
+  if (!d.canonical) problems.push('its bytes do not re-encode to themselves')
+  if (d.ownerId !== ctx.orgId) problems.push('it writes as another identity, not the organization')
+  if (d.signaturePublicKeyId !== ctx.keyId) problems.push("it is not signed with the organization's group key")
+  if (d.userFeeIncrease !== 0) problems.push('it raises the fee')
+  if (!d.signatureEmpty) problems.push('it already carries a signature')
+  if (d.signable !== body.signable) problems.push("the bytes to sign are not the transition's")
+  if (!isAllowed(d.documentType, d.action)) {
+    problems.push(`Forge does not sign this kind of write (${d.action || 'unknown'} ${d.documentType || 'document'})`)
+    return problems
+  }
+  if (contractFor(d.documentType, ctx) !== d.contractId) problems.push("it writes to a contract that is not this network's Forge")
+  if (d.documentType === 'org') {
+    const mismatch = ctx.roster ? rosterMismatch(ctx.roster, d.data) : "the organization's key ceremony could not be read"
+    if (mismatch) problems.push(mismatch)
+  } else if (d.documentType === 'profile' && ctx.roster) {
+    const links = Array.isArray(d.data['links']) ? d.data['links'] : []
+    const size = ctx.roster.members.length
+    for (const link of links.filter(isDeclaredLink)) {
+      const declared = parseDeclaredOrg(link, ctx.network ?? '')
+      if (!declared || declared.threshold !== ctx.roster.threshold || declared.size !== size) problems.push(`its profile link says something other than ${ctx.roster.threshold} of ${size}`)
+    }
+  }
   return problems
+}
+
+
+/** Why the organization's nonce state keeps the write from landing, or null (dg's `nonce_problem`). */
+export function nonceProblem(d: DecodedTransition, current: bigint): string | null {
+  if (isNonceSpent(current, d.nonce)) return 'it was overtaken: its nonce is already used'
+  if (isNonceTooFar(current, d.nonce)) return 'its nonce is further ahead than Platform accepts'
+  return null
 }
 
 export function intentFor(
@@ -175,6 +219,11 @@ export function intentFor(
     document,
     signer: ctx.signer,
   }
+}
+
+/** The proposal's `derived`: the document id, and for a replace the revision it writes (stored + 1), as `dti` derives them. */
+export function derivedFor(spec: WriteSpec, built: BuiltTransition): Record<string, string> {
+  return spec.action === 'replace' ? { documentId: built.documentId, newRevision: (spec.revision + 1n).toString() } : { documentId: built.documentId }
 }
 
 export async function signedTransition(unsignedHex: string, signatureHex: string): Promise<StateTransition> {

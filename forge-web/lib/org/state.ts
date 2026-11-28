@@ -145,7 +145,15 @@ export function validProposalBody(b: unknown): b is ProposalBody {
   return b['note'] === undefined || typeof b['note'] === 'string'
 }
 
-export function reduce(messages: Iterable<unknown>, { room }: { room?: string } = {}): RoomState {
+export interface ReduceOptions {
+  readonly room?: string
+  /** Completed ceremonies given as they are (an organization's roster). */
+  readonly ceremonies?: readonly Ceremony[]
+  /** When Platform first carried each envelope (by id): the `at` it is ordered and shown by. */
+  readonly carriedAt?: ReadonlyMap<string, string>
+}
+
+export function reduce(messages: Iterable<unknown>, { room, ceremonies: known = [], carriedAt }: ReduceOptions = {}): RoomState {
   const byId = new Map<string, Envelope & { id: string }>()
   for (const m of messages) {
     let id: string
@@ -158,11 +166,13 @@ export function reduce(messages: Iterable<unknown>, { room }: { room?: string } 
     if (!verifiedEnvelope(m)) continue
     const e = m as Envelope
     if (room && e.room !== room) continue
-    byId.set(id, { ...e, id })
+    byId.set(id, { ...e, id, at: carriedAt?.get(id) ?? e.at })
   }
   const hellos = dict<{ authPub: string; name: string; at: string }>()
   const ceremonies = dict<Ceremony>()
   const proposals = dict<Proposal>()
+  for (const c of known) ceremonies[c.cid] = c
+  const given = new Set(known.map((c) => c.cid))
 
   for (const m of sortMessages(byId.values())) {
     const b = isObject(m.body) ? m.body : {}
@@ -224,6 +234,7 @@ export function reduce(messages: Iterable<unknown>, { room }: { room?: string } 
   }
 
   for (const c of Object.values(ceremonies)) {
+    if (given.has(c.cid)) continue
     try {
       finishCeremony(c)
     } catch {

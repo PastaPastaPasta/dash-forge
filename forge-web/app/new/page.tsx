@@ -256,9 +256,9 @@ export default function NewRepoPage(): JSX.Element {
     createStepCount(i) === 4 ? sumPreviews([previewRepoCreate(i, firsts), previewCredits(MEMBERS_ONLY_CREDITS)]) : previewRepoCreate(i, firsts)
   const cost = costOf(name.trim() && nameError === null && branchError === null ? input() : { name: 'x', ...(withMembers ? { membersOnly: true } : {}) })
 
-  const create = async (i: CreateRepoInput): Promise<void> => {
+  const create = async (i: CreateRepoInput, intent?: string): Promise<void> => {
     if (orgRecord !== null && forge) {
-      await org.submit((s) => newRepoRequest(s, forge, orgRecord.orgId, orgRecord.label, i))
+      await org.submit((s) => newRepoRequest(s, forge, orgRecord.orgId, orgRecord.label, i), intent)
       return
     }
     if (!signer || !forge) throw new Error('sign in first')
@@ -641,11 +641,11 @@ export default function NewRepoPage(): JSX.Element {
             ? `You'll be its maintainer. ${protectionNote(confirm)}${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name is permanent. It can be made public later, but never private again. Repos can be archived but not deleted.`
             : `You'll be its maintainer. ${confirm ? protectionNote(confirm) : ''}${confirm?.membersOnly === true ? 'Members-only content will be on: members can post things only members can read. ' : ''}The name is permanent, and repos can be archived but not deleted.`
         }
-        cost={forOrg ? null : confirm ? costOf(confirm) : cost}
+        cost={forOrg ? org.cost(3) : confirm ? costOf(confirm) : cost}
         confirmLabel={forOrg ? 'Sign & ask co-signers' : 'Sign & create'}
         {...(forOrg ? {} : { successNote: 'Created — opening your repo', toast: { running: 'Creating the repository…', done: 'Repository created', failed: 'Repository creation stopped part-way' } })}
         request={forOrg}
-        onConfirm={() => (confirm ? create(confirm) : Promise.resolve())}
+        onConfirm={(intent) => (confirm ? create(confirm, intent) : Promise.resolve())}
       />
       {org.dialog}
     </AppShell>

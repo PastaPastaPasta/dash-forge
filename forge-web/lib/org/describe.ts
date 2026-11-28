@@ -88,6 +88,11 @@ export function describeTransition(d: DecodedTransition, names: DescribeNames): 
       return `Remove the topic ${quote(text(source['name']))} from ${repoName}`
     case 'runner:create':
       return `Let ${who} report CI checks on ${repoName}`
+    case 'org:create':
+    case 'org:replace': {
+      const size = d.data['members'] instanceof Uint8Array ? d.data['members'].length / 32 : 0
+      return `Publish the organization's roster: ${String(d.data['threshold'] ?? '?')} of ${size} members must sign`
+    }
     case 'runner:delete':
       return `Stop ${who} reporting CI checks on ${repoName}`
     default:

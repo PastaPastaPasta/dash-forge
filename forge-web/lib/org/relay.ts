@@ -1,5 +1,3 @@
-import { envelopeId, type Envelope } from './envelope'
-
 const base = (relay: string, room: string): string => `${relay.replace(/\/$/, '')}/v1/rooms/${encodeURIComponent(room)}/messages`
 
 async function call(url: string, init?: RequestInit): Promise<unknown> {
@@ -32,11 +30,4 @@ export async function pullRoom(relay: string, room: string, from: RoomLog = { me
     if (!page.more) break
   }
   return { messages, cursor: after }
-}
-
-export async function postEnvelopes(relay: string, room: string, envelopes: readonly Envelope[]): Promise<string[]> {
-  for (const envelope of envelopes) {
-    await call(base(relay, room), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(envelope) })
-  }
-  return envelopes.map(envelopeId)
 }
