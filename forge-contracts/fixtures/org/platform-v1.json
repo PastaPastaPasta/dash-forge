@@ -1060,7 +1060,7 @@
  "status": {
   "threshold": 2,
   "size": 3,
-  "partRules": "doc: absent; present (delete: the document exists); same / different (create: exists with / without the part's fields; replace: at the part's revision with / without them); base (replace: at the revision it replaces); later (replace: past its revision). expired: takenByOther (wins over everything below). landed: create same; replace same, or later with nonce spent and a claim; delete absent with nonce spent and a claim. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, a replace whose document is not at base, or a delete whose document is gone. ready: shares >= N. else collecting.",
+  "partRules": "doc: absent; present (delete: the document exists); same / different (create: at revision 1 with / without the part's fields; replace: at the part's revision with / without them); base (replace: at the revision it replaces); later (past the part's revision). expired: takenByOther (wins over everything below). landed: create or replace same, or later with nonce spent and a claim; delete absent with nonce spent and a claim. done: landed. gone: create, claim, nonce spent, doc absent. expired: nonce spent, a create whose document has other fields, a replace whose document is not at base, or a delete whose document is gone. ready: shares >= N. else collecting.",
   "cases": [
    {
     "name": "collecting",
@@ -1224,6 +1224,63 @@
       "claim": true,
       "nonceSpent": true,
       "doc": "different",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
+    "name": "a create whose document exists with other fields, nonce free",
+    "parts": [
+     {
+      "action": "create",
+      "shares": 2,
+      "claim": false,
+      "nonceSpent": false,
+      "doc": "different",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "expired"
+     ],
+     "status": "expired"
+    }
+   },
+   {
+    "name": "a create edited since (later revision), nonce spent, claimed",
+    "parts": [
+     {
+      "action": "create",
+      "shares": 2,
+      "claim": true,
+      "nonceSpent": true,
+      "doc": "later",
+      "takenByOther": false
+     }
+    ],
+    "expect": {
+     "parts": [
+      "done"
+     ],
+     "status": "done"
+    }
+   },
+   {
+    "name": "a create edited since (later revision), no claim",
+    "parts": [
+     {
+      "action": "create",
+      "shares": 2,
+      "claim": false,
+      "nonceSpent": true,
+      "doc": "later",
       "takenByOther": false
      }
     ],

@@ -1,18 +1,18 @@
-import { CREDITS_PER_TEXT_BYTE, HEADROOM, previewCredits, type CostPreview } from '../sdk/cost'
+import { HEADROOM, previewCredits, type CostPreview } from '../sdk/cost'
 
 /**
- * Pre-sign estimates for a member's own `forge-org` writes (§10.3: an approve about 0.0003 DASH,
- * a proposal about 0.001 DASH), priced like a document with its stored bytes. Upper bounds until
- * measured on testnet.
+ * A member's own `forge-org` writes, measured on testnet (2026-11-28, forge-org 61dAELEs…, the QA
+ * org's first connect, publish, sign and finish): an `orgMember` with its `orgShare` 124.8M credits
+ * for the two; a request's four messages (two proposals, two signatures) 227.8M; a small proposal
+ * alone 63.7M; signatures and send records about 43M each. Previews add the usual headroom.
  */
-const MESSAGE_BASE_CREDITS = 30_000_000
-const MEMBER_CREDITS = 52_000_000
-const SHARE_CREDITS = 46_000_000
-const PROPOSAL_BYTES = 2_400
-const APPROVE_BYTES = 520
-const BROADCAST_BYTES = 420
+const PROPOSAL_CREDITS = 70_000_000
+const APPROVE_CREDITS = 45_000_000
+const BROADCAST_CREDITS = 45_000_000
+const MEMBER_CREDITS = 64_000_000
+const SHARE_CREDITS = 61_000_000
 
-const messageCredits = (bytes: number): number => Math.ceil((MESSAGE_BASE_CREDITS + bytes * CREDITS_PER_TEXT_BYTE) * HEADROOM)
+const withHeadroom = (credits: number): number => Math.ceil(credits * HEADROOM)
 
 function preview(writes: readonly number[]): CostPreview {
   const credits = writes.reduce((a, b) => a + b, 0)
@@ -30,10 +30,10 @@ export interface OrgWriteCount {
 
 export function orgWritesCost({ proposals = 0, approvals = 0, broadcasts = 0, member = false }: OrgWriteCount): CostPreview {
   return preview([
-    ...Array.from({ length: proposals }, () => messageCredits(PROPOSAL_BYTES)),
-    ...Array.from({ length: approvals }, () => messageCredits(APPROVE_BYTES)),
-    ...Array.from({ length: broadcasts }, () => messageCredits(BROADCAST_BYTES)),
-    ...(member ? [MEMBER_CREDITS, SHARE_CREDITS] : []),
+    ...Array.from({ length: proposals }, () => withHeadroom(PROPOSAL_CREDITS)),
+    ...Array.from({ length: approvals }, () => withHeadroom(APPROVE_CREDITS)),
+    ...Array.from({ length: broadcasts }, () => withHeadroom(BROADCAST_CREDITS)),
+    ...(member ? [withHeadroom(MEMBER_CREDITS), withHeadroom(SHARE_CREDITS)] : []),
   ])
 }
 

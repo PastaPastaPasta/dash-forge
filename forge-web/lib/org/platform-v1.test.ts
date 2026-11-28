@@ -171,18 +171,19 @@ describe('platform-v1.json (shared with forge-core::org)', () => {
       executedBy: null,
     }))
     const request: OrgRequest = { id: 'r', title: 't', forge: true, proposals, from: roster.members[0] as string, at: '', malformed: (c.problems ?? []).includes('its parts are missing, repeated, or from different members') }
-    const want = { revision: 2n, fields: { a: 1 } }
-    const STORED: Record<Part['doc'], { revision: bigint; fields: Record<string, unknown> } | null> = {
-      absent: null,
-      present: { revision: 1n, fields: { a: 0 } },
-      base: { revision: 1n, fields: { a: 0 } },
-      same: { revision: 2n, fields: { a: 1 } },
-      different: { revision: 2n, fields: { a: 2 } },
-      later: { revision: 3n, fields: { a: 2 } },
+    const revisionOf = (action: Part['action']): bigint => (action === 'create' ? 1n : 2n)
+    const stored = (action: Part['action'], doc: Part['doc']): { revision: bigint; fields: Record<string, unknown> } | null => {
+      const w = revisionOf(action)
+      if (doc === 'absent') return null
+      if (doc === 'present') return { revision: 1n, fields: { a: 0 } }
+      if (doc === 'base') return { revision: w - 1n, fields: { a: 0 } }
+      if (doc === 'same') return { revision: w, fields: { a: 1 } }
+      if (doc === 'different') return { revision: w, fields: { a: 2 } }
+      return { revision: w + 1n, fields: { a: 2 } }
     }
     const facts = new Map<string, ProposalFacts>(
       c.parts.map((part, i) => {
-        const { landed: isLanded, superseded, absent } = partWrite(part.action, STORED[part.doc], want, part.nonceSpent, part.claim)
+        const { landed: isLanded, superseded, absent } = partWrite(part.action, stored(part.action, part.doc), { revision: revisionOf(part.action), fields: { a: 1 } }, part.nonceSpent, part.claim)
         const problems = (c.problems ?? []).filter((x) => x !== 'its parts are missing, repeated, or from different members')
         return [`p${i}`, { reviewProblems: i === 0 ? problems : [], nonce: BigInt(i), contractId: 'c', spent: part.nonceSpent || part.takenByOther, onChain: isLanded && !part.takenByOther, gone: goneCreate(part.action, part.claim, part.nonceSpent, absent, part.takenByOther), superseded }]
       }),

@@ -8,8 +8,8 @@ import type { WriteSpec } from '../../../forge-web/lib/org/transition'
 export const FIXTURE = fileURLToPath(new URL('../../../forge-contracts/fixtures/org/cross-sdk.json', import.meta.url))
 
 const testnet = forgeV2Ids(DEPLOYMENTS['testnet']) as ForgeIds
-/** forge-org's testnet id once registered; until then a fixed stand-in, so the bytes are known. */
-export const ORG_CONTRACT = testnet.org ?? base58Encode(new Uint8Array(32).fill(0x6f))
+/** forge-org on testnet. */
+export const ORG_CONTRACT = testnet.org as string
 export const forge = { ...testnet, org: ORG_CONTRACT } as Required<ForgeIds>
 export const ORG = '7xmySibLg9RELWNvBcaU4ErgK9w7tyjjb3zjWW1UbPhL'
 export const KEY_ID = 2

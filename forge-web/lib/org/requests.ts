@@ -139,11 +139,11 @@ export interface PartWrite {
 }
 
 /**
- * What Platform shows of one part's write (§9, §11.6): a create landed once its document exists
- * with its fields; a replace once its document is at its revision with its fields, or later with
- * its nonce spent and a member's claim; a delete once its document is gone with its nonce spent and
- * a claim. Until then a replace waits only while its document is at the revision it replaces, and
- * a delete only while its document is there.
+ * What Platform shows of one part's write (§9, §11.6): a create or replace landed once its document
+ * is at the part's revision with its fields (a create's is 1), or later with its nonce spent and a
+ * member's claim; a delete once its document is gone with its nonce spent and a claim. Until then a
+ * create waits only while its document is absent, a replace only while its document is at the
+ * revision it replaces, and a delete only while its document is there.
  */
 export function partWrite(
   action: string,
@@ -153,14 +153,14 @@ export function partWrite(
   claimed: boolean,
 ): PartWrite {
   const absent = stored === null
-  if (action === 'create') return { landed: !absent && sameFields(want.fields, stored.fields), superseded: false, absent }
   if (action === 'delete') {
-    const landed = stored === null && spent && claimed
+    const landed = absent && spent && claimed
     return { landed, superseded: !landed && absent, absent }
   }
-  const revision = want.revision ?? 0n
+  const revision = want.revision ?? (action === 'create' ? 1n : 0n)
   const landed = stored !== null && ((stored.revision === revision && sameFields(want.fields, stored.fields)) || (stored.revision > revision && spent && claimed))
-  return { landed, superseded: !landed && stored?.revision !== revision - 1n, absent }
+  const waiting = action === 'create' ? absent : stored?.revision === revision - 1n
+  return { landed, superseded: !landed && !waiting, absent }
 }
 
 /** A create a member reported done, its nonce spent and no other request's write on it, whose document is gone. */
