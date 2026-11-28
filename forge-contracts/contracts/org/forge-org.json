@@ -19,15 +19,29 @@
         "org": { "type": "identifier", "position": 0 },
         "room": { "type": "string", "minLength": 1, "maxLength": 64, "position": 1 },
         "authPub": { "type": "bytes", "size": 32, "position": 2 },
-        "proof": { "type": "bytes", "size": 64, "position": 3 },
-        "sealedShare": { "type": "array", "byteArray": true, "minItems": 1, "maxItems": 128, "position": 4 }
+        "proof": { "type": "bytes", "size": 64, "position": 3 }
       },
       "indices": [
         { "name": "byOrg", "properties": [{ "org": "asc" }, { "$ownerId": "asc" }], "unique": true },
-        { "name": "byKey", "properties": [{ "org": "asc" }, { "authPub": "asc" }] },
+        { "name": "byKey", "properties": [{ "org": "asc" }, { "authPub": "asc" }, { "$createdAt": "asc" }] },
         { "name": "byOwner", "properties": [{ "$ownerId": "asc" }, { "org": "asc" }] }
       ],
       "required": ["$createdAt", "org", "room", "authPub", "proof"],
+      "additionalProperties": false
+    },
+    "orgShare": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "properties": {
+        "org": { "type": "identifier", "position": 0 },
+        "cid": { "type": "bytes", "size": 32, "position": 1 },
+        "sealed": { "type": "array", "byteArray": true, "minItems": 1, "maxItems": 128, "position": 2 }
+      },
+      "indices": [
+        { "name": "byCeremony", "properties": [{ "org": "asc" }, { "$ownerId": "asc" }, { "cid": "asc" }], "unique": true }
+      ],
+      "required": ["$createdAt", "org", "cid", "sealed"],
       "additionalProperties": false
     },
     "org": {

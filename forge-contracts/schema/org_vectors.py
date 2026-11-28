@@ -28,7 +28,8 @@ def b(fill, n):
 
 ROOM = "a52b096e14d5b482f1d9462bd59c8e7b"
 BASE = {
-    'orgMember': {"org": i(1), "room": ROOM, "authPub": b(2, 32), "proof": b(3, 64), "sealedShare": b(4, 72)},
+    'orgMember': {"org": i(1), "room": ROOM, "authPub": b(2, 32), "proof": b(3, 64)},
+    'orgShare': {"org": i(1), "cid": b(5, 32), "sealed": b(4, 72)},
     'org': {"room": ROOM, "relay": "https://multisig.dashhq.org", "cid": b(5, 32), "keyId": 2, "groupKey": b(6, 48),
             "threshold": 2, "members": b(7, 96), "pubShares": b(8, 144)},
     'orgMessage': {"org": i(1), "digest": b(9, 32), "part": 0, "parts": 1, "fmt": 0, "body": b(10, 600)},
@@ -78,10 +79,15 @@ for _t in ('orgMember', 'org'):
 
 for _p in ('authPub', 'proof'):
     no(f'orgMember.{_p} of the wrong size', 'orgMember', 'minItems', **{_p: b(2, 31)})
-ok('orgMember without sealedShare', 'orgMember', sealedShare=DROP)
-bounds('orgMember', 'sealedShare', 4, 1, 128)
 for _p in ('org', 'room', 'authPub', 'proof'):
     no(f'orgMember without {_p}', 'orgMember', 'required', **{_p: DROP})
+no('orgMember with a sealed share (orgShare holds it)', 'orgMember', 'additionalProperties', sealedShare=b(4, 72))
+
+no('orgShare.cid of 31 bytes', 'orgShare', 'minItems', cid=b(5, 31))
+no('orgShare.cid of 33 bytes', 'orgShare', 'maxItems', cid=b(5, 33))
+bounds('orgShare', 'sealed', 4, 1, 128)
+for _p in ('org', 'cid', 'sealed'):
+    no(f'orgShare without {_p}', 'orgShare', 'required', **{_p: DROP})
 
 ok('org without relay', 'org', relay=DROP)
 ok('org.relay of 200 characters', 'org', relay='h' * 200)
@@ -116,8 +122,9 @@ def index(label, t, name, properties, unique):
 
 
 index("one binding per organization and member identity", 'orgMember', 'byOrg', ['org', '$ownerId'], True)
-index("an organization's identities for one participant key", 'orgMember', 'byKey', ['org', 'authPub'], False)
+index("an organization's identities for one participant key, earliest first", 'orgMember', 'byKey', ['org', 'authPub', '$createdAt'], False)
 index("a member identity's organizations", 'orgMember', 'byOwner', ['$ownerId', 'org'], False)
+index('one sealed share per member identity and ceremony', 'orgShare', 'byCeremony', ['org', '$ownerId', 'cid'], True)
 index('one roster per organization', 'org', 'owner', ['$ownerId'], True)
 index("one member's messages for an organization, by time", 'orgMessage', 'log', ['org', '$ownerId', '$createdAt'], False)
 

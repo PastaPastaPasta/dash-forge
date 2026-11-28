@@ -20,12 +20,6 @@
      3,
      64
     ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
-    ]
    }
   }
  },
@@ -52,7 +46,49 @@
      64
     ]
    },
-   "sealedShare": {
+   "extra": 1
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare ok",
+  "type": "orgShare",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare with another property",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
     "$b": [
      4,
      72
@@ -210,12 +246,6 @@
      3,
      64
     ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
-    ]
    }
   }
  },
@@ -241,12 +271,6 @@
      3,
      64
     ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
-    ]
    }
   }
  },
@@ -271,12 +295,6 @@
     "$b": [
      3,
      64
-    ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
     ]
    }
   }
@@ -413,12 +431,6 @@
      3,
      64
     ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
-    ]
    }
   }
  },
@@ -444,158 +456,6 @@
      2,
      31
     ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
-    ]
-   }
-  }
- },
- {
-  "item": "ORG",
-  "name": "orgMember without sealedShare",
-  "type": "orgMember",
-  "expect": "ok",
-  "doc": {
-   "org": {
-    "$id": 1
-   },
-   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
-   "authPub": {
-    "$b": [
-     2,
-     32
-    ]
-   },
-   "proof": {
-    "$b": [
-     3,
-     64
-    ]
-   }
-  }
- },
- {
-  "item": "ORG",
-  "name": "orgMember.sealedShare of 1 bytes",
-  "type": "orgMember",
-  "expect": "ok",
-  "doc": {
-   "org": {
-    "$id": 1
-   },
-   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
-   "authPub": {
-    "$b": [
-     2,
-     32
-    ]
-   },
-   "proof": {
-    "$b": [
-     3,
-     64
-    ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     1
-    ]
-   }
-  }
- },
- {
-  "item": "ORG",
-  "name": "orgMember.sealedShare of 128 bytes",
-  "type": "orgMember",
-  "expect": "ok",
-  "doc": {
-   "org": {
-    "$id": 1
-   },
-   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
-   "authPub": {
-    "$b": [
-     2,
-     32
-    ]
-   },
-   "proof": {
-    "$b": [
-     3,
-     64
-    ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     128
-    ]
-   }
-  }
- },
- {
-  "item": "ORG",
-  "name": "orgMember.sealedShare of 0 bytes",
-  "type": "orgMember",
-  "expect": "refused",
-  "why": "minItems",
-  "doc": {
-   "org": {
-    "$id": 1
-   },
-   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
-   "authPub": {
-    "$b": [
-     2,
-     32
-    ]
-   },
-   "proof": {
-    "$b": [
-     3,
-     64
-    ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     0
-    ]
-   }
-  }
- },
- {
-  "item": "ORG",
-  "name": "orgMember.sealedShare of 129 bytes",
-  "type": "orgMember",
-  "expect": "refused",
-  "why": "maxItems",
-  "doc": {
-   "org": {
-    "$id": 1
-   },
-   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
-   "authPub": {
-    "$b": [
-     2,
-     32
-    ]
-   },
-   "proof": {
-    "$b": [
-     3,
-     64
-    ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     129
-    ]
    }
   }
  },
@@ -617,12 +477,6 @@
     "$b": [
      3,
      64
-    ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
     ]
    }
   }
@@ -648,12 +502,6 @@
      3,
      64
     ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
-    ]
    }
   }
  },
@@ -672,12 +520,6 @@
     "$b": [
      3,
      64
-    ]
-   },
-   "sealedShare": {
-    "$b": [
-     4,
-     72
     ]
    }
   }
@@ -698,11 +540,235 @@
      2,
      32
     ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgMember with a sealed share (orgShare holds it)",
+  "type": "orgMember",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "room": "a52b096e14d5b482f1d9462bd59c8e7b",
+   "authPub": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "proof": {
+    "$b": [
+     3,
+     64
+    ]
    },
    "sealedShare": {
     "$b": [
      4,
      72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.cid of 31 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     31
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.cid of 33 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     33
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 1 bytes",
+  "type": "orgShare",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     1
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 128 bytes",
+  "type": "orgShare",
+  "expect": "ok",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     128
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 0 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     0
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare.sealed of 129 bytes",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     129
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare without org",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "cid": {
+    "$b": [
+     5,
+     32
+    ]
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare without cid",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "sealed": {
+    "$b": [
+     4,
+     72
+    ]
+   }
+  }
+ },
+ {
+  "item": "ORG",
+  "name": "orgShare without sealed",
+  "type": "orgShare",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "org": {
+    "$id": 1
+   },
+   "cid": {
+    "$b": [
+     5,
+     32
     ]
    }
   }
