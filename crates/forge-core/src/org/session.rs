@@ -857,7 +857,9 @@ impl Org {
             if !tip.spent(d.nonce) {
                 let f = facts(client, &d).await?;
                 let claim = self.claimed(&id);
-                if request::part_state(&d.action, true, claim, Some(&f)) == PartState::Expired {
+                if !claim
+                    && request::part_state(&d.action, true, claim, Some(&f)) == PartState::Expired
+                {
                     continue;
                 }
             }
