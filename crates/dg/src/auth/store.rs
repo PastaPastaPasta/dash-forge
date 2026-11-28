@@ -10,6 +10,7 @@
 //! `BridgeIdentity::load_from_file`.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, Result};
 
@@ -238,7 +239,7 @@ impl Storer {
                         }
                         Err(e) if slot == Slot::Sync => Some(e.into()),
                         Err(e) => {
-                            eprintln!("note: the keychain refused the key ({e}); using a file");
+                            tracing::debug!("the keychain refused the key: {e}");
                             keychain_failed = true;
                             None
                         }
@@ -264,7 +265,20 @@ impl Storer {
         }
         let stored = self.write_file(network, identity_id, text, slot, keychain_failed)?;
         if let Some(e) = sync_keychain_failed {
-            eprintln!("{}", sync_file_note(&e, &stored));
+            tracing::debug!("the keychain refused the settings-sync key: {e:#}");
+            eprintln!("{}", sync_file_note(&stored));
+        } else if keychain_failed && !KEYCHAIN_NOTED.swap(true, Ordering::Relaxed) {
+            if let Stored::Sealed(p) | Stored::Plaintext(p) = &stored {
+                // A pending key is named as the file it ends up in (as the passphrase prompt does).
+                let main = (slot == Slot::Pending)
+                    .then(|| slot_file(network, identity_id, Slot::Main).ok())
+                    .flatten();
+                let sealed = matches!(stored, Stored::Sealed(_));
+                eprintln!(
+                    "{}",
+                    keychain_refused_note(main.as_deref().unwrap_or(p), sealed)
+                );
+            }
         }
         Ok(stored)
     }
@@ -408,8 +422,26 @@ fn sync_fallback(entry: forge_core::error::Result<Option<Secret>>, text: &Secret
     }
 }
 
-/// The line saying the sync key went to a file because the keychain failed (`e`).
-fn sync_file_note(e: &anyhow::Error, stored: &Stored) -> String {
+/// Whether this run already said the OS keychain refused a key: a sign-in stores more than once
+/// (the pending key, then the confirmed one), and one line says it.
+static KEYCHAIN_NOTED: AtomicBool = AtomicBool::new(false);
+
+/// The one line for a key the OS keychain did not take; the store's own error goes to
+/// `RUST_LOG=debug`.
+fn keychain_refused_note(path: &std::path::Path, sealed: bool) -> String {
+    format!(
+        "note: no usable OS keychain here, so the key is {} {}",
+        if sealed {
+            "sealed in"
+        } else {
+            "kept unencrypted in"
+        },
+        path.display()
+    )
+}
+
+/// The line saying the sync key went to a file because the keychain failed.
+fn sync_file_note(stored: &Stored) -> String {
     let (path, sealed) = match stored {
         Stored::Sealed(p) => (p, true),
         Stored::Plaintext(p) => (p, false),
@@ -418,7 +450,7 @@ fn sync_file_note(e: &anyhow::Error, stored: &Stored) -> String {
         }
     };
     format!(
-        "note: the OS keychain failed ({e:#}), so the settings-sync key is kept in {}{}",
+        "note: no usable OS keychain here, so the settings-sync key is kept in {}{}",
         path.display(),
         if sealed {
             " (dg and git read it when DASH_FORGE_PASSPHRASE is set)"
