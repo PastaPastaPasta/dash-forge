@@ -507,6 +507,12 @@ Two common ones:
 
 **What to do:** if you should have access, ask a maintainer to save it again (`dg env resave --env <name>`, or `dg env resave --all`). Maintainers see exactly who is missing in `dg env ls`.
 
+## E613
+
+**Forge won't sign this request.** A request of an organization you belong to can't be signed or put on Platform as it is: its parts don't form a whole request, or the review of what it writes found a problem (it writes as another identity, to a contract that isn't Forge's, raises the fee, was overtaken, or changes the members of a repository that now has members-only content or environments). The message lists the reasons.
+
+**What to do:** nothing on your side is misconfigured. A request that can never be valid can be dismissed on this computer for free: `dg org dismiss <request>`. Decline (`dg org decline <request>`) is for a valid request you disagree with.
+
 ## E701
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.

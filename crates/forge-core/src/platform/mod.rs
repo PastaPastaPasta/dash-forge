@@ -2314,6 +2314,11 @@ impl<'a> WriteEngine<'a> {
         })
     }
 
+    /// The identity this engine writes as (base58).
+    pub fn owner_id(&self) -> String {
+        encode_identifier(self.owner_id.to_buffer())
+    }
+
     /// The on-chain key id this engine signs with (diagnostics).
     pub fn signing_key_id(&self) -> u32 {
         self.signing_key.id()

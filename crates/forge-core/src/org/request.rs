@@ -86,36 +86,20 @@ pub struct Request {
 }
 
 /// Every request of the ceremony `cid` in the room, oldest first. A request is one proposer's
-/// proposals sharing a group, so nobody else can break a member's request by reusing its group.
-/// The plain group id goes to the earliest proposal by one of `members` (the ceremony's
-/// participants) that the room accepted and that asks for `cid`'s key alone; any other
-/// proposer's request gets `<group>-<first 16 hex of its key>`. Web groups the same way.
-pub fn requests(state: &RoomState, cid: &str, members: &BTreeSet<String>) -> Vec<Request> {
+/// proposals sharing a group, and its id is `<group>-<first 16 hex of the proposer's key>`, so
+/// nobody can claim another member's id (§11.5). Web groups the same way.
+pub fn requests(state: &RoomState, cid: &str) -> Vec<Request> {
     let mut groups: BTreeMap<(String, String), Vec<(Note, &Proposal)>> = BTreeMap::new();
-    let mut first: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut out = Vec::new();
     for p in state.proposals.values() {
-        let asks = p.posted_requirements();
-        if !asks.iter().any(|(c, _)| c == cid) {
+        if !p.posted_requirements().iter().any(|(c, _)| c == cid) {
             continue;
         }
         match p.note().and_then(Note::parse) {
-            Some(note) => {
-                let may_claim = p.status != ProposalStatus::Invalid
-                    && members.contains(&p.from)
-                    && asks.len() == 1;
-                if may_claim {
-                    let seen = (p.at.clone(), p.from.clone());
-                    first
-                        .entry(note.group.clone())
-                        .and_modify(|e| *e = e.clone().min(seen.clone()))
-                        .or_insert(seen);
-                }
-                groups
-                    .entry((note.group.clone(), p.from.clone()))
-                    .or_default()
-                    .push((note, p));
-            }
+            Some(note) => groups
+                .entry((note.group.clone(), p.from.clone()))
+                .or_default()
+                .push((note, p)),
             None => out.push(Request {
                 id: p.id.clone(),
                 title: String::new(),
@@ -128,42 +112,48 @@ pub fn requests(state: &RoomState, cid: &str, members: &BTreeSet<String>) -> Vec
         }
     }
     for ((group, from), mut members) in groups {
-        let id = if first.get(&group).is_some_and(|(_, f)| *f == from) {
-            group
-        } else {
-            format!("{group}-{}", from.get(..16).unwrap_or(&from))
-        };
         members.sort_by(|a, b| a.0.seq.cmp(&b.0.seq).then_with(|| a.1.id.cmp(&b.1.id)));
         let of = members[0].0.of;
-        let proposer = members[0].1.from.clone();
         let whole = members.len() == of
             && members
                 .iter()
                 .enumerate()
-                .all(|(i, (n, p))| n.seq == i && n.of == of && p.from == proposer);
+                .all(|(i, (n, _))| n.seq == i && n.of == of);
         out.push(Request {
-            id,
+            id: request_id(&group, &from),
             title: members[0].0.title.clone(),
             forge: true,
             proposals: members.iter().map(|(_, p)| p.id.clone()).collect(),
-            proposer,
+            proposer: from,
             at: members
                 .iter()
                 .map(|(_, p)| p.at.clone())
                 .min()
                 .unwrap_or_default(),
-            problem: (!whole)
-                .then(|| "its parts are missing, repeated, or from different members".to_string()),
+            problem: (!whole).then(|| "its parts are missing or repeated".to_string()),
         });
     }
     out.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
     out
 }
 
-/// Find a request by its id or an unambiguous prefix of it.
+/// A Forge request's id: its group and the first 16 hex digits of its proposer's key.
+pub fn request_id(group: &str, proposer: &str) -> String {
+    format!("{group}-{}", proposer.get(..16).unwrap_or(proposer))
+}
+
+/// Find a request by its id, by its bare group when exactly one proposer used it, or by an
+/// unambiguous prefix (at least 4 characters) of its id.
 pub fn find<'a>(requests: &'a [Request], id: &str) -> Option<&'a Request> {
     if let Some(r) = requests.iter().find(|r| r.id == id) {
         return Some(r);
+    }
+    let prefixed = format!("{id}-");
+    let mut by_group = requests
+        .iter()
+        .filter(|r| r.forge && r.id.starts_with(&prefixed));
+    if let Some(r) = by_group.next() {
+        return by_group.next().is_none().then_some(r);
     }
     let mut hits = requests
         .iter()
@@ -172,7 +162,7 @@ pub fn find<'a>(requests: &'a [Request], id: &str) -> Option<&'a Request> {
     hits.next().is_none().then_some(first)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RequestStatus {
     Collecting,
@@ -201,79 +191,255 @@ impl RequestStatus {
     }
 }
 
-/// What Platform says about a request's proposals: those whose write is visible, and those whose
-/// nonce is at or below the identity's current one.
-#[derive(Debug, Clone, Default)]
-pub struct ChainView {
-    pub landed: BTreeSet<String>,
-    pub spent: BTreeSet<String>,
-    /// Reported executed, but the nonce is still free: it has not landed.
-    pub unproven: BTreeSet<String>,
+/// What Platform shows of a part's document (§11.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DocState {
+    #[default]
+    Absent,
+    /// A delete's document still exists.
+    Present,
+    /// A create's document is at revision 1 with the part's fields; a replace's is at its
+    /// revision with them.
+    Same,
+    /// The same, with other fields.
+    Different,
+    /// A replace's document is at the revision it replaces: it has not landed yet.
+    Base,
+    /// The document is past the part's revision (edited since).
+    Later,
 }
 
-/// The request's status (§9 "Request status"). Without a chain view, `done` comes from
-/// broadcasts only and `expired` is never reported.
-pub fn status(state: &RoomState, req: &Request, chain: Option<&ChainView>) -> RequestStatus {
-    if req.problem.is_some() {
-        return RequestStatus::Invalid;
+/// What Platform says about one part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PartFacts {
+    pub nonce_spent: bool,
+    pub doc: DocState,
+    /// Another request's part is known to have landed with this part's nonce.
+    pub taken_by_other: bool,
+}
+
+/// Per proposal id, what Platform says about it.
+pub type ChainView = BTreeMap<String, PartFacts>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PartState {
+    Collecting,
+    Ready,
+    Done,
+    /// A create a member reported broadcast whose nonce is spent, but whose document is gone:
+    /// done, and deleted since (or never seen).
+    Gone,
+    Expired,
+}
+
+impl PartState {
+    pub fn finished(self) -> bool {
+        matches!(self, Self::Done | Self::Gone)
     }
-    let ps: Vec<&Proposal> = req
-        .proposals
-        .iter()
-        .filter_map(|id| state.proposals.get(id))
-        .collect();
-    if ps.len() != req.proposals.len() || ps.iter().any(|p| p.status == ProposalStatus::Invalid) {
-        return RequestStatus::Invalid;
+}
+
+/// Whether the write is visible on Platform. A document past the part's revision (edited
+/// since), and a delete, count only with the nonce spent and a member's `claim` that it
+/// broadcast it.
+pub fn landed(action: &str, f: &PartFacts, claim: bool) -> bool {
+    match action {
+        "create" | "replace" => {
+            f.doc == DocState::Same || (f.doc == DocState::Later && f.nonce_spent && claim)
+        }
+        "delete" => f.doc == DocState::Absent && f.nonce_spent && claim,
+        _ => false,
     }
-    let landed = |p: &Proposal| {
-        (p.status == ProposalStatus::Executed && !chain.is_some_and(|c| c.unproven.contains(&p.id)))
-            || chain.is_some_and(|c| c.landed.contains(&p.id))
+}
+
+/// One part's state (§11.6). `claim`: a member reported broadcasting it. Without `facts`
+/// (nothing read from Platform), only signatures count.
+pub fn part_state(
+    action: &str,
+    shares_ready: bool,
+    claim: bool,
+    facts: Option<&PartFacts>,
+) -> PartState {
+    let signed = if shares_ready {
+        PartState::Ready
+    } else {
+        PartState::Collecting
     };
-    if ps.iter().all(|p| landed(p)) {
-        return RequestStatus::Done;
-    }
-    if ps
-        .iter()
-        .any(|p| !landed(p) && chain.is_some_and(|c| c.spent.contains(&p.id)))
+    let Some(f) = facts else { return signed };
+    if f.taken_by_other {
+        PartState::Expired
+    } else if landed(action, f, claim) {
+        PartState::Done
+    } else if action == "create" && claim && f.nonce_spent && f.doc == DocState::Absent {
+        PartState::Gone
+    } else if f.nonce_spent
+        || (action == "create" && f.doc != DocState::Absent)
+        || (action == "replace" && f.doc != DocState::Base)
+        || (action == "delete" && f.doc == DocState::Absent)
     {
-        return RequestStatus::Expired;
+        PartState::Expired
+    } else {
+        signed
     }
-    if ps
-        .iter()
-        .all(|p| matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed))
-    {
+}
+
+/// A request's status and the sentence both clients show for it (§11.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    pub status: RequestStatus,
+    pub parts: Vec<PartState>,
+    pub problems: Vec<String>,
+    pub threshold: usize,
+    pub size: usize,
+}
+
+impl Summary {
+    /// Some part is done but deleted since.
+    pub fn gone(&self) -> bool {
+        self.status == RequestStatus::Done && self.parts.contains(&PartState::Gone)
+    }
+
+    /// The fixed sentence for `invalid`, `declined` and a gone `done`.
+    pub fn text(&self) -> Option<String> {
+        match self.status {
+            RequestStatus::Invalid => Some(refused_text(&self.problems)),
+            RequestStatus::Declined => Some(format!(
+                "Declined: too many members declined it to reach {} of {}.",
+                self.threshold, self.size
+            )),
+            RequestStatus::Done if self.gone() => Some("Done (no longer on Platform)".into()),
+            _ => None,
+        }
+    }
+}
+
+/// "Forge won't sign this: <reasons>."
+pub fn refused_text(problems: &[String]) -> String {
+    format!(
+        "Forge won't sign this: {}.",
+        super::one_line(&problems.join("; ")).trim_end_matches('.')
+    )
+}
+
+/// The request's status from its parts: invalid (any problem) > declined > done > expired >
+/// ready > collecting. `declined`: members who declined without approving.
+pub fn summarize(
+    problems: Vec<String>,
+    declined: usize,
+    threshold: usize,
+    size: usize,
+    parts: &[(bool, PartState)],
+) -> Summary {
+    let each: Vec<PartState> = parts.iter().map(|(_, s)| *s).collect();
+    let status = if !problems.is_empty() {
+        RequestStatus::Invalid
+    } else if !parts.iter().any(|(ready, _)| *ready) && declined > size.saturating_sub(threshold) {
+        RequestStatus::Declined
+    } else if !each.is_empty() && each.iter().all(|s| s.finished()) {
+        RequestStatus::Done
+    } else if each.contains(&PartState::Expired) {
+        RequestStatus::Expired
+    } else if !each.is_empty() && each.iter().all(|s| *s != PartState::Collecting) {
         RequestStatus::Ready
     } else {
         RequestStatus::Collecting
+    };
+    Summary {
+        status,
+        parts: each,
+        problems,
+        threshold,
+        size,
     }
 }
 
-/// Whether no part of `req` is ready or executed and more of `ceremony`'s participants declined
-/// it, without approving, than M−N: the rest cannot reach the threshold.
-pub fn declined_out(state: &RoomState, req: &Request, ceremony: &Ceremony) -> bool {
+/// The problems that make `req` not a request Forge can sign, before any review: its parts
+/// don't form a whole one, or one isn't a valid proposal of the room.
+pub fn structural_problems(state: &RoomState, req: &Request) -> Vec<String> {
+    let mut out: Vec<String> = req.problem.iter().cloned().collect();
+    let invalid = req.proposals.iter().any(|id| {
+        state
+            .proposals
+            .get(id)
+            .is_none_or(|p| p.status == ProposalStatus::Invalid)
+    });
+    if invalid {
+        out.push("one of its parts is not a valid proposal from a member".into());
+    }
+    out
+}
+
+/// The request's status (§9, §11): `review` holds every review problem found (empty when it was
+/// not reviewed), `chain` what Platform says (none: signatures only).
+pub fn status(
+    state: &RoomState,
+    req: &Request,
+    ceremony: &Ceremony,
+    chain: Option<&ChainView>,
+    review: &[String],
+) -> Summary {
+    let mut problems = structural_problems(state, req);
+    for p in review {
+        if !problems.contains(p) {
+            problems.push(p.clone());
+        }
+    }
+    let parts: Vec<(bool, PartState)> = req
+        .proposals
+        .iter()
+        .map(|id| {
+            let Some(p) = state.proposals.get(id) else {
+                return (false, PartState::Collecting);
+            };
+            let ready = p.status.is_signed();
+            let action = p.action();
+            let facts = chain.and_then(|c| c.get(id));
+            (
+                ready,
+                part_state(&action, ready, p.status == ProposalStatus::Executed, facts),
+            )
+        })
+        .collect();
+    let c = &ceremony.config;
+    summarize(
+        problems,
+        declined_count(state, req, ceremony),
+        c.threshold,
+        c.participants.len(),
+        &parts,
+    )
+}
+
+/// How many of `ceremony`'s participants declined `req` without approving any of it.
+pub fn declined_count(state: &RoomState, req: &Request, ceremony: &Ceremony) -> usize {
     let ps: Vec<&Proposal> = req
         .proposals
         .iter()
         .filter_map(|id| state.proposals.get(id))
         .collect();
-    if ps
-        .iter()
-        .any(|p| matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed))
-    {
-        return false;
-    }
     let approved: BTreeSet<&str> = ps
         .iter()
         .flat_map(|p| p.approvals.keys().map(String::as_str))
         .collect();
-    let declined = ps
-        .iter()
+    ps.iter()
         .flat_map(|p| p.rejections.keys().map(String::as_str))
         .filter(|k| ceremony.config.index_of(k).is_some() && !approved.contains(k))
         .collect::<BTreeSet<_>>()
-        .len();
+        .len()
+}
+
+/// Whether no part of `req` has enough signatures and more of `ceremony`'s participants
+/// declined it, without approving, than M−N: the rest cannot reach the threshold.
+pub fn declined_out(state: &RoomState, req: &Request, ceremony: &Ceremony) -> bool {
+    let any_ready = req.proposals.iter().any(|id| {
+        state
+            .proposals
+            .get(id)
+            .is_some_and(|p| p.status.is_signed())
+    });
     let c = &ceremony.config;
-    declined > c.participants.len().saturating_sub(c.threshold)
+    !any_ready
+        && declined_count(state, req, ceremony) > c.participants.len().saturating_sub(c.threshold)
 }
 
 /// `(collected, threshold)`: the fewest valid shares any proposal has, against the threshold.
@@ -316,7 +482,13 @@ pub fn declined_by(state: &RoomState, req: &Request, auth_pub: &str) -> bool {
 /// Whether the request waits for this member's signature: still collecting, a member of every
 /// ceremony it needs, and neither signed nor declined by them.
 pub fn waits_for(state: &RoomState, req: &Request, auth_pub: &str) -> bool {
-    status(state, req, None) == RequestStatus::Collecting
+    structural_problems(state, req).is_empty()
+        && req.proposals.iter().any(|id| {
+            state
+                .proposals
+                .get(id)
+                .is_some_and(|p| p.status == ProposalStatus::Collecting)
+        })
         && !approved_by(state, req, auth_pub)
         && !declined_by(state, req, auth_pub)
         && req.proposals.iter().all(|id| {
@@ -354,20 +526,9 @@ mod tests {
         st
     }
 
-    fn members() -> BTreeSet<String> {
-        ["a", "zz", "bbbbbbbbbb"]
-            .iter()
-            .map(|m| (*m).to_string())
-            .collect()
-    }
-
     fn problem(parts: &[(&str, &str, usize, usize)]) -> bool {
-        let reqs = requests(&state(parts), "c", &members());
+        let reqs = requests(&state(parts), "c");
         assert_eq!(reqs.len(), 1);
-        assert_eq!(
-            status(&state(parts), &reqs[0], None) == RequestStatus::Invalid,
-            reqs[0].problem.is_some()
-        );
         reqs[0].problem.is_some()
     }
 
@@ -381,37 +542,20 @@ mod tests {
     }
 
     #[test]
-    fn someone_reusing_a_group_does_not_break_the_request() {
-        let st = state(&[("a", G, 0, 1), ("bbbbbbbbbb", G, 0, 1)]);
-        let reqs = requests(&st, "c", &members());
-        assert_eq!(reqs.len(), 2);
-        let mine = reqs.iter().find(|r| r.proposer == "a").unwrap();
-        assert_eq!(mine.id, G);
-        assert!(mine.problem.is_none());
-        let theirs = reqs.iter().find(|r| r.proposer != "a").unwrap();
-        assert_eq!(theirs.id, format!("{G}-bbbbbbbbbb"));
-
-        let mut st = state(&[("zz", G, 0, 1), ("bbbbbbbbbb", G, 0, 1)]);
-        let outsider = st.proposals.get_mut("p1").unwrap();
-        outsider.at = "2000-01-01T00:00:00.000Z".into();
-        outsider.status = ProposalStatus::Invalid;
-        let reqs = requests(&st, "c", &members());
-        assert_eq!(reqs.iter().find(|r| r.proposer == "zz").unwrap().id, G);
-
-        // Accepted by the room through a ceremony of its own, but not a member and asking for
-        // a second key: it can't take the id either.
-        let mut st = state(&[("zz", G, 0, 1), ("outsider", G, 0, 1)]);
-        let outsider = st.proposals.get_mut("p1").unwrap();
-        outsider.at = "2000-01-01T00:00:00.000Z".into();
-        outsider.body["requirements"] = serde_json::json!([
-            { "cid": "c", "slot": "high" },
-            { "cid": "e", "slot": "high" }
+    fn every_id_names_its_proposer_and_a_bare_group_resolves_when_unique() {
+        let st = state(&[
+            ("aaaaaaaaaaaaaaaaaa", G, 0, 1),
+            ("bbbbbbbbbbbbbbbbbb", G, 0, 1),
         ]);
-        let reqs = requests(&st, "c", &members());
-        assert_eq!(reqs.iter().find(|r| r.proposer == "zz").unwrap().id, G);
+        let reqs = requests(&st, "c");
+        let ids: Vec<&str> = reqs.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"0123456789abcdef-aaaaaaaaaaaaaaaa"));
+        assert!(ids.contains(&"0123456789abcdef-bbbbbbbbbbbbbbbb"));
+        assert!(find(&reqs, G).is_none());
+        let one = requests(&state(&[("aaaaaaaaaaaaaaaaaa", G, 0, 1)]), "c");
         assert_eq!(
-            reqs.iter().find(|r| r.proposer == "outsider").unwrap().id,
-            format!("{G}-outsider")
+            find(&one, G).unwrap().id,
+            "0123456789abcdef-aaaaaaaaaaaaaaaa"
         );
     }
 

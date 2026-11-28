@@ -58,6 +58,13 @@
                 "authPub"
               ]
             }
+          },
+          "dismissed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requests dismissed on this computer."
           }
         },
         "required": [

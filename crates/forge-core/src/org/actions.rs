@@ -155,23 +155,24 @@ pub async fn repo_create(
     })
 }
 
-/// An organization can't change the members of a repository with members-only content or
-/// environments yet: those changes re-share keys and re-save environments, which a request
-/// does not carry.
-async fn refuse_keyed(client: &PlatformClient, repo: &RepoRef, label: &str) -> Result<()> {
+/// Whether `repo` has members-only content or environments: an organization can't change its
+/// members yet, since those changes re-share keys and re-save environments, which a request does
+/// not carry.
+pub async fn keyed(client: &PlatformClient, repo: &RepoRef) -> Result<bool> {
     if crate::keyring::has_members_key(client, repo).await? {
-        return Err(Error::Config(format!(
-            "{label} has members-only content, and an organization can't change its members yet"
-        )));
+        return Ok(true);
     }
-    let environments = crate::repo::RepoService::reader(client)
+    Ok(crate::repo::RepoService::reader(client)
         .read_pack_manifests(repo)
         .await?
         .iter()
-        .any(|m| m.kind == u64::from(crate::pack::KIND_ENV_SNAPSHOT));
-    if environments {
+        .any(|m| m.kind == u64::from(crate::pack::KIND_ENV_SNAPSHOT)))
+}
+
+async fn refuse_keyed(client: &PlatformClient, repo: &RepoRef, label: &str) -> Result<()> {
+    if keyed(client, repo).await? {
         return Err(Error::Config(format!(
-            "{label} has environments, and an organization can't change its members yet"
+            "{label} has members-only content or environments, and an organization can't change its members yet"
         )));
     }
     Ok(())

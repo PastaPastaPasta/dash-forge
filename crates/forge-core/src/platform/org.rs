@@ -800,6 +800,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(w.intent["document"]["revision"], "2");
+        assert_eq!(crate::org::session::derived(&w)["newRevision"], "3");
         assert_eq!(w.intent["document"]["id"], id.as_str());
         let d = decode_unsigned(&w.unsigned).unwrap();
         assert_eq!(

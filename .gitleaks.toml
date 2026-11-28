@@ -93,6 +93,9 @@ paths = [
     # keys and BLS shares, derived from the published BIP-39 test mnemonics ("abandon … about",
     # "legal winner … yellow", "letter advice … above") and replayed by Rust and web.
     '''forge-contracts/fixtures/org/dti-2of3\.json''',
+    # The Platform vectors built on that ceremony (organizations design §10, §11): the same members'
+    # public keys and the test share keys derived from those published mnemonics.
+    '''forge-contracts/fixtures/org/platform-v1\.json''',
 ]
 
 [[allowlists]]

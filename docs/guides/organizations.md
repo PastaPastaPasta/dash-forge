@@ -41,13 +41,13 @@ Owner actions need *N* of *M* signatures. In dg these are:
 
 ### Connect the organization
 
-You need the organization's group id (or its invite link) and your multisig recovery phrase:
+You need the organization's group id (or its invite link), your multisig recovery phrase, and your own Forge identity on the network (`dg auth login`): requests, signatures and declines are documents your identity writes on Platform.
 
 ```sh
 dg org connect t_0123456789abcdef
 ```
 
-dg reads the group's messages from its relay (`--relay`, default `https://multisig.dashhq.org`), checks the key ceremony, and finds the organization's identity on the network. It remembers the organization in `orgs.json` next to dg's `config.toml`: the identity id, the group id, the relay, your public key, the name, the threshold and the members. Nothing secret is stored.
+dg reads the key ceremony from the group's relay (`--relay`, default `https://multisig.dashhq.org`), checks it, and finds the organization's identity on the network. It then links your Forge identity to your member key on Platform and stores your share of the signing key there, sealed so that only your recovery phrase opens it. From then on dg needs only the phrase and Platform. It remembers the organization in `orgs.json` next to dg's `config.toml` (the identity id, the group id, the relay, your public key, the name, the threshold and the members) and keeps the ceremony's public messages in `org-ceremonies/`. Nothing secret is stored on this computer. After upgrading from a dg that kept requests on the relay, connect each organization once more.
 
 Your recovery phrase is read from `--phrase-file <file>`, else `DG_ORG_PHRASE`, else a hidden prompt. A passphrase comes from `--passphrase-file`, `DG_ORG_PASSPHRASE`, or the prompt. dg never writes either to disk.
 
@@ -62,23 +62,37 @@ dg repo create widgets --owner acme
 This makes a request, signs it with your share, and prints what to send the other members:
 
 ```
-Request 3f2a9c1e0b7d4a55: Create acme/widgets
+Request 3f2a9c1e0b7d4a55-e40009bfc871bc5c: Create acme/widgets
 1 of 2 collected. Send this to your co-signers:
-  dg org sign 3f2a9c1e0b7d4a55
+  dg org sign 3f2a9c1e0b7d4a55-e40009bfc871bc5c
 ```
+
+A request id names the member who made it. The first part alone also works while no one else used it. Each message is a small Platform write by your identity (about 0.001 DASH for a request, 0.0003 DASH for a signature); the organization pays only for its own writes when a request finishes.
 
 An organization's repositories are public for now. A member added with `dg collab add` must accept first (`dg collab accept`), as on any repository. A repository with members-only content refuses member changes by an organization for now.
 
 ### Review and sign
 
 ```sh
-dg org requests                 # open requests, and which wait for you
-dg org show 3f2a9c1e0b7d4a55    # what it writes, who signed, who declined
-dg org sign 3f2a9c1e0b7d4a55
+dg org requests        # open requests, and which wait for you
+dg org show 3f2a9c1e   # what it writes, who signed, who declined
+dg org sign 3f2a9c1e
 ```
 
 Before signing, dg decodes the request's transitions itself and checks them: the organization is the owner and its group key signs, there is one document write per transition, the write goes to this network's Forge contracts, the bytes to sign are the transition's, the nonce is unused, and the kind of write is one Forge makes for an owner. It refuses to sign anything else.
 
-The signature that completes a request also puts it on Platform. If that stops part way, any member runs `dg org finish <request>`. `dg org decline <request> --reason "…"` declines a request; it stays open for the others until so many members decline that it can no longer reach the threshold, and then it reads declined.
+A request Forge won't sign reads "Forge won't sign this: <reasons>." and stops with [E613](../errors.md#e613). Nothing is wrong on your side: `dg org dismiss <request>` hides it on this computer, for free.
+
+The signature that completes a request also puts it on Platform. If that stops part way, any member runs `dg org finish <request>`. A request is done once its writes are on Platform; a member's report that it broadcast is not enough. `dg org decline <request> --reason "…"` declines a request you disagree with; it stays open for the others until so many members decline that it can no longer reach the threshold, and then it reads "Declined: too many members declined it to reach N of M."
+
+### Requests made before the move to Platform
+
+Requests made with an older dg or Forge live on the relay and are not shown. Each member who took part runs, once:
+
+```sh
+dg org migrate acme
+```
+
+It copies only your own messages in the relay's open requests (your requests, signatures, declines and broadcast records), so nobody can drop or re-time another member's. Requests nobody copies can still be finished or declined in multisig.dashhq.org.
 
 `dg auth status` prints one line when requests wait for your signature (only when an organization is connected).

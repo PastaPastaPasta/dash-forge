@@ -2,9 +2,13 @@
 //! multisig.dashhq.org (docs/design/organizations.md). A member connects one, reviews and signs
 //! the requests its members make, and the last signature puts a request on Platform.
 //!
+//! Requests, signatures, declines and broadcast records are `forge-org` documents on Platform
+//! (§10), written by the member's own signed-in identity. The relay is read only for the key
+//! ceremony when connecting.
+//!
 //! The recovery phrase comes from `--phrase-file`, `DG_ORG_PHRASE` or a hidden prompt, and is
 //! never stored. Connected organizations are kept in `orgs.json` beside `config.toml`, public
-//! values only.
+//! values only, and each one's key ceremony in `org-ceremonies/`.
 
 use std::path::{Path, PathBuf};
 
@@ -14,9 +18,9 @@ use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
 use forge_core::org::owner::OwnerKind;
-use forge_core::org::request::{self, Request, RequestStatus};
+use forge_core::org::request::{self, Request, RequestStatus, Summary};
 use forge_core::org::{self as core_org, MemberKeys, Org, OrgRecord, Seed};
-use forge_core::platform::PlatformClient;
+use forge_core::platform::{LoadedIdentity, PlatformClient, WriteEngine};
 use forge_core::rules::v2::Role;
 use forge_core::user_error::{codes, UserError};
 
@@ -87,6 +91,20 @@ pub enum OrgCommand {
         #[command(flatten)]
         phrase: PhraseArgs,
     },
+    /// Hide a request on this computer (free; nothing is written). For a request Forge won't
+    /// sign; decline a valid request you disagree with instead.
+    Dismiss {
+        /// The request id.
+        request: String,
+    },
+    /// Copy your own messages in the relay's open requests to Platform (once per member, after
+    /// upgrading dg). Requests nobody copies can still be finished in multisig.dashhq.org.
+    Migrate {
+        /// The organization (its identity id or name).
+        org: String,
+        #[command(flatten)]
+        phrase: PhraseArgs,
+    },
 }
 
 pub async fn run(ctx: &Ctx, cmd: &OrgCommand) -> Result<()> {
@@ -110,6 +128,8 @@ pub async fn run(ctx: &Ctx, cmd: &OrgCommand) -> Result<()> {
             phrase,
         } => decline(ctx, request, reason.as_deref().unwrap_or(""), phrase).await,
         OrgCommand::Finish { request, phrase } => finish(ctx, request, phrase).await,
+        OrgCommand::Dismiss { request } => dismiss(ctx, request).await,
+        OrgCommand::Migrate { org, phrase } => migrate(ctx, org, phrase).await,
     }
 }
 
@@ -138,14 +158,17 @@ fn load_all_from(path: &Path) -> Result<Vec<OrgRecord>> {
     }
 }
 
-fn save_all_to(path: &Path, list: &[OrgRecord]) -> Result<()> {
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(list)?)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
+}
+
+fn save_all_to(path: &Path, list: &[OrgRecord]) -> Result<()> {
+    write_atomic(path, &serde_json::to_vec_pretty(list)?)
 }
 
 /// The organizations connected on this computer for `ctx`'s network.
@@ -165,6 +188,75 @@ fn remember(record: &OrgRecord) -> Result<()> {
     all.retain(|r| !(r.network == record.network && r.org_id == record.org_id));
     all.push(record.clone());
     save_all_to(&path, &all)
+}
+
+/// Where an organization's key ceremony is kept: `org-ceremonies/<network>-<org id>.json`
+/// beside `orgs.json` (public messages only).
+fn ceremony_path_in(dir: &Path, record: &OrgRecord) -> PathBuf {
+    dir.join("org-ceremonies")
+        .join(format!("{}-{}.json", record.network, record.org_id))
+}
+
+fn save_ceremony_in(dir: &Path, record: &OrgRecord, messages: &[Value]) -> Result<()> {
+    write_atomic(
+        &ceremony_path_in(dir, record),
+        &serde_json::to_vec(messages)?,
+    )
+}
+
+fn load_ceremony_in(dir: &Path, record: &OrgRecord) -> Vec<Value> {
+    std::fs::read(ceremony_path_in(dir, record))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn load_ceremony(record: &OrgRecord) -> Vec<Value> {
+    crate::config::config_dir()
+        .map(|d| load_ceremony_in(&d, record))
+        .unwrap_or_default()
+}
+
+/// forge-org's id on this network, or why organizations can't be used here yet.
+fn org_contract(ctx: &Ctx) -> Result<String> {
+    ctx.target.require_v2()?.org.clone().ok_or_else(|| {
+        UserError::new(
+            codes::NOT_DEPLOYED,
+            format!(
+                "organizations need the forge-org contract, which is not registered on {} yet",
+                ctx.network_label()
+            ),
+        )
+        .into()
+    })
+}
+
+/// Read `record`'s organization from Platform.
+async fn load(ctx: &Ctx, client: &PlatformClient, record: OrgRecord) -> Result<Org> {
+    let contract = org_contract(ctx)?;
+    let ceremony = load_ceremony(&record);
+    Ok(Org::load(client, &contract, record, ceremony).await?)
+}
+
+/// The signed-in identity, which writes this member's messages.
+struct Member {
+    bridge: forge_core::keystore::BridgeIdentity,
+    identity: LoadedIdentity,
+}
+
+impl Member {
+    async fn of(ctx: &Ctx, client: &PlatformClient) -> Result<Self> {
+        let (bridge, identity) = ctx.signer_on(client).await?;
+        Ok(Self { bridge, identity })
+    }
+
+    fn engine<'a>(&'a self, client: &'a PlatformClient) -> Result<WriteEngine<'a>> {
+        Ok(WriteEngine::new(
+            client,
+            &self.identity,
+            self.bridge.doc_op_key()?,
+        )?)
+    }
 }
 
 fn pick<'a>(orgs: &'a [OrgRecord], which: &str) -> Option<&'a OrgRecord> {
@@ -252,9 +344,20 @@ async fn connect(ctx: &Ctx, group: &str, relay: Option<&str>, phrase: &PhraseArg
         ))
     })?;
     let relay = relay.unwrap_or(core_org::DEFAULT_RELAY);
-    let (_, keys) = unlock(ctx, phrase)?;
+    let contract = org_contract(ctx)?;
+    let (seed, keys) = unlock(ctx, phrase)?;
     let client = ctx.connect().await?;
-    let (record, _) = core_org::connect(&client, relay, &room, &keys).await?;
+    let member = Member::of(ctx, &client).await?;
+    let engine = member.engine(&client)?;
+    let (mut record, ceremony) =
+        core_org::connect(&client, &contract, relay, &room, &seed, &keys, &engine).await?;
+    if let Some(old) = connected(ctx)
+        .into_iter()
+        .find(|r| r.org_id == record.org_id)
+    {
+        record.dismissed = old.dismissed;
+    }
+    save_ceremony_in(&crate::config::config_dir()?, &record, &ceremony)?;
     remember(&record)?;
     let members: Vec<Value> = record
         .members
@@ -319,36 +422,54 @@ fn list(ctx: &Ctx) {
     );
 }
 
-/// One request's row: who signed, its status (with Platform's view when `client` is given).
+/// One request's row: who signed, its status (with Platform's view and the review when
+/// `client` is given).
 struct Row {
     org: OrgRecord,
     request: Request,
-    status: RequestStatus,
+    summary: Summary,
     collected: usize,
     threshold: usize,
     signed: bool,
     declined: bool,
+    dismissed: bool,
 }
 
 impl Row {
-    async fn of(org: &Org, client: Option<&PlatformClient>, req: Request) -> Self {
-        let mut status = org.status(&req, None);
-        if let (Some(client), true) = (client, status.is_open() || status == RequestStatus::Done) {
-            if let Ok(view) = org.chain_view(client, &req).await {
-                status = org.status(&req, Some(&view));
-            }
+    async fn of(
+        org: &Org,
+        client: Option<(&PlatformClient, &forge_core::network::ForgeIds)>,
+        req: Request,
+    ) -> Self {
+        let mut summary = org.summary(&req, None, &[]);
+        if let (Some((client, forge)), true) = (
+            client,
+            summary.status.is_open() || summary.status == RequestStatus::Done,
+        ) {
+            let problems = org
+                .review(client, forge, &req)
+                .await
+                .map(|r| Org::review_problems(&r))
+                .unwrap_or_default();
+            let view = org.chain_view(client, &req).await.ok();
+            summary = org.summary(&req, view.as_ref(), &problems);
         }
         let (collected, threshold) = org.progress(&req);
         let me = &org.record.auth_pub;
         Self {
             signed: request::approved_by(&org.state, &req, me),
             declined: request::declined_by(&org.state, &req, me),
+            dismissed: org.record.dismissed.contains(&req.id),
             org: org.record.clone(),
-            status,
+            summary,
             collected,
             threshold,
             request: req,
         }
+    }
+
+    fn status(&self) -> RequestStatus {
+        self.summary.status
     }
 
     fn title(&self) -> &str {
@@ -366,31 +487,37 @@ impl Row {
             "id": self.request.id,
             "title": self.title(),
             "forge": self.request.forge,
-            "status": self.status,
+            "status": self.status(),
+            "text": self.summary.text(),
+            "problems": self.summary.problems,
+            "parts": self.summary.parts,
             "collected": self.collected,
             "threshold": self.threshold,
             "signedByYou": self.signed,
             "declinedByYou": self.declined,
+            "dismissed": self.dismissed,
         })
     }
 
     fn open(&self) -> bool {
-        self.status.is_open()
+        !self.dismissed && (self.status().is_open() || self.status() == RequestStatus::Invalid)
     }
 
     fn waits_for_you(&self) -> bool {
-        self.status == RequestStatus::Collecting && !self.signed && !self.declined
+        self.status() == RequestStatus::Collecting && !self.signed && !self.declined
     }
 
     fn state_text(&self) -> String {
-        match self.status {
+        if let Some(text) = self.summary.text() {
+            return text;
+        }
+        match self.status() {
             RequestStatus::Collecting if self.waits_for_you() => format!(
                 "{} of {} signed · waiting for you",
                 self.collected, self.threshold
             ),
             RequestStatus::Collecting => format!("{} of {} signed", self.collected, self.threshold),
             RequestStatus::Ready => "signed, not on Platform yet".into(),
-            RequestStatus::Declined => "declined by too many members".into(),
             other => other.label().into(),
         }
     }
@@ -406,12 +533,13 @@ async fn requests(ctx: &Ctx, which: Option<&str>) -> Result<()> {
         list(ctx);
         return Ok(());
     }
-    let client = ctx.connect().await.ok();
+    let client = ctx.connect().await?;
+    let forge = ctx.target.require_v2()?.clone();
     let mut rows = Vec::new();
     for record in orgs {
-        let org = load_bound(record, client.as_ref()).await?;
+        let org = load(ctx, &client, record).await?;
         for req in org.requests() {
-            rows.push(Row::of(&org, client.as_ref(), req).await);
+            rows.push(Row::of(&org, Some((&client, &forge)), req).await);
         }
     }
     let open: Vec<&Row> = rows.iter().filter(|r| r.open()).collect();
@@ -437,7 +565,7 @@ async fn requests(ctx: &Ctx, which: Option<&str>) -> Result<()> {
                     "  {}  {}  {}",
                     r.request.id,
                     line(r.title()),
-                    r.state_text()
+                    line(&r.state_text())
                 );
             }
             if let Some(r) = open.iter().find(|r| r.waits_for_you()) {
@@ -445,8 +573,10 @@ async fn requests(ctx: &Ctx, which: Option<&str>) -> Result<()> {
                     "Review and sign: dg org show {0}, then dg org sign {0}",
                     r.request.id
                 );
-            } else if let Some(r) = open.iter().find(|r| r.status == RequestStatus::Ready) {
+            } else if let Some(r) = open.iter().find(|r| r.status() == RequestStatus::Ready) {
                 println!("Put it on Platform: dg org finish {}", r.request.id);
+            } else if let Some(r) = open.iter().find(|r| r.status() == RequestStatus::Invalid) {
+                println!("Hide it on this computer: dg org dismiss {}", r.request.id);
             }
         },
     );
@@ -462,18 +592,8 @@ fn not_connected(which: &str) -> anyhow::Error {
     .into()
 }
 
-/// An organization's room, bound to the ceremony whose key the identity holds when Platform can
-/// be read (requests are that ceremony's; after a re-run, the newest ceremony may not be it yet).
-async fn load_bound(record: OrgRecord, client: Option<&PlatformClient>) -> Result<Org> {
-    let mut org = Org::load(record).await?;
-    if let Some(client) = client {
-        let _ = org.bind(client).await;
-    }
-    Ok(org)
-}
-
 /// The connected organization holding request `id` on this network.
-async fn find_request(ctx: &Ctx, id: &str) -> Result<(Org, Request)> {
+async fn find_request(ctx: &Ctx, client: &PlatformClient, id: &str) -> Result<(Org, Request)> {
     let orgs = connected(ctx);
     if orgs.is_empty() {
         return Err(
@@ -482,11 +602,10 @@ async fn find_request(ctx: &Ctx, id: &str) -> Result<(Org, Request)> {
                 .into(),
         );
     }
-    let client = ctx.connect().await.ok();
     let mut unread = Vec::new();
     for record in orgs {
         let label = record.label.clone();
-        match load_bound(record, client.as_ref()).await {
+        match load(ctx, client, record).await {
             Ok(org) => {
                 if let Ok(req) = org.find(id) {
                     return Ok((org, req));
@@ -508,14 +627,12 @@ async fn find_request(ctx: &Ctx, id: &str) -> Result<(Org, Request)> {
 }
 
 async fn show(ctx: &Ctx, id: &str) -> Result<()> {
-    let (mut org, req) = find_request(ctx, id).await?;
     let client = ctx.connect().await?;
+    let (mut org, req) = find_request(ctx, &client, id).await?;
     org.bind(&client).await?;
     let forge = ctx.target.require_v2()?.clone();
-    let row = Row::of(&org, Some(&client), req.clone()).await;
+    let row = Row::of(&org, Some((&client, &forge)), req.clone()).await;
     let described = org.describe(&client, &req).await;
-    let reviews = org.review(&client, &forge, &req).await?;
-    let problems: Vec<String> = reviews.iter().flat_map(|r| r.problems.clone()).collect();
     let name = |auth: &String| org.record.member_name(auth);
     let mut signers: Vec<String> = Vec::new();
     let mut declined: Vec<(String, String)> = Vec::new();
@@ -538,11 +655,10 @@ async fn show(ctx: &Ctx, id: &str) -> Result<()> {
             }
         }
     }
-    let next = match row.status {
-        RequestStatus::Collecting if row.waits_for_you() && problems.is_empty() => {
-            Some(format!("dg org sign {}", req.id))
-        }
+    let next = match row.status() {
+        RequestStatus::Collecting if row.waits_for_you() => Some(format!("dg org sign {}", req.id)),
         RequestStatus::Ready => Some(format!("dg org finish {}", req.id)),
+        RequestStatus::Invalid if !row.dismissed => Some(format!("dg org dismiss {}", req.id)),
         _ => None,
     };
     let mut value = row.json();
@@ -552,7 +668,6 @@ async fn show(ctx: &Ctx, id: &str) -> Result<()> {
         .iter()
         .map(|(by, reason)| json!({ "by": by, "reason": reason }))
         .collect::<Vec<_>>());
-    value["problems"] = json!(problems);
     value["next"] = json!(next);
     ctx.emit(value, || {
         println!("{}", line(row.title()));
@@ -560,7 +675,7 @@ async fn show(ctx: &Ctx, id: &str) -> Result<()> {
             "{} · request {} · {}",
             line(&org.record.label),
             req.id,
-            row.state_text()
+            line(&row.state_text())
         );
         for (i, d) in described.iter().enumerate() {
             println!("  {}. {}", i + 1, line(d));
@@ -575,9 +690,6 @@ async fn show(ctx: &Ctx, id: &str) -> Result<()> {
                 println!("Declined by: {} ({})", line(by), line(reason));
             }
         }
-        if !problems.is_empty() && row.open() {
-            println!("Forge won't sign it: {}", line(&problems.join("; ")));
-        }
         if let Some(n) = &next {
             println!("Next: {n}");
         }
@@ -586,9 +698,11 @@ async fn show(ctx: &Ctx, id: &str) -> Result<()> {
 }
 
 async fn sign(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
-    let (mut org, req) = find_request(ctx, id).await?;
-    let (seed, keys) = unlock_for(ctx, phrase, &org.record)?;
     let client = ctx.connect().await?;
+    let (mut org, req) = find_request(ctx, &client, id).await?;
+    let (seed, keys) = unlock_for(ctx, phrase, &org.record)?;
+    let member = Member::of(ctx, &client).await?;
+    let engine = member.engine(&client)?;
     let forge = ctx.target.require_v2()?.clone();
     if !ctx.json {
         println!("Signing for {}:", line(&org.record.label));
@@ -596,7 +710,9 @@ async fn sign(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
             println!("  {}. {}", i + 1, line(d));
         }
     }
-    let signed = org.sign(&client, &forge, &seed, &keys, &req).await?;
+    let signed = org
+        .sign(&client, &forge, &engine, &seed, &keys, &req)
+        .await?;
     let req = org.find(&req.id)?;
     let (collected, threshold) = org.progress(&req);
     let done = signed.finished.is_some_and(|f| f.done);
@@ -633,9 +749,14 @@ async fn sign(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
 }
 
 async fn decline(ctx: &Ctx, id: &str, reason: &str, phrase: &PhraseArgs) -> Result<()> {
-    let (mut org, req) = find_request(ctx, id).await?;
-    let (_, keys) = unlock_for(ctx, phrase, &org.record)?;
-    let posted = org.decline(&keys, &req, reason).await?;
+    let client = ctx.connect().await?;
+    let (mut org, req) = find_request(ctx, &client, id).await?;
+    let (seed, keys) = unlock_for(ctx, phrase, &org.record)?;
+    let member = Member::of(ctx, &client).await?;
+    let engine = member.engine(&client)?;
+    let posted = org
+        .decline(&client, &engine, &seed, &keys, &req, reason)
+        .await?;
     ctx.emit(
         json!({ "status": "declined", "org": org.record.label, "id": req.id, "posted": posted }),
         || println!("Declined: {}.", title_of(&req)),
@@ -644,42 +765,30 @@ async fn decline(ctx: &Ctx, id: &str, reason: &str, phrase: &PhraseArgs) -> Resu
 }
 
 async fn finish(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
-    let (mut org, req) = find_request(ctx, id).await?;
-    if org.status(&req, None) == RequestStatus::Declined {
-        return Err(UserError::new(
-            codes::USAGE,
-            "this request can't be finished: it is declined",
-        )
-        .into());
-    }
-    let (_, keys) = unlock_for(ctx, phrase, &org.record)?;
     let client = ctx.connect().await?;
+    let (mut org, req) = find_request(ctx, &client, id).await?;
+    let (_, keys) = unlock_for(ctx, phrase, &org.record)?;
+    let member = Member::of(ctx, &client).await?;
+    let engine = member.engine(&client)?;
     let forge = ctx.target.require_v2()?.clone();
-    let finished = org.finish(&client, &forge, &keys, &req).await?;
+    let finished = org.finish(&client, &forge, &engine, &keys, &req).await?;
     let req = org.find(&req.id)?;
     let (collected, threshold) = org.progress(&req);
     if !finished.done {
-        let view = org.chain_view(&client, &req).await.ok();
-        let err = match org.status(&req, view.as_ref()) {
-            RequestStatus::Collecting => UserError::new(
-                codes::USAGE,
-                format!("not ready: {collected} of {threshold} signatures collected"),
-            )
-            .fix(
-                if request::approved_by(&org.state, &req, &org.record.auth_pub) {
-                    format!(
-                        "ask another member to run `dg org sign {}`, or to sign it on the web",
-                        req.id
-                    )
-                } else {
-                    format!("sign it first: `dg org sign {}`", req.id)
-                },
-            ),
-            status => UserError::new(
-                codes::USAGE,
-                format!("this request can't be finished: it is {}", status.label()),
-            ),
-        };
+        let err = UserError::new(
+            codes::USAGE,
+            format!("not ready: {collected} of {threshold} signatures collected"),
+        )
+        .fix(
+            if request::approved_by(&org.state, &req, &org.record.auth_pub) {
+                format!(
+                    "ask another member to run `dg org sign {}`, or to sign it on the web",
+                    req.id
+                )
+            } else {
+                format!("sign it first: `dg org sign {}`", req.id)
+            },
+        );
         return Err(err.into());
     }
     ctx.emit(
@@ -692,6 +801,63 @@ async fn finish(ctx: &Ctx, id: &str, phrase: &PhraseArgs) -> Result<()> {
             "threshold": threshold,
         }),
         || println!("Done: {} is on Platform.", title_of(&req)),
+    );
+    Ok(())
+}
+
+async fn dismiss(ctx: &Ctx, id: &str) -> Result<()> {
+    let client = ctx.connect().await?;
+    let (org, req) = find_request(ctx, &client, id).await?;
+    let mut record = org.record.clone();
+    if !record.dismissed.contains(&req.id) {
+        record.dismissed.push(req.id.clone());
+        remember(&record)?;
+    }
+    ctx.emit(
+        json!({ "status": "dismissed", "org": record.label, "id": req.id }),
+        || println!("Dismissed on this computer: {}.", title_of(&req)),
+    );
+    Ok(())
+}
+
+async fn migrate(ctx: &Ctx, which: &str, phrase: &PhraseArgs) -> Result<()> {
+    let orgs = connected(ctx);
+    let record = pick(&orgs, which)
+        .cloned()
+        .ok_or_else(|| not_connected(which))?;
+    let (seed, keys) = unlock_for(ctx, phrase, &record)?;
+    let client = ctx.connect().await?;
+    let mut org = load(ctx, &client, record).await?;
+    let relay = core_org::Relay::new(&org.record.relay)?;
+    let room = relay.messages(&org.record.room).await?;
+    let mine = Org::migratable(&room, &org.record.room, &org.cid, &keys.auth_pub);
+    if mine.is_empty() {
+        ctx.emit(
+            json!({ "status": "nothing", "org": org.record.label, "posted": 0 }),
+            || {
+                println!(
+                    "Nothing to copy: you have no messages in {}'s open requests on the relay.",
+                    line(&org.record.label)
+                );
+            },
+        );
+        return Ok(());
+    }
+    ctx.confirm_or_cancel(&format!(
+        "Copy your {} message(s) in {}'s open requests from the relay to Platform? Your identity pays a small fee for each.",
+        mine.len(),
+        line(&org.record.label)
+    ))?;
+    let member = Member::of(ctx, &client).await?;
+    let engine = member.engine(&client)?;
+    let posted = org.migrate(&client, &engine, &seed, &keys, mine).await?;
+    ctx.emit(
+        json!({ "status": "migrated", "org": org.record.label, "posted": posted }),
+        || {
+            println!(
+                "Copied {posted} message(s) to Platform. `dg org requests` lists the requests."
+            );
+        },
     );
     Ok(())
 }
@@ -712,9 +878,11 @@ fn line(text: &str) -> String {
 
 /// Post `planned` as a new request signed with this member's share, and say what to send the
 /// co-signers. `extra` is merged into the JSON result.
+#[allow(clippy::too_many_arguments)]
 async fn post_request(
     ctx: &Ctx,
     client: &PlatformClient,
+    engine: &WriteEngine<'_>,
     org: &mut Org,
     seed: &Seed,
     keys: &MemberKeys,
@@ -733,14 +901,14 @@ async fn post_request(
         }
     }
     ctx.confirm_or_cancel(&format!(
-        "Ask {} ({} of {}) to: {}? It posts a request with your signature; the organization pays once enough members sign.",
+        "Ask {} ({} of {}) to: {}? It posts a request with your signature from your identity; the organization pays once enough members sign.",
         line(&org.record.label),
         org.quorum().0,
         org.quorum().1,
         line(&planned.title)
     ))?;
     let req = org
-        .propose(client, seed, keys, &planned.title, planned.writes)
+        .propose(client, engine, seed, keys, &planned.title, planned.writes)
         .await?;
     let (collected, threshold) = org.progress(&req);
     let sign_line = format!("dg org sign {}", req.id);
@@ -765,18 +933,33 @@ async fn post_request(
     Ok(())
 }
 
-/// The connected organization `which` names (id or name), loaded with its identity, and this
-/// member's keys.
+/// The organization acting as owner: loaded with its identity, this member's keys, and the
+/// signed-in identity that writes the request.
+struct OwnerSession {
+    org: Org,
+    identity: LoadedIdentity,
+    seed: Seed,
+    keys: MemberKeys,
+    member: Member,
+}
+
 async fn open_owner(
     ctx: &Ctx,
     client: &PlatformClient,
     record: OrgRecord,
     phrase: &PhraseArgs,
-) -> Result<(Org, forge_core::platform::LoadedIdentity, Seed, MemberKeys)> {
+) -> Result<OwnerSession> {
     let (seed, keys) = unlock_for(ctx, phrase, &record)?;
-    let mut org = Org::load(record).await?;
+    let mut org = load(ctx, client, record).await?;
     let identity = org.bind(client).await?;
-    Ok((org, identity, seed, keys))
+    let member = Member::of(ctx, client).await?;
+    Ok(OwnerSession {
+        org,
+        identity,
+        seed,
+        keys,
+        member,
+    })
 }
 
 /// Why `owner` cannot be used as an organization owner: it is not connected here.
@@ -849,19 +1032,27 @@ pub async fn request_repo_create(
         protect: !o.no_protect,
         ..forge_core::create::CreateRepoOpts::public(name)
     };
-    let (mut org, identity, seed, keys) = open_owner(ctx, &client, record, &args.phrase).await?;
-    let writer = forge_core::platform::org::OrgWriter::new(&client, &identity, org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, org.open_nonces());
+    let mut s = open_owner(ctx, &client, record, &args.phrase).await?;
+    let label = s.org.record.label.clone();
+    let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
+    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.held_nonces(&client).await?);
     let owner = core_org::actions::Owner {
         client: &client,
-        org: &identity,
+        org: &s.identity,
         writer: &writer,
-        label: &org.record.label,
+        label: &label,
     };
     let planned = core_org::actions::repo_create(&owner, &mut nonces, &opts).await?;
-    let repo_id = planned.writes[0].document_id.clone();
-    let extra = json!({ "repoId": repo_id, "ownerId": identity.id(), "name": forge_core::resolve::repo_slug(&opts.name)? });
-    post_request(ctx, &client, &mut org, &seed, &keys, planned, extra).await
+    let extra = json!({
+        "repoId": planned.writes[0].document_id,
+        "ownerId": s.identity.id(),
+        "name": forge_core::resolve::repo_slug(&opts.name)?,
+    });
+    let engine = s.member.engine(&client)?;
+    post_request(
+        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
+    )
+    .await
 }
 
 /// `dg collab add|remove` on a repository a connected organization owns: a request instead of a
@@ -890,12 +1081,12 @@ pub async fn route_member_change(
     let member = crate::common::resolve_identity(&client, member, "member").await?;
     let member_name = forge_core::org::session::first_name(&client, &member).await;
     let label = format!("{}/{}", record.label, handle.name());
-    let (mut org, identity, seed, keys) = open_owner(ctx, &client, record, phrase).await?;
-    let writer = forge_core::platform::org::OrgWriter::new(&client, &identity, org.key_id)?;
-    let mut nonces = core_org::actions::Nonces::new(&writer, org.open_nonces());
+    let mut s = open_owner(ctx, &client, record, phrase).await?;
+    let writer = forge_core::platform::org::OrgWriter::new(&client, &s.identity, s.org.key_id)?;
+    let mut nonces = core_org::actions::Nonces::new(&writer, s.org.held_nonces(&client).await?);
     let owner = core_org::actions::Owner {
         client: &client,
-        org: &identity,
+        org: &s.identity,
         writer: &writer,
         label: &label,
     };
@@ -905,7 +1096,11 @@ pub async fn route_member_change(
         core_org::actions::revoke(&owner, &mut nonces, &handle, &member, &member_name, role).await?
     };
     let extra = json!({ "member": member, "role": role.as_str(), "repo": label });
-    post_request(ctx, &client, &mut org, &seed, &keys, planned, extra).await?;
+    let engine = s.member.engine(&client)?;
+    post_request(
+        ctx, &client, &engine, &mut s.org, &s.seed, &s.keys, planned, extra,
+    )
+    .await?;
     Ok(Some(()))
 }
 
@@ -948,14 +1143,14 @@ pub async fn waiting_count(ctx: &Ctx) -> Option<usize> {
     let client = tokio::time::timeout(std::time::Duration::from_secs(8), ctx.connect())
         .await
         .ok()
-        .and_then(Result::ok);
+        .and_then(Result::ok)?;
     let mut n = 0;
     for record in orgs {
-        let load = tokio::time::timeout(
+        let read = tokio::time::timeout(
             std::time::Duration::from_secs(8),
-            load_bound(record, client.as_ref()),
+            load(ctx, &client, record),
         );
-        if let Ok(Ok(org)) = load.await {
+        if let Ok(Ok(org)) = read.await {
             n += org.waiting().len();
         }
     }
@@ -976,7 +1171,25 @@ mod tests {
             label: label.into(),
             threshold: 2,
             members: Vec::new(),
+            dismissed: Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_older_record_reads_and_the_ceremony_is_kept_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("orgs.json");
+        std::fs::write(&path, r#"[{"network":"testnet","orgId":"A","room":"t_000102030405060708090a0b0c0d0e0f","relay":"https://multisig.dashhq.org","authPub":"e4","label":"acme","threshold":2,"members":[]}]"#).unwrap();
+        let back = load_all_from(&path).unwrap();
+        assert!(back[0].dismissed.is_empty());
+        let r = record("testnet", "A", "acme");
+        assert!(load_ceremony_in(dir.path(), &r).is_empty());
+        save_ceremony_in(dir.path(), &r, &[json!({ "type": "hello" })]).unwrap();
+        assert_eq!(
+            load_ceremony_in(dir.path(), &r),
+            vec![json!({ "type": "hello" })]
+        );
+        assert!(ceremony_path_in(dir.path(), &r).ends_with("org-ceremonies/testnet-A.json"));
     }
 
     #[test]

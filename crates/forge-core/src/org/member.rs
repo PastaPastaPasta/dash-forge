@@ -11,26 +11,36 @@ use super::bls;
 use super::ceremony::receive_shares;
 use super::derive::{MemberKeys, Seed};
 use super::envelope::seal;
-use super::state::{ProposalStatus, RoomState};
+use super::state::RoomState;
 use super::OrgError;
 
 /// A member's secret shares of one ceremony, wiped on drop.
 pub struct Shares {
     pub index: u32,
-    shares: BTreeMap<String, Scalar>,
+    pub cid: String,
+    by_slot: BTreeMap<String, Scalar>,
 }
 
 impl Drop for Shares {
     fn drop(&mut self) {
-        for s in self.shares.values_mut() {
+        for s in self.by_slot.values_mut() {
             s.zeroize();
         }
     }
 }
 
 impl Shares {
+    /// One slot's share (a sealed share opened from Platform).
+    pub fn single(cid: &str, index: u32, slot: &str, share: Scalar) -> Self {
+        Self {
+            index,
+            cid: cid.to_string(),
+            by_slot: BTreeMap::from([(slot.to_string(), share)]),
+        }
+    }
+
     pub fn get(&self, slot: &str) -> Option<&Scalar> {
-        self.shares.get(slot)
+        self.by_slot.get(slot)
     }
 }
 
@@ -59,9 +69,10 @@ pub fn recover_shares(
     }
     let shares = Shares {
         index: me,
-        shares: receive_shares(seed, keys, &c.config, cid, &c.reveals)?,
+        cid: cid.to_string(),
+        by_slot: receive_shares(seed, keys, &c.config, cid, &c.reveals)?,
     };
-    for (slot, share) in &shares.shares {
+    for (slot, share) in &shares.by_slot {
         let expected = c.slot(slot).map(|(_, k)| k.public_shares[&me].as_str());
         if expected != Some(bls::g1_hex(&bls::g1(share)).as_str()) {
             return Err(OrgError::Share(format!(
@@ -72,10 +83,10 @@ pub fn recover_shares(
     Ok(shares)
 }
 
-/// An `approve` envelope for `proposal_id`: a share signature for each requirement whose
-/// ceremony this member belongs to.
+/// An `approve` envelope for `proposal_id`: a share signature for each requirement of the
+/// ceremony `shares` belong to.
 pub fn approve(
-    seed: &Seed,
+    shares: &Shares,
     keys: &MemberKeys,
     state: &RoomState,
     proposal_id: &str,
@@ -85,32 +96,32 @@ pub fn approve(
         .proposals
         .get(proposal_id)
         .ok_or_else(|| OrgError::Malformed(format!("unknown proposal {proposal_id}")))?;
+    let c = state
+        .ceremonies
+        .get(&shares.cid)
+        .ok_or_else(|| OrgError::Malformed(format!("unknown ceremony {}", shares.cid)))?;
     let message = p.signable();
-    let mut shares = Map::new();
-    let mut room = None;
+    let mut signed = Map::new();
     for (cid, slot) in p.posted_requirements() {
-        let Some(c) = state.ceremonies.get(&cid) else {
-            continue;
-        };
-        if c.config.index_of(&keys.auth_pub).is_none() {
+        if cid != shares.cid {
             continue;
         }
-        room = Some(c.config.room.clone());
-        let mine = recover_shares(seed, keys, state, &cid)?;
-        let share = mine
+        let share = shares
             .get(&slot)
             .ok_or_else(|| OrgError::Malformed(format!("slot {slot} is not in the ceremony")))?;
-        shares.insert(
+        signed.insert(
             super::state::requirement_key(&cid, &slot),
-            json!({ "index": mine.index, "share": hex::encode(bls::sign_share(share, &message)) }),
+            json!({ "index": shares.index, "share": hex::encode(bls::sign_share(share, &message)) }),
         );
     }
-    let room = room.ok_or(OrgError::NotAMember)?;
+    if signed.is_empty() {
+        return Err(OrgError::NotAMember);
+    }
     seal(
         keys,
-        &room,
+        &c.config.room,
         "approve",
-        json!({ "proposalId": proposal_id, "shares": shares }),
+        json!({ "proposalId": proposal_id, "shares": signed }),
         at,
     )
 }
@@ -169,7 +180,7 @@ pub fn combine(
         .proposals
         .get(proposal_id)
         .ok_or_else(|| OrgError::Malformed(format!("unknown proposal {proposal_id}")))?;
-    if !matches!(p.status, ProposalStatus::Ready | ProposalStatus::Executed) {
+    if !p.status.is_signed() {
         return Err(OrgError::NotReady);
     }
     let message = p.signable();

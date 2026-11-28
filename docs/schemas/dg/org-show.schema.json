@@ -48,6 +48,38 @@
     "declinedByYou": {
       "type": "boolean"
     },
+    "text": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The sentence both clients show for `invalid` (\"Forge won't sign this: …\"), `declined` and a done request whose document is gone; null otherwise."
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Why Forge won't sign it; empty when it passes review."
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "collecting",
+          "ready",
+          "done",
+          "gone",
+          "expired"
+        ]
+      },
+      "description": "Each part's state, in order."
+    },
+    "dismissed": {
+      "type": "boolean",
+      "description": "Dismissed on this computer (`dg org dismiss`)."
+    },
     "writes": {
       "type": "array",
       "items": {
@@ -77,13 +109,6 @@
           "reason"
         ]
       }
-    },
-    "problems": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Why Forge refuses to sign it; empty when it passes review."
     },
     "next": {
       "type": [

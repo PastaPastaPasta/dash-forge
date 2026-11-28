@@ -169,7 +169,9 @@ fn approvals_are_reproduced_byte_for_byte() {
         let s = seed(&v, i);
         let keys = MemberKeys::derive(&s);
         let pid = v["proposals"][proposal]["id"].as_str().unwrap();
-        let got = member::approve(&s, &keys, &state, pid, want["at"].as_str().unwrap()).unwrap();
+        let shares = member::recover_shares(&s, &keys, &state, cid(&v)).unwrap();
+        let got =
+            member::approve(&shares, &keys, &state, pid, want["at"].as_str().unwrap()).unwrap();
         assert_eq!(&got, want, "{name}");
     }
 }
@@ -298,20 +300,14 @@ fn requests_group_by_forge_note() {
             &v["approvals"]["m3"],
         ],
     );
-    let members = state.ceremonies[cid(&v)]
-        .config
-        .participants
-        .iter()
-        .map(|p| p.auth_pub.clone())
-        .collect();
-    let reqs = request::requests(&state, cid(&v), &members);
+    let reqs = request::requests(&state, cid(&v));
     assert_eq!(reqs.len(), 1);
     assert!(
         !reqs[0].forge,
         "the vector's note group is not 16 hex digits"
     );
     assert_eq!(
-        request::status(&state, &reqs[0], None),
+        request::status(&state, &reqs[0], &state.ceremonies[cid(&v)], None, &[]).status,
         RequestStatus::Ready
     );
     assert_eq!(request::collected(&state, &reqs[0]), (2, 2));
@@ -353,13 +349,7 @@ fn a_request_reads_declined_once_the_rest_cannot_reach_the_threshold() {
         let mut msgs = vec![one];
         msgs.extend_from_slice(extra);
         let state = room(&v, &msgs);
-        let members = state.ceremonies[cid(&v)]
-            .config
-            .participants
-            .iter()
-            .map(|p| p.auth_pub.clone())
-            .collect();
-        let req = request::requests(&state, cid(&v), &members).remove(0);
+        let req = request::requests(&state, cid(&v)).remove(0);
         request::declined_out(&state, &req, &state.ceremonies[cid(&v)])
     };
     assert!(!declined(&[&no2]), "one decline of 2 of 3 leaves two");
@@ -377,4 +367,37 @@ fn a_request_reads_declined_once_the_rest_cannot_reach_the_threshold() {
         !declined(&[&v["approvals"]["m1"], &v["approvals"]["m3"], &no2]),
         "ready"
     );
+}
+
+#[test]
+fn migrate_copies_only_your_own_messages_in_open_requests() {
+    let v = vector();
+    let mut msgs: Vec<Value> = v["ceremonyMessages"].as_array().unwrap().clone();
+    for m in [
+        &v["proposals"]["one"]["envelope"],
+        &v["proposals"]["two"]["envelope"],
+        &v["approvals"]["m1"],
+        &v["approvals"]["m3"],
+        &v["approvals"]["m2OnTwo"],
+        &v["reject"],
+        &v["broadcast"],
+    ] {
+        msgs.push(m.clone());
+    }
+    let room_id = v["room"].as_str().unwrap();
+    let mine = |i: usize| {
+        let auth = v["members"][i]["authPub"].as_str().unwrap();
+        super::session::Org::migratable(&msgs, room_id, cid(&v), auth)
+            .iter()
+            .map(|m| envelope::id(m).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let id = |m: &Value| envelope::id(m).unwrap();
+    assert_eq!(
+        mine(0),
+        vec![id(&v["proposals"]["two"]["envelope"])],
+        "the executed one stays"
+    );
+    assert_eq!(mine(1), vec![id(&v["approvals"]["m2OnTwo"])]);
+    assert_eq!(mine(2), vec![id(&v["reject"])]);
 }
