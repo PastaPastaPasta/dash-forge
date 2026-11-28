@@ -444,9 +444,17 @@ impl Org {
         seed: &Seed,
         keys: &MemberKeys,
     ) -> Result<bool> {
-        self.read_shares(client, &engine.owner_id()).await?;
+        let owner = engine.owner_id();
+        self.read_shares(client, &owner).await?;
         self.load_my_shares(client, &keys.auth_pub).await?;
-        self.my_share(seed, keys)?;
+        if !self.has_share(&owner) {
+            if let Err(e) = self.my_share(seed, keys) {
+                if self.is_bound(&keys.auth_pub, &owner) {
+                    return Ok(false);
+                }
+                return Err(e);
+            }
+        }
         let wrote_member = self.ensure_bound(client, engine, keys).await?;
         let wrote_share = self.ensure_share(client, engine, seed, keys).await?;
         Ok(wrote_member || wrote_share)
@@ -493,7 +501,10 @@ impl Org {
                 }
             }
             self.rebind();
-            return Ok(false);
+            if self.is_bound(&keys.auth_pub, &owner) {
+                return Ok(false);
+            }
+            return Err(self.too_many_identities());
         }
         if !valid.is_empty() {
             return Err(Error::Config(format!(
@@ -502,11 +513,7 @@ impl Org {
             )));
         }
         if self.bound.get(&keys.auth_pub).map_or(0, Vec::len) >= transport::MAX_IDENTITIES_PER_KEY {
-            return Err(Error::Config(format!(
-                "your organization key is already linked to {} Forge identities in {}: sign in with one of them",
-                transport::MAX_IDENTITIES_PER_KEY,
-                self.record.label
-            )));
+            return Err(self.too_many_identities());
         }
         let org = self.org_bytes()?;
         let auth: [u8; 32] = bytes32(&keys.auth_pub).ok_or(OrgError::NotAMember)?;
@@ -661,6 +668,14 @@ impl Org {
                     self.record.label, self.record.room
                 ))
             })
+    }
+
+    fn too_many_identities(&self) -> Error {
+        Error::Config(format!(
+            "your organization key is already linked to {} Forge identities in {}: sign in with one of them",
+            transport::MAX_IDENTITIES_PER_KEY,
+            self.record.label
+        ))
     }
 
     fn no_key(&self) -> Error {
@@ -818,8 +833,8 @@ impl Org {
     }
 
     /// [`Self::open_nonces`] without the parts that can no longer land and so release their
-    /// nonce: a replace whose document is not at the revision it replaces (§11.6). Only nonces
-    /// above the tip are checked; the others are never handed out.
+    /// nonce (§11.6: their document moved or is gone). Only nonces above the tip are checked;
+    /// the others are never handed out.
     pub async fn held_nonces(
         &self,
         client: &PlatformClient,
@@ -827,22 +842,20 @@ impl Org {
         let mut tips: BTreeMap<String, NonceState> = BTreeMap::new();
         let mut out: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
         for (id, d) in self.holding_parts() {
-            if d.action == "replace" {
-                let tip = if let Some(t) = tips.get(&d.contract_id) {
-                    *t
-                } else {
-                    let t = client
-                        .proved_contract_nonce(&self.record.org_id, &d.contract_id)
-                        .await?;
-                    tips.insert(d.contract_id.clone(), t);
-                    t
-                };
-                if !tip.spent(d.nonce) {
-                    let f = facts(client, &d).await?;
-                    if f.doc != DocState::Base && !request::landed(&d.action, &f, self.claimed(&id))
-                    {
-                        continue;
-                    }
+            let tip = if let Some(t) = tips.get(&d.contract_id) {
+                *t
+            } else {
+                let t = client
+                    .proved_contract_nonce(&self.record.org_id, &d.contract_id)
+                    .await?;
+                tips.insert(d.contract_id.clone(), t);
+                t
+            };
+            if !tip.spent(d.nonce) {
+                let f = facts(client, &d).await?;
+                let claim = self.claimed(&id);
+                if request::part_state(&d.action, true, claim, Some(&f)) == PartState::Expired {
+                    continue;
                 }
             }
             out.entry(d.contract_id.clone())
@@ -1033,7 +1046,7 @@ impl Org {
                 if o.owner_id == d.owner_id
                     && o.contract_id == d.contract_id
                     && o.nonce == d.nonce
-                    && o.document_id != d.document_id
+                    && !same_write(&o, d)
                     && request::landed(&o.action, &facts(client, &o).await?, self.claimed(id))
                 {
                     return Ok(true);
@@ -1534,6 +1547,15 @@ pub(crate) fn derived(w: &UnsignedWrite) -> Value {
     d
 }
 
+/// Whether `a` and `b` are the same write (two requests asking for it): it can't be the other's
+/// nonce thief.
+fn same_write(a: &DecodedWrite, b: &DecodedWrite) -> bool {
+    a.action == b.action
+        && a.document_id == b.document_id
+        && a.revision == b.revision
+        && review::same_fields(&a.properties, &b.properties)
+}
+
 /// What Platform shows of `d`'s document and nonce.
 async fn facts(client: &PlatformClient, d: &DecodedWrite) -> Result<PartFacts> {
     let contract = client.fetch_contract(&d.contract_id).await?;
@@ -1556,6 +1578,7 @@ async fn facts(client: &PlatformClient, d: &DecodedWrite) -> Result<PartFacts> {
         ("replace", Some(x)) if x.revision > d.revision => DocState::Later,
         ("replace", Some(x)) if x.revision.map(|r| r + 1) == d.revision => DocState::Base,
         ("replace", Some(_)) => DocState::Different,
+        ("create", Some(x)) if x.revision.is_some_and(|r| r > 1) => DocState::Later,
         ("create", Some(x)) => {
             if same(&x) {
                 DocState::Same

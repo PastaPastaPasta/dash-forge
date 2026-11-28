@@ -198,14 +198,14 @@ pub enum DocState {
     Absent,
     /// A delete's document still exists.
     Present,
-    /// A create's document exists with the part's fields; a replace's is at its revision with
-    /// them.
+    /// A create's document is at revision 1 with the part's fields; a replace's is at its
+    /// revision with them.
     Same,
     /// The same, with other fields.
     Different,
     /// A replace's document is at the revision it replaces: it has not landed yet.
     Base,
-    /// A replace's document is past its revision.
+    /// The document is past the part's revision (edited since).
     Later,
 }
 
@@ -239,12 +239,12 @@ impl PartState {
     }
 }
 
-/// Whether the write is visible on Platform. A replace whose document is past its revision, and
-/// a delete, count only with the nonce spent and a member's `claim` that it broadcast it.
+/// Whether the write is visible on Platform. A document past the part's revision (edited
+/// since), and a delete, count only with the nonce spent and a member's `claim` that it
+/// broadcast it.
 pub fn landed(action: &str, f: &PartFacts, claim: bool) -> bool {
     match action {
-        "create" => f.doc == DocState::Same,
-        "replace" => {
+        "create" | "replace" => {
             f.doc == DocState::Same || (f.doc == DocState::Later && f.nonce_spent && claim)
         }
         "delete" => f.doc == DocState::Absent && f.nonce_spent && claim,
@@ -273,6 +273,7 @@ pub fn part_state(
     } else if action == "create" && claim && f.nonce_spent && f.doc == DocState::Absent {
         PartState::Gone
     } else if f.nonce_spent
+        || (action == "create" && f.doc != DocState::Absent)
         || (action == "replace" && f.doc != DocState::Base)
         || (action == "delete" && f.doc == DocState::Absent)
     {
